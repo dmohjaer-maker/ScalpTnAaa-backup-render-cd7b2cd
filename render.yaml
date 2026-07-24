@@ -1,15 +1,13 @@
 services:
+  # ─── mt5rest Docker bridge ─────────────────────────────────────────────────
+  # Runs MT5 on Linux (via Wine) and exposes a REST API.
+  # The robot service calls this bridge instead of MetaAPI cloud.
   - type: web
-    name: goldscalper-v4-robot
-    runtime: python
+    name: goldscalper-mtapi
+    runtime: docker
+    dockerfilePath: ./mtapi-bridge/Dockerfile
     plan: free
-    healthCheckPath: /health
-    buildCommand: pip install -r live_trading/requirements.txt
-    startCommand: python live_trading/server.py
     envVars:
-      # ── MT5 broker connection (via mtapi.io bridge) ──────────────────────
-      - key: MTAPI_URL
-        value: "https://goldscalper-mtapi.onrender.com"
       - key: MT5_HOST
         value: "AMarkets-Demo"
       - key: MT5_PORT
@@ -18,24 +16,46 @@ services:
         sync: false
       - key: MT5_PASSWORD
         sync: false
-      # ── Symbol & strategy ────────────────────────────────────────────────
+
+  # ─── Trading robot ─────────────────────────────────────────────────────────
+  - type: web
+    name: goldscalper-v4-robot
+    runtime: python
+    plan: free
+    healthCheckPath: /health
+    buildCommand: pip install -r live_trading/requirements.txt
+    startCommand: python live_trading/server.py
+    envVars:
+      # ── mt5rest bridge URL (set to the goldscalper-mtapi service URL) ──────
+      - key: MTAPI_URL
+        value: "https://goldscalper-mtapi.onrender.com"
+      # ── MT5 broker credentials ──────────────────────────────────────────────
+      - key: MT5_HOST
+        value: "AMarkets-Demo"
+      - key: MT5_PORT
+        value: "443"
+      - key: MT5_USER
+        sync: false
+      - key: MT5_PASSWORD
+        sync: false
+      # ── Symbol & strategy ───────────────────────────────────────────────────
       - key: SYMBOL
         value: XAUUSD
       - key: RISK_PERCENT
         value: "1.0"
       - key: MIN_CONFIRMATIONS
         value: "3"
-      # ── Risk Guardian circuit breakers ───────────────────────────────────
+      # ── Risk Guardian circuit breakers ──────────────────────────────────────
       - key: DAILY_LOSS_LIMIT_PCT
         value: "3.0"
       - key: MAX_DRAWDOWN_PCT
         value: "8.0"
       - key: SLIPPAGE_POINTS
         value: "30"
-      # ── Runtime ─────────────────────────────────────────────────────────
+      # ── Runtime ─────────────────────────────────────────────────────────────
       - key: PYTHON_VERSION
         value: "3.11.0"
-      # ── State files ──────────────────────────────────────────────────────
+      # ── State files ─────────────────────────────────────────────────────────
       - key: STATE_FILE
         value: "/tmp/robot_state.json"
       - key: MT5_SNAPSHOT
@@ -46,10 +66,11 @@ services:
         value: "/tmp/guardian_state.json"
       - key: LOG_FILE
         value: "/tmp/robot.log"
-      # ── Redis IPC (set from Render Redis service) ─────────────────────────
+      # ── Redis IPC (set from Render Redis service) ────────────────────────────
       - key: REDIS_URL
         value: ""
 
+  # ─── Telegram control panel ────────────────────────────────────────────────
   - type: web
     name: goldscalper-v4-panel
     runtime: python
