@@ -146,8 +146,11 @@ async def disconnect() -> None:
     _session = None
 
 
-async def ensure_connected() -> bool:
-    """Check live connection status; reconnect if not connected."""
+async def ensure_connected(*args, **kwargs) -> bool:
+    """Check live connection status; reconnect if not connected.
+    Extra positional/keyword args are accepted for backward compatibility
+    with callers that pass MetaAPI-style token/account/timeout arguments.
+    """
     global _connected
 
     if _conn_id and _base_url:
