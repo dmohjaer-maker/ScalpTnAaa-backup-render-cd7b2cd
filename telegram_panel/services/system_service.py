@@ -5,8 +5,9 @@ Uses psutil for cross-platform system metrics.
 
 import asyncio
 import logging
+import socket
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -73,38 +74,39 @@ class SystemService:
             "formatted": f"{days}d {hours:02d}h {minutes:02d}m {seconds:02d}s",
         }
 
-    async def get_latency(self, host: str = "8.8.8.8") -> Optional[float]:
-        """Ping latency in ms (non-blocking)."""
+    async def get_latency(self, host: str = "8.8.8.8", port: int = 53) -> Optional[float]:
+        """
+        TCP-connect latency in ms (non-blocking, works on Render / Docker).
+        Uses a TCP handshake to port 53 (DNS) on the target host instead of
+        ICMP ping, which is blocked in most container environments.
+        """
         loop = asyncio.get_event_loop()
-        def _ping():
-            import subprocess
+
+        def _tcp_ping():
             try:
-                result = subprocess.run(
-                    ["ping", "-c", "1", "-W", "2", host],
-                    capture_output=True, text=True, timeout=3,
-                )
-                for line in result.stdout.splitlines():
-                    if "time=" in line:
-                        return float(line.split("time=")[1].split()[0])
+                start = time.monotonic()
+                with socket.create_connection((host, port), timeout=3):
+                    pass
+                return round((time.monotonic() - start) * 1000, 1)
             except Exception:
-                pass
-            return None
+                return None
+
         try:
             return await asyncio.wait_for(
-                loop.run_in_executor(None, _ping), timeout=4
+                loop.run_in_executor(None, _tcp_ping), timeout=4
             )
         except asyncio.TimeoutError:
             return None
 
     async def get_broker_ping(self, host: Optional[str] = None) -> Optional[float]:
-        """Ping broker server. Uses MT5 snapshot for host if not provided."""
+        """Latency to broker server via TCP connect (port 443 fallback)."""
         if host is None:
             return None
-        return await self.get_latency(host)
+        return await self.get_latency(host, port=443)
 
     async def get_internet_status(self) -> bool:
-        """Simple internet connectivity check."""
-        latency = await self.get_latency("8.8.8.8")
+        """Internet connectivity check via TCP connect to 8.8.8.8:53."""
+        latency = await self.get_latency("8.8.8.8", port=53)
         return latency is not None
 
     async def get_robot_version(self) -> str:
