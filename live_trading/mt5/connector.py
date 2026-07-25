@@ -12,17 +12,18 @@ Required env vars:
     MT5_PASSWORD  – MT5 account password
 
 mt5rest endpoints used:
-    POST /connect          – authenticate with broker
-    GET  /account_info     – balance, equity, margin
-    GET  /positions        – open positions
-    GET  /history          – OHLCV candles
-    POST /order            – place market order
-    POST /close_position   – close position by ticket
-    GET  /health           – liveness probe
+    GET  /ConnectEx        – authenticate with broker, returns UUID conn id
+    GET  /Disconnect       – close connection
+    GET  /ConnectionStatus – check live connection
+    GET  /AccountSummary   – balance, equity, margin
+    GET  /OpenedOrders     – open positions
+    GET  /PriceHistoryV2   – OHLCV candles (ISO datetime range)
+    GET  /GetQuote         – current bid/ask price
+    GET  /Ping             – liveness probe
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 import aiohttp
@@ -37,9 +38,10 @@ from live_trading.logger import get_logger
 log = get_logger()
 
 # ── Module-level state ────────────────────────────────────────────────────────
-_session:   Optional[aiohttp.ClientSession] = None
-_connected: bool = False
-_base_url:  str  = ""
+_session:    Optional[aiohttp.ClientSession] = None
+_connected:  bool = False
+_base_url:   str  = ""
+_conn_id:    str  = ""   # UUID returned by ConnectEx; passed to every call
 
 # ── Timeframe map  (label → mt5rest integer minutes) ─────────────────────────
 _TF_MAP = {
@@ -47,11 +49,6 @@ _TF_MAP = {
     "1h":  60,  "4h":  240, "1d":  1440,
     "M1":  1,   "M5":  5,   "M15": 15,  "M30": 30,
     "H1":  60,  "H4":  240, "D1":  1440,
-}
-
-_TF_SECONDS = {
-    "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
-    "1h": 3600, "4h": 14400, "1d": 86400,
 }
 
 
@@ -68,15 +65,15 @@ def _get_session() -> aiohttp.ClientSession:
 
 async def connect(*args, **kwargs) -> bool:
     """
-    Connect to MT5 via the mt5rest HTTP bridge.
-    Reads credentials from env vars; positional args are ignored (compat shim).
+    Connect to MT5 via the mt5rest HTTP bridge using GET /ConnectEx.
+    Returns the connection UUID which is stored in _conn_id.
     """
-    global _connected, _base_url
+    global _connected, _base_url, _conn_id
 
     base     = MTAPI_URL.rstrip("/") if MTAPI_URL else ""
     host     = MT5_HOST
-    user     = int(MT5_USER) if str(MT5_USER).isdigit() else 0
-    password = MT5_PASSWORD
+    user     = MT5_USER.strip() if MT5_USER else ""
+    password = MT5_PASSWORD.strip() if MT5_PASSWORD else ""
 
     if not base:
         log.error(
@@ -93,23 +90,35 @@ async def connect(*args, **kwargs) -> bool:
 
     try:
         log.info(f"Connecting to MT5 via mt5rest at {base} ...")
-        async with sess.post(
-            f"{base}/connect",
-            json={"server": host, "login": user, "password": password},
-            timeout=aiohttp.ClientTimeout(total=60),
+        async with sess.get(
+            f"{base}/ConnectEx",
+            params={
+                "user":     user,
+                "password": password,
+                "server":   host,
+                "connectTimeoutSeconds": 60,
+            },
+            timeout=aiohttp.ClientTimeout(total=90),
         ) as resp:
-            data = await resp.json(content_type=None)
-            log.debug(f"connect response ({resp.status}): {data}")
+            raw = await resp.text()
+            log.debug(f"ConnectEx response ({resp.status}): {raw[:200]}")
 
-            # mt5rest returns {"authorized": true} on success
-            if resp.status == 200 and data.get("authorized"):
-                _connected = True
-                log.info(f"MT5 connected – broker: {host}  login: {user}")
-                return True
+            if resp.status != 200:
+                log.error(f"ConnectEx failed (status={resp.status}): {raw[:300]}")
+                _connected = False
+                return False
 
-            log.error(f"MT5 connect rejected (status={resp.status}): {data}")
-            _connected = False
-            return False
+            # Response is a plain UUID string (may be quoted JSON string or raw)
+            conn_id = raw.strip().strip('"')
+            if not conn_id or len(conn_id) < 10:
+                log.error(f"ConnectEx returned unexpected value: {raw[:200]}")
+                _connected = False
+                return False
+
+            _conn_id   = conn_id
+            _connected = True
+            log.info(f"MT5 connected – broker: {host}  user: {user}  conn_id: {conn_id}")
+            return True
 
     except Exception as exc:
         log.error(f"MT5 connect error: {exc}")
@@ -118,75 +127,107 @@ async def connect(*args, **kwargs) -> bool:
 
 
 async def disconnect() -> None:
-    global _connected, _session
+    global _connected, _session, _conn_id
+    if _conn_id and _base_url:
+        try:
+            sess = _get_session()
+            async with sess.get(
+                f"{_base_url}/Disconnect",
+                params={"id": _conn_id},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as _:
+                pass
+        except Exception:
+            pass
     _connected = False
+    _conn_id   = ""
     if _session and not _session.closed:
         await _session.close()
     _session = None
-    log.info("MT5 disconnected.")
 
 
 async def ensure_connected() -> bool:
-    """Ping /health; reconnect automatically if the bridge is unreachable."""
+    """Check live connection status; reconnect if not connected."""
     global _connected
-    if _base_url:
+
+    if _conn_id and _base_url:
         try:
-            async with _get_session().get(
-                f"{_base_url}/health",
-                timeout=aiohttp.ClientTimeout(total=5),
+            sess = _get_session()
+            async with sess.get(
+                f"{_base_url}/ConnectionStatus",
+                params={"id": _conn_id},
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
-                if resp.status == 200:
+                data = await resp.json(content_type=None)
+                if isinstance(data, dict) and data.get("isConnected"):
                     _connected = True
                     return True
         except Exception:
             pass
-    log.warning("Bridge health-check failed – reconnecting ...")
+
     _connected = False
+    log.info("MT5 not connected — reconnecting …")
     return await connect()
 
 
 # ── Market data ───────────────────────────────────────────────────────────────
 
 async def fetch_candles(
-    symbol: str,
-    timeframe: str,
-    count: int = 300,
+    symbol: str, timeframe: str, count: int = 300
 ) -> List[OHLCV]:
-    """Fetch closed OHLCV candles from the mt5rest bridge."""
-    if not _connected:
-        await ensure_connected()
+    """Fetch OHLCV candles via GET /PriceHistoryV2 (ISO datetime range)."""
+    if not _conn_id:
+        if not await ensure_connected():
+            return []
 
-    tf_int = _TF_MAP.get(timeframe, 5)
-    sess   = _get_session()
+    tf_min = _TF_MAP.get(timeframe, 5)
+
+    # Request slightly more bars than needed to account for the current open bar
+    request_count = count + 5
+    now      = datetime.now(timezone.utc)
+    from_dt  = now - timedelta(minutes=tf_min * request_count)
+
+    from_str = from_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    to_str   = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     try:
+        sess = _get_session()
         async with sess.get(
-            f"{_base_url}/history",
-            params={"symbol": symbol, "timeframe": tf_int, "count": count + 5},
+            f"{_base_url}/PriceHistoryV2",
+            params={
+                "id":        _conn_id,
+                "symbol":    symbol,
+                "from":      from_str,
+                "to":        to_str,
+                "timeFrame": tf_min,
+            },
+            timeout=aiohttp.ClientTimeout(total=60),
         ) as resp:
-            raw = await resp.json(content_type=None)
-            if not isinstance(raw, list):
-                log.error(f"Unexpected candle response: {str(raw)[:300]}")
+            data = await resp.json(content_type=None)
+
+            if not isinstance(data, list):
+                log.error(f"fetch_candles unexpected response: {str(data)[:300]}")
                 return []
 
             candles: List[OHLCV] = []
-            for bar in raw:
-                ts = bar.get("time", 0)
-                if isinstance(ts, (int, float)):
-                    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-                else:
-                    dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            for bar in data:
+                # Keep time as ISO string (matches OHLCV.time: str)
+                t = bar.get("time", "")
                 candles.append(OHLCV(
-                    time=dt,
-                    open=float(bar["open"]),
-                    high=float(bar["high"]),
-                    low=float(bar["low"]),
-                    close=float(bar["close"]),
-                    volume=float(bar.get("tick_volume", bar.get("volume", 0))),
+                    time=t,
+                    open=float(bar.get("openPrice",  0.0)),
+                    high=float(bar.get("highPrice",  0.0)),
+                    low=float(bar.get("lowPrice",    0.0)),
+                    close=float(bar.get("closePrice", 0.0)),
+                    volume=float(bar.get("tickVolume", bar.get("volume", 0))),
                 ))
 
-            # Exclude the last (still-forming) candle
-            return candles[:-1] if len(candles) > 1 else candles
+            # Drop the last bar (may be the still-open current bar)
+            if candles:
+                candles = candles[:-1]
+
+            # Return only the last `count` completed bars
+            return candles[-count:] if len(candles) > count else candles
 
     except Exception as exc:
         log.error(f"fetch_candles error: {exc}")
@@ -194,11 +235,27 @@ async def fetch_candles(
 
 
 async def get_account_info() -> dict:
-    if not _connected:
+    if not _conn_id:
         await ensure_connected()
     try:
-        async with _get_session().get(f"{_base_url}/account_info") as resp:
-            return await resp.json(content_type=None)
+        sess = _get_session()
+        async with sess.get(
+            f"{_base_url}/AccountSummary",
+            params={"id": _conn_id},
+        ) as resp:
+            data = await resp.json(content_type=None)
+            if isinstance(data, dict) and "balance" in data:
+                return {
+                    "balance":     float(data.get("balance",     0.0)),
+                    "equity":      float(data.get("equity",      0.0)),
+                    "margin":      float(data.get("margin",      0.0)),
+                    "freeMargin":  float(data.get("freeMargin",  0.0)),
+                    "marginLevel": float(data.get("marginLevel", 0.0)),
+                    "currency":    data.get("currency", "USD"),
+                    "leverage":    data.get("leverage",  1),
+                }
+            log.error(f"AccountSummary unexpected response: {data}")
+            return {}
     except Exception as exc:
         log.error(f"get_account_info error: {exc}")
         return {}
@@ -210,12 +267,14 @@ async def get_account_balance() -> float:
 
 
 async def get_open_positions(symbol: str = "") -> List[dict]:
-    if not _connected:
+    if not _conn_id:
         await ensure_connected()
     try:
-        params = {"symbol": symbol} if symbol else {}
+        params: dict = {"id": _conn_id}
+        if symbol:
+            params["symbol"] = symbol
         async with _get_session().get(
-            f"{_base_url}/positions", params=params
+            f"{_base_url}/OpenedOrders", params=params
         ) as resp:
             data = await resp.json(content_type=None)
             return data if isinstance(data, list) else []
@@ -228,30 +287,49 @@ async def get_last_completed_bar_time(
     symbol: str, timeframe: str
 ) -> Optional[datetime]:
     candles = await fetch_candles(symbol, timeframe, count=3)
-    return candles[-1].time if candles else None
+    if not candles:
+        return None
+    t = candles[-1].time
+    if isinstance(t, datetime):
+        return t
+    try:
+        return datetime.fromisoformat(t.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 
 def mt5_pos_to_dict(pos: dict) -> dict:
-    """Normalise a raw mt5rest position dict into the standard internal format."""
+    """Normalise a raw mt5rest OpenedOrder dict into the standard internal format."""
     type_map = {0: "BUY", 1: "SELL"}
+    raw_type = pos.get("type", pos.get("orderType", 0))
+    try:
+        raw_type = int(raw_type)
+    except (TypeError, ValueError):
+        raw_type = 0
+
     return {
         "id":         str(pos.get("ticket", pos.get("identifier", ""))),
         "ticket":     pos.get("ticket", pos.get("identifier", 0)),
         "symbol":     pos.get("symbol", ""),
-        "type":       type_map.get(int(pos.get("type", 0)), "BUY"),
-        "volume":     float(pos.get("volume", 0.0)),
-        "open_price": float(pos.get("price_open", 0.0)),
-        "sl":         float(pos.get("sl", 0.0)),
-        "tp":         float(pos.get("tp", 0.0)),
-        "profit":     float(pos.get("profit", 0.0)),
-        "open_time":  pos.get("time", 0),
-        "comment":    pos.get("comment", ""),
+        "type":       type_map.get(raw_type, "BUY"),
+        "volume":     float(pos.get("volume", pos.get("lots", 0.0))),
+        "open_price": float(pos.get("openPrice", pos.get("price_open", 0.0))),
+        "sl":         float(pos.get("stopLoss",  pos.get("sl", 0.0))),
+        "tp":         float(pos.get("takeProfit", pos.get("tp", 0.0))),
+        "profit":     float(pos.get("profit",    0.0)),
+        "open_time":  pos.get("openTime",  pos.get("time",    0)),
+        "comment":    pos.get("comment",   ""),
     }
 
 
 def get_connection() -> Optional[str]:
     """Return the base URL when connected, None otherwise (used by executor)."""
     return _base_url if _connected else None
+
+
+def get_conn_id() -> Optional[str]:
+    """Return the active connection UUID (used by executor)."""
+    return _conn_id if _connected else None
 
 
 def is_connected() -> bool:
