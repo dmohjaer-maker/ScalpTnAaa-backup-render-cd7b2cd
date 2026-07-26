@@ -76,6 +76,7 @@ class GoldScalperLive:
             max_drawdown_pct=MAX_DRAWDOWN_PCT,
         )
         self._last_guardian_status: Optional[GuardianStatus] = None
+        self._last_acc_info: Optional[dict] = None  # cache for WAITING state writes
 
         # Exponential backoff state
         self._reconnect_attempts: int = 0
@@ -254,7 +255,7 @@ class GoldScalperLive:
                              f"at {new_bar.isoformat()} ───")
                     await self._on_new_bar(new_bar)
                 else:
-                    self._write_state("WAITING")
+                    self._write_state("WAITING", self._last_acc_info)
 
                 await asyncio.sleep(BAR_CHECK_INTERVAL)
 
@@ -307,6 +308,7 @@ class GoldScalperLive:
             )
             return
 
+        self._last_acc_info = acc_info  # update cache so WAITING writes show real balance
         balance  = float(acc_info["balance"])
         equity   = float(acc_info["equity"])
 
