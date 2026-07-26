@@ -24,7 +24,11 @@ services:
   - type: redis
     name: goldscalper-redis
     plan: free
-    ipAllowList: []
+    # Render rejects connections when this list is empty.  Keep Redis
+    # reachable by the robot and Telegram panel services over TLS.
+    ipAllowList:
+      - cidrBlock: 0.0.0.0/0
+        description: robot and panel IPC
 
   # ─── Trading robot ─────────────────────────────────────────────────────────
   - type: web
