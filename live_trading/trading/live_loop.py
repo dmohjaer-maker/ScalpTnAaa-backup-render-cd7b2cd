@@ -1,13 +1,13 @@
 """
-Live Trading Loop — async M5 candle-close event handler via MetaAPI.
+Live Trading Loop — async M5 candle-close event handler via mt5rest bridge.
 
 Flow per tick:
   1. Wait for next M5 candle close
-  2. Fetch 300 closed candles via MetaAPI
+  2. Fetch 300 closed candles via mt5rest bridge
   3. Run decision engine (all 7 signal engines)
   4. Gate: RiskGuardian circuit breakers (daily loss / drawdown)
   5. Gate: max open positions + trade allowed + Telegram not paused
-  6. Place order via MetaAPI executor (with slippage control)
+  6. Place order via mt5rest executor (with slippage control)
   7. Write robot_state.json for Telegram panel
 
 Resilience improvements over baseline:
@@ -30,7 +30,6 @@ from typing import List, Optional
 
 from live_trading.config import (
     SYMBOL, TIMEFRAME, CANDLE_WINDOW, RISK_PERCENT,
-    METAAPI_TOKEN, METAAPI_ACCOUNT_ID,
     MAX_OPEN_TRADES, COMMENT,
     BAR_CHECK_INTERVAL, RECONNECT_DELAY, SYNC_TIMEOUT,
     MIN_CONFIRMATIONS, USE_ATR_HIGH_VOL_FILTER,
@@ -71,7 +70,7 @@ class GoldScalperLive:
         self.trade_history: List[dict] = []
         self.last_decision: Optional[DecisionResult] = None
 
-        # Risk Guardian — initialized properly after MetaAPI connect
+        # Risk Guardian — initialized after mt5rest bridge connects
         self.guardian = RiskGuardian(
             daily_loss_limit_pct=DAILY_LOSS_LIMIT_PCT,
             max_drawdown_pct=MAX_DRAWDOWN_PCT,
@@ -85,7 +84,7 @@ class GoldScalperLive:
 
     async def start(self) -> bool:
         log.info("=" * 60)
-        log.info("  GoldScalperPro v4 — LIVE TRADING ENGINE (MetaAPI)")
+        log.info("  GoldScalperPro v4 — LIVE TRADING ENGINE (mt5rest)")
         log.info(f"  Symbol: {SYMBOL}  |  TF: {TIMEFRAME}")
         log.info(f"  Risk: {RISK_PERCENT}%  |  Max positions: {MAX_OPEN_TRADES}")
         log.info(f"  Min confirmations: {MIN_CONFIRMATIONS}")
@@ -99,12 +98,12 @@ class GoldScalperLive:
         # Restore trade history from previous session (survives restarts)
         self.trade_history = self._load_trade_history()
 
-        connected = await connect(METAAPI_TOKEN, METAAPI_ACCOUNT_ID, SYNC_TIMEOUT)
+        connected = await connect()
         if not connected:
-            log.error("Could not connect to MetaAPI. "
-                      "Check METAAPI_TOKEN and METAAPI_ACCOUNT_ID.")
+            log.error("Could not connect to MT5 via mt5rest bridge. "
+                      "Check MTAPI_URL, MT5_USER, and MT5_PASSWORD.")
             self._write_state("DISCONNECTED",
-                              extra={"error": "MetaAPI connection failed"})
+                              extra={"error": "mt5rest connection failed"})
             return False  # non-False return signals failure to main.py for sys.exit(1)
 
         # ── Guardian state restore (VB-02) ───────────────────────────────────
@@ -201,7 +200,6 @@ class GoldScalperLive:
 
                 # ── Reconnect with exponential backoff ────────────────────────
                 ok = await ensure_connected(
-                    METAAPI_TOKEN, METAAPI_ACCOUNT_ID,
                     SYNC_TIMEOUT,
                     attempt=self._reconnect_attempts + 1,
                 )
