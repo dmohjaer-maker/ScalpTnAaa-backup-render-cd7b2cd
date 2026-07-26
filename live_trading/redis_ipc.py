@@ -36,32 +36,41 @@ _CMD_TTL      = 300   # 5 min — stale commands become irrelevant
 
 _client              = None
 _last_failure_time: float = 0.0   # monotonic timestamp of last connection failure
+_last_ping_time:    float = 0.0   # monotonic timestamp of last successful ping
 _RETRY_COOLDOWN      = 60.0        # seconds before retrying after a failure
+_PING_INTERVAL       = 30.0        # seconds between keepalive pings on good client
 
 
 def _get_client():
     """
     Return a live Redis client, or None if Redis is unavailable.
 
-    Bug fixed (was: permanent _unavailable flag):
-    Previously, the first failed connection set _unavailable=True forever,
-    so Redis was never retried even after it became available.
-    Now we use a 60-second cooldown before each retry, and we also detect
-    when a previously-good client has gone stale (ping failure → reconnect).
+    Connection management:
+    - If we have a cached client, we send a keepalive ping at most once every
+      30 seconds (not on every call) to avoid hammering Redis with pings.
+    - After any failure, we enforce a 60-second cooldown before retrying.
+    - This replaces the old permanent _unavailable=True flag that prevented
+      any retry once Redis failed at startup.
     """
-    global _client, _last_failure_time
+    global _client, _last_failure_time, _last_ping_time
 
     if not REDIS_URL:
         return None
 
-    # If we have a client, verify it is still alive.
+    # If we have a cached client, check liveness at most once per _PING_INTERVAL.
     if _client is not None:
-        try:
-            _client.ping()
+        now = time.monotonic()
+        if (now - _last_ping_time) >= _PING_INTERVAL:
+            try:
+                _client.ping()
+                _last_ping_time = now
+            except Exception:
+                logger.warning("Redis IPC: keepalive ping failed — will reconnect")
+                _client = None
+                _last_failure_time = now
+                _last_ping_time = 0.0
+        if _client is not None:
             return _client
-        except Exception:
-            logger.warning("Redis IPC: existing connection lost — will reconnect")
-            _client = None
 
     # Enforce retry cooldown after a failure.
     if _last_failure_time > 0:
@@ -80,6 +89,7 @@ def _get_client():
         c.ping()
         _client = c
         _last_failure_time = 0.0
+        _last_ping_time = time.monotonic()
         logger.info("Redis IPC: connected")
         return _client
     except Exception as exc:
@@ -236,6 +246,7 @@ def redis_send_command(command: str, payload: Optional[dict] = None) -> bool:
 
 def _reset_client() -> None:
     """Mark client as failed so _get_client() will reconnect after cooldown."""
-    global _client, _last_failure_time
+    global _client, _last_failure_time, _last_ping_time
     _client = None
     _last_failure_time = time.monotonic()
+    _last_ping_time = 0.0

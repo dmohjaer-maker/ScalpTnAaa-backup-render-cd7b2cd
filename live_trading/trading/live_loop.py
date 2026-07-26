@@ -240,7 +240,11 @@ class GoldScalperLive:
         except Exception as exc:
             log.exception(f"Fatal error in main loop: {exc}")
             self._write_state("ERROR", extra={"error": str(exc)})
-            sys.exit(1)
+            raise  # Re-raise to supervisor — do NOT sys.exit() here.
+            # sys.exit() kills the *entire* process and bypasses the supervisor's
+            # exponential-backoff restart logic.  Raising lets the supervisor in
+            # server.py catch the exception, apply the configured backoff, and
+            # restart the engine without Render having to restart the container.
         finally:
             await disconnect()
             self._write_state("STOPPED")
