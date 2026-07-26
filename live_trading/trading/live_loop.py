@@ -336,9 +336,19 @@ class GoldScalperLive:
             return
 
         # 4. Check open positions (live MT5 — prevents duplicate entry on restart)
-        raw_positions = await get_open_positions(SYMBOL)
-        pos_dicts     = [mt5_pos_to_dict(p) for p in raw_positions]
-        pos           = pos_dicts[0] if pos_dicts else None
+        # get_open_positions() raises RuntimeError if mt5rest returns an error
+        # response.  Treat that as a missing position check — skip trade entry
+        # for this bar rather than risking duplicate-entry or crashing the loop.
+        try:
+            raw_positions = await get_open_positions(SYMBOL)
+        except RuntimeError as _pos_err:
+            log.error(
+                f"Cannot verify open positions — skipping trade entry this bar: {_pos_err}"
+            )
+            self._write_state("WAITING", acc_info)
+            return
+        pos_dicts = [mt5_pos_to_dict(p) for p in raw_positions]
+        pos       = pos_dicts[0] if pos_dicts else None
 
         if pos:
             log.info(f"Open position: id={pos['id']}  "
@@ -482,7 +492,12 @@ class GoldScalperLive:
             clear_command("reset_guardian")
 
     async def _close_all_positions(self) -> None:
-        for p in await get_open_positions(SYMBOL):
+        try:
+            positions = await get_open_positions(SYMBOL)
+        except RuntimeError as exc:
+            log.error(f"CLOSE_ALL: could not fetch positions from mt5rest: {exc}")
+            return
+        for p in positions:
             d = mt5_pos_to_dict(p)
             result = await close_position(d["id"])
             if result.success:
