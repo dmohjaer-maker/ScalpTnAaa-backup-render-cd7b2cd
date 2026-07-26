@@ -130,10 +130,16 @@ def write_robot_state(
     _conn_str = "connected" if _connected else "disconnected"
 
     # Convenience account dict (legacy "account" key kept for backward compat)
+    _balance = account_info.get("balance", 0)
+    _equity  = account_info.get("equity",  0)
     _account_dict = {
-        "balance":     account_info.get("balance", 0),
-        "equity":      account_info.get("equity", 0),
-        "profit":      account_info.get("profit", 0),
+        "balance":     _balance,
+        "equity":      _equity,
+        # connector.get_account_info() does NOT return a "profit" field.
+        # Compute it as equity − balance (= floating P&L on open positions).
+        # Fall back to the API's "profit" field if it IS present (e.g. future
+        # mt5rest versions that expose it directly).
+        "profit":      account_info.get("profit", _equity - _balance),
         "margin":      account_info.get("margin", 0),
         "margin_free": account_info.get("freeMargin", account_info.get("free_margin", 0)),
         "currency":    account_info.get("currency", "USD"),
