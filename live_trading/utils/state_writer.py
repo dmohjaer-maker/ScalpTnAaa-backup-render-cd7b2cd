@@ -42,9 +42,28 @@ _PANEL_COMMAND_MAP: dict = {
     "RESET_GUARDIAN": "reset_guardian",
 }
 
+# ── Engine version and uptime tracking ───────────────────────────────────────
+# Version string surfaced to the Telegram panel's dashboard.
+VERSION = "v4.0.0"
+
+# Module-level start time — set on the first write_robot_state() call so that
+# uptime_seconds is accurate from engine start regardless of when the module
+# is imported.  Using None until first call avoids a spurious 0-uptime flash.
+_engine_start_time: Optional[datetime] = None
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _get_uptime_seconds() -> int:
+    """Return seconds since the first write_robot_state() call."""
+    global _engine_start_time
+    now = datetime.now(timezone.utc)
+    if _engine_start_time is None:
+        _engine_start_time = now
+        return 0
+    return int((now - _engine_start_time).total_seconds())
 
 
 def _safe_write(path: str, data: dict) -> None:
@@ -148,6 +167,7 @@ def write_robot_state(
 
     state = {
         "status":           status,
+        "version":          VERSION,
         # Fields read by the Telegram panel's robot_service.py
         "connection_status": _conn_str,
         "mt5_status":        _conn_str,
@@ -155,6 +175,11 @@ def write_robot_state(
         "last_update":       _now_iso(),
         "last_signal_time":  last_signal_time,
         "loop_count":        loop_count,
+        # Uptime in seconds since engine start (tracked module-level)
+        "uptime_seconds":    _get_uptime_seconds(),
+        # Active trades count: 1 if there is an open position, else 0
+        "active_trades":     1 if open_position else 0,
+        "pending_orders":    0,
         # Legacy format (used by some panel views)
         "account": _account_dict,
         # account_info: format expected by telegram_panel/services/mt5_service.py
