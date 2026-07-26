@@ -35,6 +35,10 @@ class RobotStatus(str, Enum):
     STARTING = "starting"
     STOPPING = "stopping"
     RESTARTING = "restarting"
+    WAITING = "waiting"
+    SCANNING = "scanning"
+    HOLDING = "holding"
+    DISCONNECTED = "disconnected"
 
 
 class TradeDirection(str, Enum):
