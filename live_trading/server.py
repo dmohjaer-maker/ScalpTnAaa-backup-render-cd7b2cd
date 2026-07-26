@@ -25,6 +25,21 @@ _robot_status = "STARTING"
 
 
 async def _health(_req):
+    # Prefer real robot status from Redis (written by the trading engine).
+    # _robot_status only distinguishes STARTING / CONNECTING / CONFIG_ERROR /
+    # DISCONNECTED / RETRY_IN_Xs — once the engine is running it never
+    # updates this variable (engine.start() is an infinite loop).
+    try:
+        from live_trading.redis_ipc import redis_read_state, redis_available
+        if redis_available():
+            state = redis_read_state()
+            if state and "status" in state:
+                return web.Response(
+                    text=f"OK status={state['status']}",
+                    content_type="text/plain",
+                )
+    except Exception:
+        pass
     return web.Response(text=f"OK status={_robot_status}", content_type="text/plain")
 
 
