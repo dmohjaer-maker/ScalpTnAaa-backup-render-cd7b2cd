@@ -17,6 +17,15 @@ services:
       - key: MT5_PASSWORD
         sync: false
 
+  # ─── Redis — cross-service IPC (robot ↔ Telegram panel) ───────────────────
+  # Required because robot and panel run as separate Render services with
+  # separate filesystems and CANNOT share JSON state files directly.
+  # Redis bridges robot state writes → panel reads, and panel commands → robot.
+  - type: redis
+    name: goldscalper-redis
+    plan: free
+    ipAllowList: []
+
   # ─── Trading robot ─────────────────────────────────────────────────────────
   - type: web
     name: goldscalper-v4-robot
@@ -66,9 +75,12 @@ services:
         value: "/tmp/guardian_state.json"
       - key: LOG_FILE
         value: "/tmp/robot.log"
-      # ── Redis IPC (set from Render Redis service) ────────────────────────────
+      # ── Redis IPC — auto-wired from the goldscalper-redis service ────────────
       - key: REDIS_URL
-        value: ""
+        fromService:
+          type: redis
+          name: goldscalper-redis
+          property: connectionString
 
   # ─── Telegram control panel ────────────────────────────────────────────────
   - type: web
@@ -93,5 +105,9 @@ services:
         value: "/tmp/panel.db"
       - key: LOG_LEVEL
         value: "INFO"
+      # ── Redis IPC — auto-wired from the goldscalper-redis service ────────────
       - key: REDIS_URL
-        value: ""
+        fromService:
+          type: redis
+          name: goldscalper-redis
+          property: connectionString
