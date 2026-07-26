@@ -40,7 +40,7 @@ services:
         sync: false
       # ── Symbol & strategy ───────────────────────────────────────────────────
       - key: SYMBOL
-        value: XAUUSD
+        value: XAUUSDb
       - key: RISK_PERCENT
         value: "1.0"
       - key: MIN_CONFIRMATIONS

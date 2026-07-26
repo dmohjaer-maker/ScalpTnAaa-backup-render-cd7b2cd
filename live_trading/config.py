@@ -23,7 +23,7 @@ MT5_USER      = os.getenv("MT5_USER",     "")
 MT5_PASSWORD  = os.getenv("MT5_PASSWORD", "")
 
 # ── Symbol & Timeframe ───────────────────────────────────────────────────────
-SYMBOL        = os.getenv("SYMBOL",    "XAUUSD")
+SYMBOL        = os.getenv("SYMBOL",    "XAUUSDb")
 TIMEFRAME     = "5m"          # mt5rest period value
 CANDLE_WINDOW = 300           # bars sent to signal engine
 

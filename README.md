@@ -80,7 +80,7 @@ python -m telegram_panel.main
 |----------|----------|---------|-------------|
 | `METAAPI_TOKEN` | **YES** | — | MetaAPI API token |
 | `METAAPI_ACCOUNT_ID` | **YES** | — | MetaAPI account ID |
-| `SYMBOL` | No | `XAUUSD` | Trading instrument |
+| `SYMBOL` | No | `XAUUSDb` | Trading instrument (AMarkets-Demo account symbol) |
 | `RISK_PERCENT` | No | `1.0` | Risk per trade (% of balance) |
 | `MIN_CONFIRMATIONS` | No | `3` | Min signal confirmations (3 or 4) |
 | `DAILY_LOSS_LIMIT_PCT` | No | `3.0` | Guardian: daily loss halt threshold |
