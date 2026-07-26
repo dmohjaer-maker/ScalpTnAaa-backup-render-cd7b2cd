@@ -128,6 +128,11 @@ class TelegramPanel:
             pass
         except Exception as e:
             logger.exception(f"Fatal error: {e}")
+            # Re-raise so server.py wrapper can trigger its 30-second grace
+            # period and then restart the service via Render.  Without this
+            # re-raise the wrapper sees a clean return (exit code 0) and exits
+            # the process silently, preventing the restart cycle.
+            raise
         finally:
             await self._shutdown()
 
@@ -141,13 +146,12 @@ class TelegramPanel:
                 await self._bot_app.stop()
             except Exception as exc:
                 logger.warning(f"bot_app.stop() raised during shutdown: {exc}")
-        # Use get_running_loop() instead of get_event_loop() — the latter is
-        # deprecated in Python 3.10+ when called from within a running coroutine
-        # and raises DeprecationWarning in 3.12+.
-        try:
-            asyncio.get_running_loop().stop()
-        except RuntimeError:
-            pass  # No running loop — already stopped
+        # NOTE: do NOT call loop.stop() here.  This module may run inside
+        # server.py's asyncio.run() event loop which owns the health server and
+        # the 30-second grace period.  Calling loop.stop() bypasses all of that:
+        # the process exits immediately (exit code 0) before the health server
+        # can respond to Render's checks or the grace period can run, causing
+        # every deploy to be marked update_failed with earlyExit.
 
 
 def main() -> None:

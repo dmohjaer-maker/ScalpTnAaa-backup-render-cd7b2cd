@@ -61,6 +61,7 @@ class BotApplication:
         self._heartbeat: Optional[HeartbeatMonitor] = None
         self._notification_service: Optional[NotificationService] = None
         self._db: Optional[Database] = None
+        self._stop_event: Optional[asyncio.Event] = None
 
     async def start(self) -> None:
         """Build all components and start the bot."""
@@ -219,16 +220,27 @@ class BotApplication:
         """Run the bot in polling mode (blocking until stopped)."""
         if not self._app:
             raise RuntimeError("Call start() before run_polling()")
+        # Create a named stop event so stop() can unblock this coroutine.
+        # The old code used asyncio.Event() without saving a reference, which
+        # meant stop() had no way to signal it — the coroutine blocked forever
+        # and SIGTERM could only kill the process by calling loop.stop().
+        self._stop_event = asyncio.Event()
         await self._app.updater.start_polling(
             allowed_updates=["message", "callback_query"],
             drop_pending_updates=True,
         )
-        # Keep running until stopped
-        await asyncio.Event().wait()
+        # Block here until stop() sets the event (SIGTERM / clean shutdown)
+        # or until an exception propagates from the updater.
+        await self._stop_event.wait()
 
     async def stop(self) -> None:
         """Clean shutdown of all components."""
         logger.info("Shutting down Telegram Control Panel...")
+        # Unblock run_polling() first so panel.run() can return cleanly.
+        # Must happen before stopping the updater to avoid a deadlock where
+        # run_polling() waits on _stop_event while stop() waits for updater.
+        if self._stop_event and not self._stop_event.is_set():
+            self._stop_event.set()
         if self._heartbeat:
             await self._heartbeat.stop()
         if self._notification_service:
@@ -237,7 +249,8 @@ class BotApplication:
             await self._event_bus.stop()
         if self._app:
             try:
-                await self._app.updater.stop()
+                if self._app.updater and self._app.updater.running:
+                    await self._app.updater.stop()
                 await self._app.stop()
                 await self._app.shutdown()
             except Exception as e:
