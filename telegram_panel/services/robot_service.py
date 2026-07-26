@@ -159,7 +159,7 @@ class RobotService:
         # Without REDIS_URL this is a no-op and falls through to file/http.
         redis_state = await self._read_state_redis()
         if redis_state is not None:
-            self._cached_state = redis_state
+            self._cached_state = self._normalize_state(redis_state)
             self._cache_ts = now
             return self._cached_state
 
@@ -170,9 +170,24 @@ class RobotService:
         else:
             state = dict(_DEFAULT_STATE)
 
-        self._cached_state = state
+        self._cached_state = self._normalize_state(state)
         self._cache_ts = now
-        return state
+        return self._cached_state
+
+    @staticmethod
+    def _normalize_state(state: dict[str, Any]) -> dict[str, Any]:
+        """Normalize status strings to lowercase for RobotStatus/ConnectionStatus enum compat.
+
+        The trading robot writes uppercase statuses ("RUNNING", "PAUSED", "SCANNING", etc.)
+        but the RobotStatus enum uses lowercase values ("running", "paused", "scanning", etc.).
+        Without this normalization get_status() always raises ValueError and returns STOPPED,
+        the heartbeat monitor never fires RUNNING events, and the dashboard always shows ⚪.
+        """
+        out = dict(state)
+        for key in ("status", "mt5_status", "connection_status"):
+            if key in out and isinstance(out[key], str):
+                out[key] = out[key].lower()
+        return out
 
     async def _read_state_file(self) -> dict[str, Any]:
         if not os.path.exists(self._state_path):
