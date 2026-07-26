@@ -245,6 +245,7 @@ async def get_account_info() -> dict:
         async with sess.get(
             f"{_base_url}/AccountSummary",
             params={"id": _conn_id},
+            timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
             data = await resp.json(content_type=None)
             if isinstance(data, dict) and "balance" in data:
@@ -270,6 +271,14 @@ async def get_account_balance() -> float:
 
 
 async def get_open_positions(symbol: str = "") -> List[dict]:
+    """Fetch open positions from mt5rest.
+
+    Raises RuntimeError when mt5rest returns an error response (dict with
+    code/stackTrace) so callers treat a bridge error as a connection failure
+    rather than silently assuming zero open positions.  Returning [] on an
+    error could cause duplicate-entry: the robot sees 0 positions and opens
+    a second trade on top of an existing one.
+    """
     if not _conn_id:
         await ensure_connected()
     try:
@@ -277,13 +286,23 @@ async def get_open_positions(symbol: str = "") -> List[dict]:
         if symbol:
             params["symbol"] = symbol
         async with _get_session().get(
-            f"{_base_url}/OpenedOrders", params=params
+            f"{_base_url}/OpenedOrders",
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
             data = await resp.json(content_type=None)
+            # mt5rest returns {message, code, stackTrace} on errors.
+            # Raise instead of silently returning [] to prevent duplicate-entry.
+            if isinstance(data, dict) and "code" in data and "stackTrace" in data:
+                msg = data.get("message", f"code={data.get('code','?')}")
+                log.error(f"OpenedOrders error response: {msg}")
+                raise RuntimeError(f"mt5rest OpenedOrders error: {msg}")
             return data if isinstance(data, list) else []
+    except RuntimeError:
+        raise
     except Exception as exc:
         log.error(f"get_open_positions error: {exc}")
-        return []
+        raise RuntimeError(f"get_open_positions failed: {exc}") from exc
 
 
 async def get_last_completed_bar_time(
