@@ -112,6 +112,15 @@ services:
         value: "/tmp/panel.db"
       - key: LOG_LEVEL
         value: "INFO"
+      # ── Robot control interface ────────────────────────────────────────────
+      # The panel and robot run as separate Render services; use the robot's
+      # public HTTP interface instead of local file IPC.
+      - key: ROBOT_INTERFACE_MODE
+        value: "http"
+      - key: ROBOT_BASE_URL
+        value: "https://goldscalper-v4-robot.onrender.com"
+      - key: ROBOT_STATE_PATH
+        value: "/tmp/robot_state.json"
       # ── Redis IPC — auto-wired from the goldscalper-redis service ────────────
       - key: REDIS_URL
         fromService:
