@@ -17,7 +17,7 @@ import os
 import json
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Any
 from ..config.constants import RobotStatus, ConnectionStatus
 
@@ -151,7 +151,8 @@ class RobotService:
     # ─── Private ─────────────────────────────────────────────────────────────
 
     async def _read_state(self) -> dict[str, Any]:
-        now = asyncio.get_event_loop().time()
+        loop = asyncio.get_running_loop()
+        now = loop.time()
         if self._cache_ts and (now - self._cache_ts) < self._cache_ttl:
             return self._cached_state
 
@@ -193,7 +194,7 @@ class RobotService:
         if not os.path.exists(self._state_path):
             return dict(_DEFAULT_STATE)
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             def _read():
                 with open(self._state_path, "r") as f:
                     return json.load(f)
@@ -234,17 +235,18 @@ class RobotService:
         """
         Write a command to the robot.
         Tries Redis first (cross-service on Render), falls back to file IPC.
-        """        # Try Redis first — required when robot and panel are separate Render services
+        """
+        # Try Redis first — required when robot and panel are separate Render services
         if await self._send_command_redis(command, payload):
             return True
         # Fall back to file IPC (single-machine / local deployments)
         cmd_entry = {
             "command": command,
             "payload": payload or {},
-            "issued_at": datetime.utcnow().isoformat(),
+            "issued_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             def _write():
                 os.makedirs(os.path.dirname(self._cmd_path) or ".", exist_ok=True)
                 # Read existing commands (queue-style)
