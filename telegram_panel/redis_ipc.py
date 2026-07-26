@@ -21,6 +21,7 @@ Redis keys
 import json
 import logging
 import os
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -33,18 +34,41 @@ _COMMANDS_KEY = "goldscalper:commands"
 _STATE_TTL    = 300   # 5 min — prevents stale reads if robot crashes
 _CMD_TTL      = 300   # 5 min — stale commands become irrelevant
 
-_client       = None
-_unavailable  = False  # avoid retrying after first connection failure
+_client              = None
+_last_failure_time: float = 0.0   # monotonic timestamp of last connection failure
+_RETRY_COOLDOWN      = 60.0        # seconds before retrying after a failure
 
 
 def _get_client():
-    global _client, _unavailable
-    if _unavailable:
-        return None
-    if _client is not None:
-        return _client
+    """
+    Return a live Redis client, or None if Redis is unavailable.
+
+    Bug fixed (was: permanent _unavailable flag):
+    Previously, the first failed connection set _unavailable=True forever,
+    so Redis was never retried even after it became available.
+    Now we use a 60-second cooldown before each retry, and we also detect
+    when a previously-good client has gone stale (ping failure → reconnect).
+    """
+    global _client, _last_failure_time
+
     if not REDIS_URL:
         return None
+
+    # If we have a client, verify it is still alive.
+    if _client is not None:
+        try:
+            _client.ping()
+            return _client
+        except Exception:
+            logger.warning("Redis IPC: existing connection lost — will reconnect")
+            _client = None
+
+    # Enforce retry cooldown after a failure.
+    if _last_failure_time > 0:
+        elapsed = time.monotonic() - _last_failure_time
+        if elapsed < _RETRY_COOLDOWN:
+            return None
+
     try:
         import redis as _redis_lib
         c = _redis_lib.from_url(
@@ -55,11 +79,15 @@ def _get_client():
         )
         c.ping()
         _client = c
+        _last_failure_time = 0.0
         logger.info("Redis IPC: connected")
         return _client
     except Exception as exc:
-        logger.warning("Redis IPC unavailable — file fallback active: %s", exc)
-        _unavailable = True
+        logger.warning(
+            "Redis IPC unavailable (retry in %.0fs): %s",
+            _RETRY_COOLDOWN, exc,
+        )
+        _last_failure_time = time.monotonic()
         return None
 
 
@@ -79,6 +107,7 @@ def redis_write_state(data: dict) -> bool:
         return True
     except Exception as exc:
         logger.warning("Redis write_state: %s", exc)
+        _reset_client()
         return False
 
 
@@ -91,6 +120,7 @@ def redis_write_snapshot(data: dict) -> bool:
         return True
     except Exception as exc:
         logger.warning("Redis write_snapshot: %s", exc)
+        _reset_client()
         return False
 
 
@@ -111,6 +141,7 @@ def redis_read_commands() -> Optional[dict]:
         return json.loads(raw)
     except Exception as exc:
         logger.warning("Redis read_commands: %s", exc)
+        _reset_client()
         return None
 
 
@@ -129,6 +160,7 @@ def redis_clear_command(key: str) -> bool:
         return True
     except Exception as exc:
         logger.warning("Redis clear_command: %s", exc)
+        _reset_client()
         return False
 
 
@@ -143,6 +175,7 @@ def redis_read_state() -> Optional[dict]:
         return json.loads(raw) if raw else None
     except Exception as exc:
         logger.warning("Redis read_state: %s", exc)
+        _reset_client()
         return None
 
 
@@ -155,6 +188,7 @@ def redis_read_snapshot() -> Optional[dict]:
         return json.loads(raw) if raw else None
     except Exception as exc:
         logger.warning("Redis read_snapshot: %s", exc)
+        _reset_client()
         return None
 
 
@@ -194,4 +228,14 @@ def redis_send_command(command: str, payload: Optional[dict] = None) -> bool:
         return True
     except Exception as exc:
         logger.warning("Redis send_command: %s", exc)
+        _reset_client()
         return False
+
+
+# ─── Internal helpers ──────────────────────────────────────────────────────────
+
+def _reset_client() -> None:
+    """Mark client as failed so _get_client() will reconnect after cooldown."""
+    global _client, _last_failure_time
+    _client = None
+    _last_failure_time = time.monotonic()
