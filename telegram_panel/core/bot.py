@@ -7,7 +7,6 @@ This is the composition root. All dependencies are resolved here.
 
 import logging
 import asyncio
-import os
 from typing import Optional
 from telegram.ext import Application, ApplicationBuilder, Defaults
 from telegram import BotCommand
@@ -97,7 +96,6 @@ class BotApplication:
         )
         mt5_svc = MT5Service()
         account_svc = AccountService(account_repo, encryption, mt5_svc)
-        await self._seed_default_account(account_svc)
         trade_svc = TradeService(mt5_svc)
         risk_svc = RiskService(settings_repo, robot_svc)
         strategy_svc = StrategyService(settings_repo, robot_svc)
@@ -216,56 +214,6 @@ class BotApplication:
             )
         except Exception as e:
             logger.warning(f"Could not send startup message to owner: {e}")
-
-    async def _seed_default_account(self, account_svc) -> None:
-        """
-        Auto-create the default MT5 account from env vars if the DB is empty.
-        Idempotent — skipped when an account already exists.
-        Required because Render ephemeral /tmp is wiped on every restart.
-        Env vars: MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, MT5_BROKER, MT5_ACCOUNT_TYPE
-        """
-        try:
-            existing = await account_svc.get_all_accounts()
-            if existing:
-                logger.info(f"Account DB has {len(existing)} account(s) — skipping auto-seed.")
-                return
-
-            login    = os.environ.get("MT5_LOGIN", "").strip()
-            password = os.environ.get("MT5_PASSWORD", "").strip()
-            server   = os.environ.get("MT5_SERVER", "").strip()
-            broker   = os.environ.get("MT5_BROKER", "AMarkets").strip()
-            acc_type = os.environ.get("MT5_ACCOUNT_TYPE", "demo").strip().lower()
-
-            if not (login and password and server):
-                logger.warning(
-                    "Auto-seed skipped: MT5_LOGIN / MT5_PASSWORD / MT5_SERVER not set."
-                )
-                return
-
-            from ..config.constants import AccountType
-            try:
-                at = AccountType(acc_type)
-            except ValueError:
-                at = AccountType.DEMO
-
-            account = await account_svc.add_account(
-                name=f"{broker} {at.value.capitalize()} #{login}",
-                account_type=at,
-                broker=broker,
-                server=server,
-                login=login,
-                password=password,
-                currency="USD",
-                leverage=300,
-                notes="Auto-seeded from environment variables on startup",
-            )
-            logger.info(
-                f"✅ Auto-seeded account id={account.id} "
-                f"login={login} server={server} type={at.value}"
-            )
-        except Exception as exc:
-            logger.error(f"Auto-seed failed (non-fatal): {exc}")
-
 
     async def run_polling(self) -> None:
         """Run the bot in polling mode (blocking until stopped)."""
