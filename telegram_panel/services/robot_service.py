@@ -54,6 +54,7 @@ class RobotService:
         self._config_path = config_path
         self._cmd_path = state_path.replace("state", "commands")
         self._interface_mode = interface_mode
+        self._http_port: int = 0  # not used when Redis IPC is active; prevents AttributeError
         self._cached_state: dict[str, Any] = dict(_DEFAULT_STATE)
         self._cache_ts: Optional[float] = None
         self._cache_ttl: float = 5.0    # seconds
