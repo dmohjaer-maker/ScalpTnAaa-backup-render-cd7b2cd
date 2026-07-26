@@ -84,13 +84,13 @@ def write_robot_state(
         pos_data = {
             "ticket":    open_position.get("ticket"),
             "symbol":    open_position.get("symbol"),
-            "direction": open_position.get("direction"),
-            "lot_size":  open_position.get("lot_size"),
-            "entry":     open_position.get("price_open"),
+            "direction": open_position.get("type"),
+            "lot_size":  open_position.get("volume"),
+            "entry":     open_position.get("open_price"),
             "sl":        open_position.get("sl"),
             "tp":        open_position.get("tp"),
             "profit":    open_position.get("profit"),
-            "open_time": open_position.get("time_str"),
+            "open_time": open_position.get("open_time"),
         }
 
     dec_data = None
