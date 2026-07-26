@@ -7,6 +7,9 @@ services:
     runtime: docker
     dockerfilePath: ./mtapi-bridge/Dockerfile
     plan: free
+    # BUG #1 FIX: "/" returns HTTP 301 redirect; Render health check requires
+    # HTTP 200. "/Ping" returns 200 directly from mt5rest.
+    healthCheckPath: /Ping
     envVars:
       - key: MT5_HOST
         value: "AMarkets-Demo"
