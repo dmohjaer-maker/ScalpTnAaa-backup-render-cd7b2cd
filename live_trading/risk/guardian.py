@@ -110,6 +110,9 @@ class RiskGuardian:
             f"daily_limit={self._daily_loss_limit_pct}%  "
             f"max_drawdown={self._max_drawdown_pct}%"
         )
+        # Persist the healthy baseline too, so a restart cannot reset the
+        # session risk window before the first circuit-breaker event.
+        self._save_state()
 
     def check(self, balance: float, equity: float) -> GuardianStatus:
         """
@@ -133,6 +136,8 @@ class RiskGuardian:
             self._equity_peak = equity
             if equity - prev > 0.01:  # avoid log spam on tiny ticks
                 log.debug(f"🛡️  Equity peak updated: {prev:.2f} → {equity:.2f}")
+            # Keep the high-water mark durable across restarts.
+            self._save_state()
 
         # ── Compute risk metrics ──────────────────────────────────────────────
         day_open   = self._day_open_balance
@@ -266,11 +271,12 @@ class RiskGuardian:
             self._save_state()
 
     def _save_state(self) -> None:
-        """Persist current Guardian state to disk using an atomic write.
+        """Persist current Guardian state to Redis and disk.
 
         Called on halt trigger, manual halt reset, and UTC day rollover.
-        Failures are logged as ERROR and are non-fatal — Guardian continues
-        operating in memory even if the disk write fails.
+        Redis is the durable cross-service copy on Render; the local file
+        remains a fallback for single-process and local deployments. Failures
+        are non-fatal — Guardian continues operating in memory.
         """
         state = {
             "halted":               self._halted,
@@ -282,6 +288,13 @@ class RiskGuardian:
             "last_day":             self._last_day.isoformat() if self._last_day else None,
             "written_at":           datetime.now(timezone.utc).isoformat(),
         }
+
+        try:
+            from live_trading.redis_ipc import redis_write_guardian_state
+            redis_write_guardian_state(state)
+        except Exception as exc:
+            log.warning(f"Guardian Redis state save skipped: {exc}")
+
         tmp = _GUARDIAN_STATE_FILE + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:

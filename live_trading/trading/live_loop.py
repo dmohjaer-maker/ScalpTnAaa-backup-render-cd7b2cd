@@ -107,15 +107,32 @@ class GoldScalperLive:
             return False  # non-False return signals failure to main.py for sys.exit(1)
 
         # ── Guardian state restore (VB-02) ───────────────────────────────────
-        # Attempt to load a persisted guardian_state.json from the previous
-        # session.  If Guardian was halted before the restart it must remain
-        # halted — trading must not resume automatically.
+        # Redis is the cross-service persistent copy on Render; the local file
+        # remains a fallback for local/single-process deployments. If Guardian
+        # was halted before restart it must remain halted, and healthy baselines
+        # must also be restored so a restart cannot reset the risk window.
         # State older than 26 hours is considered stale and is discarded.
         _guardian_restored = False
         try:
-            if os.path.exists(GUARDIAN_STATE_FILE):
+            _gs_data = None
+            try:
+                from live_trading.redis_ipc import (
+                    redis_read_guardian_state,
+                    redis_available,
+                )
+                if redis_available():
+                    _gs_data = redis_read_guardian_state()
+            except Exception as _redis_gs_exc:
+                log.warning(
+                    f"Could not read Guardian state from Redis — "
+                    f"falling back to disk: {_redis_gs_exc}"
+                )
+
+            if _gs_data is None and os.path.exists(GUARDIAN_STATE_FILE):
                 with open(GUARDIAN_STATE_FILE, "r", encoding="utf-8") as _gsf:
                     _gs_data = json.load(_gsf)
+
+            if _gs_data:
                 _written_at_str = _gs_data.get("written_at")
                 _state_fresh = False
                 if _written_at_str:
@@ -138,13 +155,19 @@ class GoldScalperLive:
                         log.warning(
                             f"Could not parse Guardian state timestamp — cold start: {_ts_exc}"
                         )
-                if _state_fresh and _gs_data.get("halted"):
+                if _state_fresh:
                     self.guardian.restore_state(_gs_data)
-                    self.paused = True
-                    log.critical(
-                        "🛡️  Guardian HALT restored from disk — trading PAUSED.  "
-                        "Use /reset_guardian in Telegram to resume."
-                    )
+                    if _gs_data.get("halted"):
+                        self.paused = True
+                        log.critical(
+                            "🛡️  Guardian HALT restored — trading PAUSED.  "
+                            "Use /reset_guardian in Telegram to resume."
+                        )
+                    else:
+                        log.info(
+                            "🛡️  Guardian baseline restored — "
+                            "risk window continues across restart."
+                        )
                     _guardian_restored = True
         except Exception as _gs_exc:
             log.warning(
