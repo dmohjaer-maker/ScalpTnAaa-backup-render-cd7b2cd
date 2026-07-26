@@ -56,6 +56,10 @@ class MessageFormatter:
                 RobotStatus.STARTING: "🔄",
                 RobotStatus.STOPPING: "🔄",
                 RobotStatus.RESTARTING: "🔄",
+                RobotStatus.WAITING: "🟢",
+                RobotStatus.SCANNING: "🟢",
+                RobotStatus.HOLDING: "🟢",
+                RobotStatus.DISCONNECTED: "🔴",
             }.get(rs, "⚪")
             status_label = rs.value.upper()
         except ValueError:
