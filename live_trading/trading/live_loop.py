@@ -270,8 +270,20 @@ class GoldScalperLive:
 
         # 2. Account info (live, required for Guardian)
         acc_info = await get_account_info()
-        balance  = float(acc_info.get("balance", 10_000))
-        equity   = float(acc_info.get("equity",  balance))
+        # Never continue with fabricated account values.  A failed account
+        # request must block trading rather than make the risk guard appear
+        # healthy and allow an order with stale/default data.
+        if not acc_info or "balance" not in acc_info or "equity" not in acc_info:
+            log.error("Account data unavailable — skipping this bar")
+            self._write_state(
+                "DISCONNECTED",
+                acc_info=acc_info,
+                extra={"error": "Live account data unavailable"},
+            )
+            return
+
+        balance  = float(acc_info["balance"])
+        equity   = float(acc_info["equity"])
 
         # 3. ── RISK GUARDIAN CHECK ────────────────────────────────────────────
         #    Must run BEFORE any position check or order placement.
@@ -299,13 +311,13 @@ class GoldScalperLive:
             return
 
         # 4. Check open positions (live MT5 — prevents duplicate entry on restart)
-        raw_positions = get_open_positions(SYMBOL)
+        raw_positions = await get_open_positions(SYMBOL)
         pos_dicts     = [mt5_pos_to_dict(p) for p in raw_positions]
         pos           = pos_dicts[0] if pos_dicts else None
 
         if pos:
             log.info(f"Open position: id={pos['id']}  "
-                     f"dir={pos['direction']}  profit={pos.get('profit', 0):.2f}")
+                     f"dir={pos['type']}  profit={pos.get('profit', 0):.2f}")
 
         # 5. Run decision engine (synchronous — all heavy math)
         decision = run_decision_engine(
@@ -445,7 +457,7 @@ class GoldScalperLive:
             clear_command("reset_guardian")
 
     async def _close_all_positions(self) -> None:
-        for p in get_open_positions(SYMBOL):
+        for p in await get_open_positions(SYMBOL):
             d = mt5_pos_to_dict(p)
             result = await close_position(d["id"])
             if result.success:
