@@ -82,20 +82,7 @@ class BotApplication:
 
         # ── Security ──────────────────────────────────────────────────────
         encryption = EncryptionService(self._settings.security.encryption_key)
-        if not encryption.is_secure:
-            logger.warning(
-                "⚠️  PANEL_ENCRYPTION_KEY not set or invalid — "
-                "credentials stored with base64 obfuscation only. "
-                "Set a proper key in production!"
-            )
 
-        # ── Services ──────────────────────────────────────────────────────
-        robot_svc = RobotService(
-            state_path=self._settings.robot.state_path,
-            config_path=self._settings.robot.config_path,
-            interface_mode=self._settings.robot.interface_mode,
-        )
-        mt5_svc = MT5Service()
         account_svc = AccountService(account_repo, encryption, mt5_svc)
         trade_svc = TradeService(mt5_svc)
         risk_svc = RiskService(settings_repo, robot_svc)

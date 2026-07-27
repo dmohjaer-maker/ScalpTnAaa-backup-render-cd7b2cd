@@ -4,7 +4,6 @@ Used to store broker credentials securely in SQLite.
 Never stores raw passwords anywhere.
 """
 
-import os
 import base64
 import logging
 from typing import Optional
@@ -31,16 +30,16 @@ class EncryptionService:
             key_bytes = key.encode() if isinstance(key, str) else key
             self._fernet = Fernet(key_bytes)
             logger.info("Encryption service initialized successfully")
-        except ImportError:
-            logger.warning(
-                "cryptography package not installed — credentials will be stored with "
-                "base64 obfuscation only. Install: pip install cryptography"
-            )
-            self._fernet = None
+        except ImportError as e:
+            raise RuntimeError(
+                "cryptography is required for credential encryption. "
+                "Install it before starting the Telegram panel."
+            ) from e
         except Exception as e:
-            logger.error(f"Failed to initialize encryption: {e}")
-            self._fernet = None
-
+            raise ValueError(
+                "PANEL_ENCRYPTION_KEY is not a valid Fernet key. "
+                "Generate one with: python -m telegram_panel.main --generate-key"
+            ) from e
     @staticmethod
     def generate_key() -> str:
         """Generate a new 32-byte Fernet key. Store in PANEL_ENCRYPTION_KEY env var."""
@@ -51,16 +50,17 @@ class EncryptionService:
         """Encrypt a string. Returns encrypted base64 string."""
         if not plaintext:
             return ""
-        if self._fernet:
-            try:
-                encrypted = self._fernet.encrypt(plaintext.encode("utf-8"))
-                return encrypted.decode("utf-8")
-            except Exception as e:
-                logger.error(f"Encryption failed: {e}")
-                # Fall through to obfuscation
-        # Fallback: base64 obfuscation (not secure, but prevents casual reading)
-        return "b64:" + base64.b64encode(plaintext.encode("utf-8")).decode("utf-8")
-
+        if not self._fernet:
+            raise RuntimeError(
+                "Credential encryption is unavailable. "
+                "Set a valid PANEL_ENCRYPTION_KEY before storing credentials."
+            )
+        try:
+            encrypted = self._fernet.encrypt(plaintext.encode("utf-8"))
+            return encrypted.decode("utf-8")
+        except Exception as e:
+            logger.error("Encryption failed; refusing to store insecure credential data")
+            raise RuntimeError("Credential encryption failed") from e
     def decrypt(self, ciphertext: str) -> Optional[str]:
         """Decrypt a string. Returns plaintext or None on failure."""
         if not ciphertext:
@@ -79,7 +79,7 @@ class EncryptionService:
             except Exception as e:
                 logger.error(f"Decryption failed: {e}")
                 return None
-        logger.warning("No decryption key available")
+        logger.error("No decryption key available; refusing to decrypt credential")
         return None
 
     @property

@@ -60,17 +60,13 @@ class TestEncryptionWithoutKey:
     def test_is_secure_false_without_key(self, service_no_key):
         assert service_no_key.is_secure is False
 
-    def test_fallback_produces_b64_prefix(self, service_no_key):
-        result = service_no_key.encrypt("test")
-        assert result.startswith("b64:")
+    def test_encrypt_refuses_without_key(self, service_no_key):
+        with pytest.raises(RuntimeError, match="encryption is unavailable"):
+            service_no_key.encrypt("test")
 
-    def test_fallback_is_reversible(self, service_no_key):
-        """Confirms that the base64 fallback is NOT secure — trivially reversible."""
-        original = "this-is-not-secure"
-        encoded = service_no_key.encrypt(original)
-        decoded = service_no_key.decrypt(encoded)
-        assert decoded == original
-
+    def test_legacy_base64_can_still_be_read_for_migration(self, service_no_key):
+        """Legacy records remain readable so operators can re-encrypt them."""
+        assert service_no_key.decrypt("b64:dGhpcy1pcy1sZWdhY3k=") == "this-is-legacy"
 
 class TestKeyGeneration:
     """generate_key() produces valid Fernet keys."""
