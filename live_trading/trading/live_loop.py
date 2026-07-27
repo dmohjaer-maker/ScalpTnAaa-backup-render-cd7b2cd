@@ -521,6 +521,29 @@ class GoldScalperLive:
             self.running = False
             clear_command("restart_engine")
 
+        # "restart_mt5" — sent by Telegram panel Restart MT5 button.
+        # Disconnects from the mt5rest bridge so the main loop reconnects
+        # immediately (reconnect_attempts reset so no exponential backoff delay).
+        if cmds.get("restart_mt5"):
+            log.info(
+                "🔌 RESTART_MT5 command received from Telegram — "
+                "disconnecting for immediate reconnect"
+            )
+            await disconnect()
+            self._reconnect_attempts = 0  # bypass exponential backoff
+            self._write_state(
+                "DISCONNECTED",
+                extra={"info": "MT5 reconnect requested via Telegram"},
+            )
+            clear_command("restart_mt5")
+
+        # "restart_telegram" — sent by Telegram panel Restart Telegram Bot button.
+        # The Telegram panel service handles its own restart; the robot only
+        # needs to acknowledge (clear) the command so it does not persist in Redis.
+        if cmds.get("restart_telegram"):
+            log.info("ℹ️  RESTART_TELEGRAM received — handled by panel service")
+            clear_command("restart_telegram")
+
     async def _close_all_positions(self) -> None:
         try:
             positions = await get_open_positions(SYMBOL)
