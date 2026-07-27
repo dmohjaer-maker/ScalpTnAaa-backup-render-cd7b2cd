@@ -127,24 +127,36 @@ async def connect(*args, **kwargs) -> bool:
 
 
 async def disconnect() -> None:
-    global _connected, _session, _conn_id
-    if _conn_id and _base_url:
-        try:
-            sess = _get_session()
-            async with sess.get(
-                f"{_base_url}/Disconnect",
-                params={"id": _conn_id},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as _:
-                pass
-        except Exception:
-            pass
-    _connected = False
-    _conn_id   = ""
-    if _session and not _session.closed:
-        await _session.close()
-    _session = None
+    """Close the bridge connection and always release the HTTP session."""
+    global _connected, _session, _conn_id, _base_url
 
+    conn_id = _conn_id
+    base_url = _base_url
+    session = _session
+    _connected = False
+    _conn_id = ""
+    _base_url = ""
+
+    if conn_id and base_url and session and not session.closed:
+        try:
+            async with session.get(
+                f"{base_url}/Disconnect",
+                params={"id": conn_id},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                if response.status >= 400:
+                    log.warning(
+                        f"MT5 disconnect request returned HTTP {response.status}"
+                    )
+        except Exception as exc:
+            log.warning(f"MT5 disconnect request failed: {exc}")
+
+    if session and not session.closed:
+        try:
+            await session.close()
+        except Exception as exc:
+            log.warning(f"MT5 HTTP session close failed: {exc}")
+    _session = None
 
 async def ensure_connected(*args, **kwargs) -> bool:
     """Check live connection status; reconnect if not connected.
