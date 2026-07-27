@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import traceback
+from datetime import datetime, timezone
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _root not in sys.path:
@@ -24,6 +25,7 @@ _BACKOFF_MAX  = 300
 _backoff      = _BACKOFF_BASE
 _robot_status = "STARTING"
 _UNHEALTHY_STATUSES = {"CONFIG_ERROR", "DISCONNECTED", "ERROR", "STOPPED"}
+_HEARTBEAT_MAX_AGE_SECONDS = 180
 
 
 def _health_response(status: str) -> web.Response:
@@ -39,6 +41,21 @@ def _health_response(status: str) -> web.Response:
     )
 
 
+def _heartbeat_is_fresh(value: object, now: datetime | None = None) -> bool:
+    """Return whether a state heartbeat is recent enough to prove liveness."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        heartbeat = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        age = (current - heartbeat).total_seconds()
+        return 0 <= age <= _HEARTBEAT_MAX_AGE_SECONDS
+    except (TypeError, ValueError):
+        return False
+
+
 async def _health(_req):
     # Prefer real robot status from Redis (written by the trading engine).
     # _robot_status only distinguishes STARTING / CONNECTING / CONFIG_ERROR /
@@ -49,6 +66,12 @@ async def _health(_req):
         if redis_available():
             state = redis_read_state()
             if state and "status" in state:
+                # A cached RUNNING/WAITING state is not proof that the loop is
+                # alive. Redis keeps it for five minutes, so a crashed or
+                # hung engine could otherwise make Render keep the dead
+                # service alive indefinitely.
+                if not _heartbeat_is_fresh(state.get("last_heartbeat")):
+                    return _health_response("DISCONNECTED")
                 return _health_response(str(state["status"]))
     except Exception:
         pass
