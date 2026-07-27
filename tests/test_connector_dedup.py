@@ -142,3 +142,25 @@ class TestDeduplicationLogic:
             "2024-01-15T10:05:00",
             "2024-01-15T10:10:00",
         ]
+
+
+class TestOpenPositionsResponse:
+    """Malformed OpenedOrders responses must never look like zero positions."""
+
+    def test_successful_list_is_accepted(self):
+        from live_trading.mt5.connector import _parse_open_positions_response
+
+        positions = [{"ticket": 123}]
+        assert _parse_open_positions_response(positions, 200) == positions
+
+    def test_error_object_is_rejected_even_with_http_200(self):
+        from live_trading.mt5.connector import _parse_open_positions_response
+
+        with pytest.raises(RuntimeError, match="broker unavailable"):
+            _parse_open_positions_response({"message": "broker unavailable"}, 200)
+
+    def test_non_success_status_is_rejected(self):
+        from live_trading.mt5.connector import _parse_open_positions_response
+
+        with pytest.raises(RuntimeError, match="HTTP 503"):
+            _parse_open_positions_response({"message": "temporary failure"}, 503)

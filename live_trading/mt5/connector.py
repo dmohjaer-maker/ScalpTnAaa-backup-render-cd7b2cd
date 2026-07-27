@@ -316,18 +316,34 @@ async def get_open_positions(symbol: str = "") -> List[dict]:
             timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
             data = await resp.json(content_type=None)
-            # mt5rest returns {message, code, stackTrace} on errors.
-            # Raise instead of silently returning [] to prevent duplicate-entry.
-            if isinstance(data, dict) and "code" in data and "stackTrace" in data:
-                msg = data.get("message", f"code={data.get('code','?')}")
-                log.error(f"OpenedOrders error response: {msg}")
-                raise RuntimeError(f"mt5rest OpenedOrders error: {msg}")
-            return data if isinstance(data, list) else []
+            return _parse_open_positions_response(data, resp.status)
     except RuntimeError:
         raise
     except Exception as exc:
         log.error(f"get_open_positions error: {exc}")
         raise RuntimeError(f"get_open_positions failed: {exc}") from exc
+
+
+def _parse_open_positions_response(data: object, status: int) -> List[dict]:
+    """Accept only a successful list response from OpenedOrders.
+
+    Any other payload is an unknown position state. Returning an empty list for
+    an error-shaped or malformed response could allow a duplicate entry.
+    """
+    if status < 200 or status >= 300:
+        message = (
+            data.get("message", f"HTTP {status}")
+            if isinstance(data, dict)
+            else f"HTTP {status}"
+        )
+        raise RuntimeError(f"mt5rest OpenedOrders error (HTTP {status}): {message}")
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        message = data.get("message", "unexpected object response")
+    else:
+        message = f"unexpected response type: {type(data).__name__}"
+    raise RuntimeError(f"mt5rest OpenedOrders error: {message}")
 
 
 async def get_last_completed_bar_time(
