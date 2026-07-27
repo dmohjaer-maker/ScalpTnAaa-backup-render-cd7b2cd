@@ -28,6 +28,18 @@ _UNHEALTHY_STATUSES = {"CONFIG_ERROR", "DISCONNECTED", "ERROR", "STOPPED"}
 _HEARTBEAT_MAX_AGE_SECONDS = 180
 
 
+def _parse_heartbeat(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        heartbeat = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if heartbeat.tzinfo is None:
+            heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+        return heartbeat
+    except (TypeError, ValueError):
+        return None
+
+
 def _health_response(status: str) -> web.Response:
     normalized = status.upper()
     unhealthy = (
@@ -43,36 +55,57 @@ def _health_response(status: str) -> web.Response:
 
 def _heartbeat_is_fresh(value: object, now: datetime | None = None) -> bool:
     """Return whether a state heartbeat is recent enough to prove liveness."""
-    if not isinstance(value, str) or not value:
+    heartbeat = _parse_heartbeat(value)
+    if heartbeat is None:
         return False
+    current = now or datetime.now(timezone.utc)
+    age = (current - heartbeat).total_seconds()
+    return 0 <= age <= _HEARTBEAT_MAX_AGE_SECONDS
+
+
+def _read_local_state() -> dict | None:
+    """Read the local state file when cross-service Redis is unavailable."""
     try:
-        heartbeat = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if heartbeat.tzinfo is None:
-            heartbeat = heartbeat.replace(tzinfo=timezone.utc)
-        current = now or datetime.now(timezone.utc)
-        age = (current - heartbeat).total_seconds()
-        return 0 <= age <= _HEARTBEAT_MAX_AGE_SECONDS
-    except (TypeError, ValueError):
-        return False
+        from live_trading.config import STATE_FILE
+        with open(STATE_FILE, "r", encoding="utf-8") as state_file:
+            state = json.load(state_file)
+        return state if isinstance(state, dict) else None
+    except (OSError, TypeError, ValueError):
+        return None
 
 
 async def _health(_req):
-    # Prefer real robot status from Redis (written by the trading engine).
-    # _robot_status only distinguishes STARTING / CONNECTING / CONFIG_ERROR /
-    # DISCONNECTED / RETRY_IN_Xs — once the engine is running it never
-    # updates this variable (engine.start() is an infinite loop).
+    # Prefer state written by the engine. Redis is the cross-service source on
+    # Render; the local file is the fallback for a Redis outage.
     try:
         from live_trading.redis_ipc import redis_read_state, redis_available
+        states = []
         if redis_available():
             state = redis_read_state()
-            if state and "status" in state:
-                # A cached RUNNING/WAITING state is not proof that the loop is
-                # alive. Redis keeps it for five minutes, so a crashed or
-                # hung engine could otherwise make Render keep the dead
-                # service alive indefinitely.
-                if not _heartbeat_is_fresh(state.get("last_heartbeat")):
-                    return _health_response("DISCONNECTED")
-                return _health_response(str(state["status"]))
+            if state:
+                states.append(state)
+
+        local_state = _read_local_state()
+        if local_state:
+            states.append(local_state)
+
+        fresh_states = [
+            state for state in states
+            if "status" in state and _heartbeat_is_fresh(state.get("last_heartbeat"))
+        ]
+        if fresh_states:
+            freshest = max(
+                fresh_states,
+                key=lambda state: _parse_heartbeat(state["last_heartbeat"])
+                or datetime.min.replace(tzinfo=timezone.utc),
+            )
+            return _health_response(str(freshest["status"]))
+
+        # A state exists but none is fresh: this is a real liveness failure
+        # even if the Redis client itself is unavailable. When no state exists
+        # yet, retain the startup status so the process can finish booting.
+        if states:
+            return _health_response("DISCONNECTED")
     except Exception:
         pass
     return _health_response(_robot_status)
