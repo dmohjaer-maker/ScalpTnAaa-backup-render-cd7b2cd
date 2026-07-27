@@ -171,15 +171,14 @@ _CONF_HARD_MIN = 70.0  # must match CONF_HARD_MIN in decision_engine.py
 
 
 def _assign_grade(confidence: float, min_conf: float) -> Literal["PRIME","HIGH","MARGINAL","REJECTED"]:
-    # PRIME  — above the regime-specific minimum confidence threshold.
-    # HIGH   — comfortably above the hard minimum but above 90.
-    # MARGINAL — above the absolute hard minimum (70) but below the regime threshold.
-    #            Trade may still be allowed by the marginal R:R check in decision_engine.
-    # REJECTED — below the hard minimum; trade will never be allowed.
-    if confidence >= min_conf:       return "PRIME"
-    if confidence >= 90:             return "HIGH"
-    if confidence >= 85:             return "MARGINAL"
-    if confidence >= _CONF_HARD_MIN: return "MARGINAL"   # above floor, below regime threshold
+    # PRIME    — ≥ 90 %: exceptional confidence, well above any regime threshold.
+    # HIGH     — ≥ regime min_conf but < 90: trade is allowed, solid setup.
+    # MARGINAL — ≥ hard floor (70) but < regime threshold: trade may still be
+    #            allowed by the marginal R:R check in decision_engine.
+    # REJECTED — below the hard floor; trade will never be allowed.
+    if confidence >= 90:             return "PRIME"
+    if confidence >= min_conf:       return "HIGH"
+    if confidence >= _CONF_HARD_MIN: return "MARGINAL"
     return "REJECTED"
 
 
