@@ -115,16 +115,23 @@ def calc_trade_parameters(inp: CapitalInput) -> CapitalOutput:
 
     lot, risk  = _calc_lot_size(sl_dist, inp.account_balance, risk_pct)
 
-    unreachable = _r2(entry + 99999 if direction == "BUY" else entry - 99999)
+    # Break-even trigger: price must move 1× SL distance in our favour before
+    # we can safely move the stop to entry.  Trailing stop activates at the
+    # same level.  These are informational fields — the live loop does not yet
+    # implement automatic BE/trailing moves; they're displayed on the panel.
+    be_dist    = sl_dist * 1.0
+    be_at      = _r2(entry + be_dist if direction == "BUY" else entry - be_dist)
+    trail_act  = be_at
+    trail_dist = _r2(sl_dist * 0.5)   # trail distance = half of original SL
 
     return CapitalOutput(
         entry_price=_r2(entry),
         stop_loss=sl,
         take_profit=tp,
         risk_reward_ratio=rr,
-        trailing_stop_distance=0.0,
-        trailing_activation_at=0.0,
-        break_even_at=unreachable,
+        trailing_stop_distance=trail_dist,
+        trailing_activation_at=trail_act,
+        break_even_at=be_at,
         break_even_sl=entry,
         lot_size=lot,
         risk_amount=risk,
