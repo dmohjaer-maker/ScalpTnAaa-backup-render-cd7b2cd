@@ -269,6 +269,7 @@ async def _run_robot_once():
     from live_trading.config import MTAPI_URL, MT5_USER, MT5_PASSWORD
     from live_trading.logger import get_logger
     from live_trading.trading.live_loop import GoldScalperLive
+    from live_trading.mt5.connector import disconnect as _mt5_disconnect
 
     log = get_logger()
     missing = [v for v, val in [
@@ -288,6 +289,13 @@ async def _run_robot_once():
     result = await engine.start()
     if result is False:
         _robot_status = "DISCONNECTED"
+        # Explicitly clean up connector state (close aiohttp session, clear
+        # _conn_id) so the next supervisor retry starts from a known-clean state
+        # rather than retrying ConnectionStatus with a stale connection ID.
+        try:
+            await _mt5_disconnect()
+        except Exception:
+            pass
         raise RuntimeError("engine.start() returned False — MT5 connection failed")
     _robot_status = "STOPPED"
 
