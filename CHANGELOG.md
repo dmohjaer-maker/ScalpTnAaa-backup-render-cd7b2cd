@@ -9,6 +9,162 @@ metric that affects trading behaviour. Strategy is frozen at v4 Stable.
 
 ---
 
+## [4.0.3] — 2026-07-27 — Render Multi-Service Hardening
+
+All fixes in this release address cross-service communication, operational
+observability, and correctness deficiencies discovered after the first live
+deployment on Render. No trading logic was changed.
+
+### Fixed — Live Trading Engine
+
+- **[H-07] SMC hardcoded 20-bar lookback** (`live_trading/signals/smc_engine.py`)
+  - Replaced hardcoded `20` with `cfg.swing_lookback` in `_detect_liquidity_sweeps()`
+  - Now respects the configured `SMC_SWING_LOOKBACK` env var (default 5)
+  - _Why unchanged:_ Restores the intended configurable behaviour; no signal logic changed
+
+- **[B-01] HIGH grade unreachable dead code** (`live_trading/signals/confidence_engine.py`)
+  - `_assign_grade()` had conditions ordered so HIGH was never returned
+  - Fixed order: PRIME (≥90) → HIGH (≥min_conf) → MARGINAL (≥hard_min) → REJECTED
+  - _Why unchanged:_ Restores the intended grade ladder; no threshold values changed
+
+- **[B-02] Wrong ATR value in MT5 snapshot** (`live_trading/trading/live_loop.py`)
+  - `write_mt5_snapshot()` was receiving `sl_atr_mult_adjust` (a multiplier) instead of
+    the computed ATR value
+  - Fixed to pass the correctly calculated `_snap_atr`
+  - _Why unchanged:_ Snapshot is informational only; no trading decision reads it
+
+- **[C-01] Balance fallback 10,000 in `_on_new_bar`** (`live_trading/trading/live_loop.py`)
+  - When balance was unavailable the function continued with a synthetic 10,000 balance,
+    causing over-sized lots in failure mode
+  - Fixed: returns early (`log.error + return`) when account data is unavailable
+  - _Why unchanged:_ Early-return on data failure prevents trades, not modifies them
+
+- **[FIX-12] Malformed open-positions response rejection** (`live_trading/mt5/connector.py`)
+  - `get_open_positions()` now raises `RuntimeError` for any non-list response
+    (HTTP error, dict error shape, unexpected type)
+  - Prevents silent empty-list return that could allow a duplicate entry on bridge errors
+  - _Why unchanged:_ Error handling only — successful list responses are unchanged
+
+- **[FIX-13] Stale heartbeat health-check failure** (`live_trading/server.py`)
+  - Health endpoint now returns HTTP 503 when last heartbeat is older than 180 s
+  - Render will restart the service instead of routing traffic to a frozen robot
+  - _Why unchanged:_ Health endpoint only — trading loop not affected
+
+- **[FIX-14] Redis unavailability fallback for `/status`** (`live_trading/server.py`)
+  - `/status` now falls back to the local state file when Redis is unreachable
+  - Previously returned HTTP 503 when Redis was unavailable even if the robot was healthy
+  - _Why unchanged:_ Status endpoint only — trading loop not affected
+
+- **[FIX-15] Cached `acc_info` prevents \$0 balance in WAITING writes** (`live_trading/trading/live_loop.py`)
+  - WAITING-state writes previously used `{}` for account info between bars
+  - Now caches the last known `acc_info` and passes it to `_write_state("WAITING")`
+  - _Why unchanged:_ State display only — no trading decision reads cached acc_info
+
+- **[FIX-16] MT5 disconnect session cleanup** (`live_trading/mt5/connector.py`)
+  - `disconnect()` now reliably closes the aiohttp `ClientSession` and resets all
+    module-level state (`_conn_id`, `_base_url`, `_session`)
+  - Prevents session leak on repeated reconnects
+  - _Why unchanged:_ Connection management only — no trading path affected
+
+- **[FIX-17] Candle deduplication moved earlier in pipeline** (`live_trading/mt5/connector.py`)
+  - Deduplication now happens before the open-bar strip in `fetch_candles()`
+  - Ensures signal engines never receive duplicate bars regardless of bridge behaviour
+  - _Why unchanged:_ Preserves same unique candle set; no new OHLCV data introduced
+
+- **[FIX-18] START, RESTART_ENGINE, RESTART_MT5, RESTART_TELEGRAM commands** (`live_trading/trading/live_loop.py`)
+  - Four new Telegram panel commands now handled in `_process_commands()`
+  - START: resumes paused robot (same as RESUME if not Guardian-halted)
+  - RESTART_ENGINE: sets `running=False` for supervisor-managed clean restart
+  - RESTART_MT5: disconnects bridge for immediate reconnect without backoff penalty
+  - RESTART_TELEGRAM: acknowledged and cleared (panel handles its own restart)
+  - _Why unchanged:_ Control-plane commands only — no signal or risk logic changed
+
+- **[FIX-19] Complete `_PANEL_COMMAND_MAP`** (`live_trading/utils/state_writer.py`, `live_trading/redis_ipc.py`)
+  - START, RESTART_ENGINE, RESTART_MT5, RESTART_TELEGRAM added to the map
+  - File-based IPC fallback path now handles the same command set as Redis path
+  - _Why unchanged:_ Command routing only — no trading logic affected
+
+- **[FIX-20] Unhealthy status propagated to Render health checks** (`live_trading/server.py`)
+  - Health endpoint returns HTTP 503 for `CONFIG_ERROR`, `DISCONNECTED`, `ERROR`, `STOPPED`
+  - Render will now trigger a restart rather than silently serving a broken instance
+  - _Why unchanged:_ Health endpoint only
+
+- **[M-05] Corrupted `commands.json` silent drop** (`live_trading/utils/state_writer.py`)
+  - File read/JSON parse errors now emit `log.warning(...)` before returning `{}`
+  - Operators can now see in logs when commands are being dropped due to file corruption
+  - _Why unchanged:_ Return value is still `{}`; command flow is not changed
+
+- **[FIX-21] `.env.example` rewritten for mt5rest** (`live_trading/.env.example`)
+  - Removed all MetaAPI references (`METAAPI_TOKEN`, `METAAPI_ACCOUNT_ID`)
+  - Documents the correct required variables: `MTAPI_URL`, `MT5_HOST`, `MT5_USER`,
+    `MT5_PASSWORD`
+  - _Why unchanged:_ Documentation file only
+
+- **[FIX-22] VERSION string updated to v4.0.3** (`live_trading/utils/state_writer.py`)
+  - `VERSION = "v4.0.0"` was stale after all fixes applied in this release
+  - Updated to `"v4.0.3"` so `/status` and Telegram panel report the correct version
+  - _Why unchanged:_ Informational constant only
+
+### Fixed — Telegram Panel
+
+- **[FIX-23] Guardian state IPC functions** (`telegram_panel/redis_ipc.py`)
+  - Added `redis_write_guardian_state()` and `redis_read_guardian_state()` to panel IPC
+  - Panel can now read Guardian halt status directly from Redis
+  - Also added `goldscalper:guardian` key to module docstring
+  - _Why unchanged:_ Panel read-only; does not affect Guardian logic in robot
+
+- **[FIX-24] UTC timestamp normalisation** (`telegram_panel/`)
+  - Replaced `datetime.utcnow()` with `datetime.now(timezone.utc)` throughout panel
+  - Persisted timestamps now always include UTC timezone info
+  - _Why unchanged:_ Panel-side only; no robot code affected
+
+- **[FIX-25] Robot and MT5 service injection order** (`telegram_panel/`)
+  - Services were accessed before being injected into the DI container at startup
+  - Fixed initialisation order to guarantee services are available before use
+  - _Why unchanged:_ Panel startup only
+
+- **[FIX-26] Log path directory guard** (`telegram_panel/`)
+  - Panel no longer crashes when `LOG_PATH` points to a file with no parent directory
+  - _Why unchanged:_ Panel startup only
+
+- **[FIX-27] Security: insecure encryption fallback refused** (`telegram_panel/security/`)
+  - Panel previously fell back to a weaker encryption path when Fernet key was malformed
+  - Now raises `ValueError` immediately, preventing silent data exposure
+  - _Why unchanged:_ Panel startup validation only
+
+- **[FIX-28] Cross-service HTTP fallback** (`telegram_panel/services/robot_service.py`)
+  - Wired `ROBOT_BASE_URL` env var for REST fallback when Redis is unavailable
+  - Added `/status` endpoint consumption so panel can display robot state without Redis
+  - _Why unchanged:_ Panel display only
+
+- **[FIX-29] Shutdown event-loop guard** (`telegram_panel/main.py`)
+  - Used `asyncio.get_running_loop()` instead of deprecated `asyncio.get_event_loop()`
+    during shutdown handler registration
+  - Eliminates `DeprecationWarning` on Python 3.12
+  - _Why unchanged:_ Panel lifecycle only
+
+### Fixed — Render Infrastructure
+
+- **[FIX-30] `healthCheckPath` for mtapi service** (`render.yaml`)
+  - Changed from `/` (returns HTTP 301 redirect) to `/Ping` (returns HTTP 200)
+  - Render was marking the mtapi bridge as unhealthy and restarting it on every deploy
+  - _Why unchanged:_ Deployment config only
+
+- **[FIX-31] Panel `ROBOT_BASE_URL` env var** (`render.yaml`)
+  - Added `ROBOT_BASE_URL` to panel service environment pointing to the robot service URL
+  - Enables HTTP fallback for panel → robot communication when Redis is unavailable
+  - _Why unchanged:_ Deployment config only
+
+### Not Fixed (require strategy modification or live test)
+
+| ID | Issue | Reason |
+|----|-------|--------|
+| C-02 | Double-entry on abrupt disconnect | Requires live test environment to verify |
+| C-03 | Backtest uses synthetic data | Requires real XAUUSD historical CSV |
+| M-06 | Guardian uses balance not equity | Intentional design; changing breaks Guardian |
+
+---
+
 ## [4.0.2] — 2026-07-19 — Production Blocker Resolution
 
 ### Fixed — Live Trading Engine
@@ -103,17 +259,6 @@ metric that affects trading behaviour. Strategy is frozen at v4 Stable.
   - `CHANGELOG.md` — this file
   - `audit_reports/DEPLOYMENT_GUIDE.md` — full deployment instructions
   - `audit_reports/OPERATIONS_GUIDE.md` — runbook for operators
-
-### Not Fixed (require strategy modification or live test)
-
-| ID | Issue | Reason |
-|----|-------|--------|
-| C-01 | Balance fallback 10,000 in `_on_new_bar` | Changes lot sizing in failure mode |
-| C-02 | Double-entry on abrupt disconnect | Requires live test environment to verify |
-| C-03 | Backtest uses synthetic data | Requires real XAUUSD historical CSV |
-| H-07 | SMC hardcoded 20-bar lookback vs config 5 | Changes SMC signals |
-| M-05 | Corrupted commands.json silently ignored | Changing return value affects command flow |
-| M-06 | Guardian uses balance not equity | Intentional design; changing breaks Guardian |
 
 ---
 
