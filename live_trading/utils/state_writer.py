@@ -267,7 +267,8 @@ def read_commands() -> dict:
             return {}
         with open(COMMANDS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except Exception:
+    except Exception as _cmd_err:
+        log.warning(f"commands file unreadable or corrupted — commands dropped: {_cmd_err}")
         return {}
 
     # ── Dict format — backward-compatible pass-through ────────────────────────
