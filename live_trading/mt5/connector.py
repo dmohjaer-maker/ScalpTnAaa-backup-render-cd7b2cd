@@ -31,6 +31,7 @@ import aiohttp
 from live_trading.config import (
     MTAPI_URL, MT5_HOST, MT5_PORT,
     MT5_USER, MT5_PASSWORD,
+    SYNC_TIMEOUT,
 )
 from live_trading.signals.gold_engine import OHLCV
 from live_trading.logger import get_logger
@@ -98,7 +99,7 @@ async def connect(*args, **kwargs) -> bool:
                 "server":   host,
                 "connectTimeoutSeconds": 60,
             },
-            timeout=aiohttp.ClientTimeout(total=90),
+            timeout=aiohttp.ClientTimeout(total=SYNC_TIMEOUT),
         ) as resp:
             raw = await resp.text()
             log.debug(f"ConnectEx response ({resp.status}): {raw[:200]}")
