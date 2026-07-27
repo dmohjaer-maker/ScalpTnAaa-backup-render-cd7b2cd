@@ -31,8 +31,10 @@ REDIS_URL = os.getenv("REDIS_URL", "")
 _STATE_KEY    = "goldscalper:state"
 _SNAPSHOT_KEY = "goldscalper:snapshot"
 _COMMANDS_KEY = "goldscalper:commands"
-_STATE_TTL    = 300   # 5 min — prevents stale reads if robot crashes
-_CMD_TTL      = 300   # 5 min — stale commands become irrelevant
+_GUARDIAN_KEY = "goldscalper:guardian"
+_STATE_TTL    = 300    # 5 min — prevents stale reads if robot crashes
+_CMD_TTL      = 300    # 5 min — stale commands become irrelevant
+_GUARDIAN_TTL = 97200  # 27h — covers the 26h freshness window after a restart
 
 _client              = None
 _last_failure_time: float = 0.0   # monotonic timestamp of last connection failure
@@ -240,6 +242,44 @@ def redis_send_command(command: str, payload: Optional[dict] = None) -> bool:
         return True
     except Exception as exc:
         logger.warning("Redis send_command: %s", exc)
+        _reset_client()
+        return False
+
+
+# ─── Guardian state (panel reads halt state set by robot) ─────────────────────
+
+def redis_read_guardian_state() -> Optional[dict]:
+    """
+    Read the RiskGuardian circuit-breaker state written by the robot.
+    Returns None if Redis is unavailable or no state has been written yet.
+    The panel uses this to display Guardian halt status without needing
+    the robot's local filesystem.
+    """
+    r = _get_client()
+    if r is None:
+        return None
+    try:
+        raw = r.get(_GUARDIAN_KEY)
+        return json.loads(raw) if raw else None
+    except Exception as exc:
+        logger.warning("Redis read_guardian_state: %s", exc)
+        _reset_client()
+        return None
+
+
+def redis_write_guardian_state(data: dict) -> bool:
+    """
+    Write Guardian state to Redis (called by panel when it resets the Guardian).
+    The robot is the authoritative writer; the panel only writes on reset.
+    """
+    r = _get_client()
+    if r is None:
+        return False
+    try:
+        r.set(_GUARDIAN_KEY, json.dumps(data, default=str), ex=_GUARDIAN_TTL)
+        return True
+    except Exception as exc:
+        logger.warning("Redis write_guardian_state: %s", exc)
         _reset_client()
         return False
 
