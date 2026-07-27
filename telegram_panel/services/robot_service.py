@@ -308,7 +308,10 @@ class RobotService:
         Only attempted when base_url is configured (i.e. ROBOT_BASE_URL is set
         in the panel's environment — which it is in the Render deploy).
         """
-        if not self._base_url:
+        command_token = os.environ.get("ROBOT_COMMAND_TOKEN", "")
+        if not self._base_url or not command_token:
+            if self._base_url and not command_token:
+                logger.error("HTTP command fallback is not configured: missing ROBOT_COMMAND_TOKEN")
             return False
         url = f"{self._base_url}/command"
         try:
@@ -318,6 +321,7 @@ class RobotService:
                 async with session.post(
                     url,
                     json=body,
+                    headers={"X-Robot-Command-Token": command_token},
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status == 200:

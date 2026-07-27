@@ -6,6 +6,7 @@ restarts with exponential backoff on any failure.
 Ping /health every 14 min (UptimeRobot free) to keep the free-tier warm.
 """
 import asyncio
+import hmac
 import json
 import os
 import sys
@@ -61,6 +62,20 @@ def _heartbeat_is_fresh(value: object, now: datetime | None = None) -> bool:
     current = now or datetime.now(timezone.utc)
     age = (current - heartbeat).total_seconds()
     return 0 <= age <= _HEARTBEAT_MAX_AGE_SECONDS
+
+
+def _command_authorized(req: web.Request) -> tuple[bool, int, str]:
+    """Validate the shared secret used by the panel's HTTP command fallback."""
+    configured_token = os.environ.get("ROBOT_COMMAND_TOKEN", "")
+    if not configured_token:
+        return False, 503, "command interface is not configured"
+
+    supplied_token = req.headers.get("X-Robot-Command-Token", "")
+    if not supplied_token:
+        return False, 401, "missing command authorization"
+    if not hmac.compare_digest(supplied_token, configured_token):
+        return False, 403, "invalid command authorization"
+    return True, 200, ""
 
 
 def _read_local_state() -> dict | None:
@@ -158,6 +173,10 @@ async def _command(req: web.Request) -> web.Response:
     and this handler appends it to COMMANDS_FILE on the robot's local
     filesystem, where the live loop reads it on the next iteration.
     """
+    authorized, status, message = _command_authorized(req)
+    if not authorized:
+        return web.Response(status=status, text=message)
+
     try:
         data = await req.json()
     except Exception:

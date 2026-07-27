@@ -82,6 +82,9 @@ services:
         value: "/tmp/guardian_state.json"
       - key: LOG_FILE
         value: "/tmp/robot.log"
+      # Shared secret for the panel's HTTP command fallback.
+      - key: ROBOT_COMMAND_TOKEN
+        sync: false
       # ── Redis IPC — auto-wired from the goldscalper-redis service ────────────
       - key: REDIS_URL
         fromService:
@@ -119,6 +122,8 @@ services:
         value: "http"
       - key: ROBOT_BASE_URL
         value: "https://goldscalper-v4-robot.onrender.com"
+      - key: ROBOT_COMMAND_TOKEN
+        sync: false
       - key: ROBOT_STATE_PATH
         value: "/tmp/robot_state.json"
       # ── Redis IPC — auto-wired from the goldscalper-redis service ────────────
