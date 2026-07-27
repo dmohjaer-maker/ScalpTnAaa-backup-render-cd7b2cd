@@ -112,7 +112,14 @@ async def _health(_req):
 
 
 async def _status(_req):
-    """JSON status endpoint — consumed by the Telegram panel's HTTP fallback."""
+    """JSON status endpoint — consumed by the Telegram panel's HTTP fallback.
+
+    Priority:
+      1. Redis (cross-service, always fresh when available)
+      2. Local state file (same-process fallback when Redis is down)
+      3. In-memory _robot_status (last resort: only status string, no trade data)
+    """
+    # 1. Try Redis first (cross-service IPC on Render)
     try:
         from live_trading.redis_ipc import redis_read_state, redis_available
         if redis_available():
@@ -120,11 +127,22 @@ async def _status(_req):
             if state:
                 return web.Response(
                     status=200,
-                    text=json.dumps(state),
+                    text=json.dumps(state, default=str),
                     content_type="application/json",
                 )
     except Exception:
         pass
+
+    # 2. Fall back to local state file (same container; written by the engine)
+    local_state = _read_local_state()
+    if local_state:
+        return web.Response(
+            status=200,
+            text=json.dumps(local_state, default=str),
+            content_type="application/json",
+        )
+
+    # 3. Last resort: return in-memory supervisor status
     return web.Response(
         status=200,
         text=json.dumps({"status": _robot_status.lower()}),
