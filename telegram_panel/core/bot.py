@@ -83,6 +83,20 @@ class BotApplication:
         # ── Security ──────────────────────────────────────────────────────
         encryption = EncryptionService(self._settings.security.encryption_key)
 
+        # ── Robot / MT5 interfaces ────────────────────────────────────────
+        # These services are the composition root's shared dependencies for
+        # handlers and business services.  Construct them before injection so
+        # the panel can start even when the robot is temporarily disconnected.
+        robot_svc = RobotService(
+            state_path=self._settings.robot.state_path,
+            config_path=self._settings.robot.config_path,
+            interface_mode=self._settings.robot.interface_mode,
+        )
+        snapshot_path = self._settings.robot.state_path.replace(
+            "state", "mt5_snapshot"
+        )
+        mt5_svc = MT5Service(snapshot_path=snapshot_path)
+
         account_svc = AccountService(account_repo, encryption, mt5_svc)
         trade_svc = TradeService(mt5_svc)
         risk_svc = RiskService(settings_repo, robot_svc)
