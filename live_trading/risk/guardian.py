@@ -297,6 +297,10 @@ class RiskGuardian:
 
         tmp = _GUARDIAN_STATE_FILE + ".tmp"
         try:
+            # Ensure parent directory exists (e.g. /data/ on a Render persistent disk).
+            dir_path = os.path.dirname(_GUARDIAN_STATE_FILE)
+            if dir_path:
+                os.makedirs(dir_path, exist_ok=True)
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2)
             os.replace(tmp, _GUARDIAN_STATE_FILE)

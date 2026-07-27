@@ -77,6 +77,12 @@ def _get_uptime_seconds() -> int:
 def _safe_write(path: str, data: dict) -> None:
     tmp = path + ".tmp"
     try:
+        # Ensure parent directory exists — required when STATE_FILE / SNAPSHOT_FILE
+        # is configured to a non-/tmp path such as /data/robot_state.json on a
+        # Render persistent disk that may not have been pre-created.
+        dir_path = os.path.dirname(path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, default=str)
         os.replace(tmp, path)
