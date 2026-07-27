@@ -150,11 +150,75 @@ async def _status(_req):
     )
 
 
+async def _command(req: web.Request) -> web.Response:
+    """POST /command — receive a control command from the Telegram panel.
+
+    Used as an HTTP fallback when Redis is unavailable.  The panel sends
+    { "command": "PAUSE"|"RESUME"|"EMERGENCY_STOP"|…, "payload": {} }
+    and this handler appends it to COMMANDS_FILE on the robot's local
+    filesystem, where the live loop reads it on the next iteration.
+    """
+    try:
+        data = await req.json()
+    except Exception:
+        return web.Response(status=400, text="invalid JSON")
+
+    command = str(data.get("command", "")).strip().upper()
+    if not command:
+        return web.Response(status=400, text="missing 'command' field")
+
+    _ALLOWED_COMMANDS = {
+        "PAUSE", "RESUME", "EMERGENCY_STOP", "SAFE_SHUTDOWN",
+        "CLOSE_ALL", "RESET_GUARDIAN", "START",
+        "RESTART_ENGINE", "RESTART_MT5", "RESTART_TELEGRAM",
+        "UPDATE_RISK", "UPDATE_STRATEGY",
+    }
+    if command not in _ALLOWED_COMMANDS:
+        return web.Response(status=400, text=f"unknown command: {command}")
+
+    try:
+        from live_trading.config import COMMANDS_FILE
+        import threading
+
+        cmd_entry = {
+            "command":   command,
+            "payload":   data.get("payload") or {},
+            "issued_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Thread-safe file append
+        _lock = threading.Lock()
+        with _lock:
+            existing: list = []
+            if os.path.exists(COMMANDS_FILE):
+                try:
+                    with open(COMMANDS_FILE, "r", encoding="utf-8") as _f:
+                        existing = json.load(_f)
+                    if not isinstance(existing, list):
+                        existing = []
+                except Exception:
+                    existing = []
+            existing.append(cmd_entry)
+            tmp = COMMANDS_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as _f:
+                json.dump(existing, _f)
+            os.replace(tmp, COMMANDS_FILE)
+
+        return web.Response(
+            status=200,
+            text=json.dumps({"ok": True, "command": command}),
+            content_type="application/json",
+        )
+    except Exception as exc:
+        return web.Response(status=500, text=f"server error: {exc}")
+
+
 async def _run_health_server():
     app = web.Application()
     app.router.add_get("/", _health)
     app.router.add_get("/health", _health)
     app.router.add_get("/status", _status)
+    app.router.add_post("/command", _command)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)

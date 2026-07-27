@@ -247,12 +247,21 @@ class RobotService:
     ) -> bool:
         """
         Write a command to the robot.
-        Tries Redis first (cross-service on Render), falls back to file IPC.
+
+        Delivery order:
+          1. Redis     — works across separate Render services (primary)
+          2. HTTP POST — robot's /command endpoint (Redis-down fallback)
+          3. File IPC  — local/single-machine deployments only
         """
-        # Try Redis first — required when robot and panel are separate Render services
+        # 1. Redis — primary cross-service channel
         if await self._send_command_redis(command, payload):
             return True
-        # Fall back to file IPC (single-machine / local deployments)
+        # 2. HTTP POST to robot's /command endpoint — works on Render even
+        #    without Redis because the robot exposes the endpoint on its own
+        #    web service URL.
+        if await self._send_command_http(command, payload):
+            return True
+        # 3. File IPC — single-machine / local deployments
         cmd_entry = {
             "command": command,
             "payload": payload or {},
@@ -262,7 +271,6 @@ class RobotService:
             loop = asyncio.get_running_loop()
             def _write():
                 os.makedirs(os.path.dirname(self._cmd_path) or ".", exist_ok=True)
-                # Read existing commands (queue-style)
                 existing = []
                 if os.path.exists(self._cmd_path):
                     try:
@@ -274,9 +282,8 @@ class RobotService:
                 with open(self._cmd_path, "w") as f:
                     json.dump(existing, f, indent=2)
             await loop.run_in_executor(None, _write)
-            # Invalidate cache
             self._cache_ts = None
-            logger.info(f"Sent command: {command}")
+            logger.info(f"Sent command via file IPC: {command}")
             return True
         except Exception as e:
             logger.error(f"Failed to send command {command}: {e}")
@@ -293,4 +300,34 @@ class RobotService:
             return ok
         except Exception as exc:
             logger.warning(f"Redis send_command failed: {exc}")
+            return False
+
+    async def _send_command_http(self, command: str, payload: Optional[dict] = None) -> bool:
+        """POST to the robot's /command HTTP endpoint (Redis-down fallback).
+
+        Only attempted when base_url is configured (i.e. ROBOT_BASE_URL is set
+        in the panel's environment — which it is in the Render deploy).
+        """
+        if not self._base_url:
+            return False
+        url = f"{self._base_url}/command"
+        try:
+            import aiohttp
+            body = {"command": command, "payload": payload or {}}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json=body,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        self._cache_ts = None
+                        logger.info(f"Sent command via HTTP: {command}")
+                        return True
+                    logger.warning(
+                        f"HTTP command POST returned {resp.status} for {command}"
+                    )
+                    return False
+        except Exception as exc:
+            logger.warning(f"HTTP send_command failed: {exc}")
             return False
