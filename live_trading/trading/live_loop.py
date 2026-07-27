@@ -493,6 +493,34 @@ class GoldScalperLive:
                 self._write_state("RUNNING")
             clear_command("reset_guardian")
 
+        # "start" — sent by Telegram panel Start button.
+        # If paused, treat as resume. If already running, log and ignore.
+        if cmds.get("start") and not pause_applied:
+            if self.paused:
+                if self.guardian.is_halted:
+                    log.warning(
+                        "⚠️  Cannot start: RiskGuardian is still halted.  "
+                        "Send /reset_guardian first."
+                    )
+                else:
+                    self.paused = False
+                    log.info("▶  Robot STARTED (resumed) by Telegram command")
+                    self._write_state("RUNNING")
+            else:
+                log.info("ℹ️  START command received — robot is already running")
+            clear_command("start")
+
+        # "restart_engine" — sent by Telegram panel Restart Engine button.
+        # Sets running=False so the engine loop exits cleanly; the supervisor
+        # in server.py applies exponential-backoff and restarts it.
+        if cmds.get("restart_engine"):
+            log.info(
+                "🔄 RESTART_ENGINE command received from Telegram — "
+                "stopping engine for supervisor restart"
+            )
+            self.running = False
+            clear_command("restart_engine")
+
     async def _close_all_positions(self) -> None:
         try:
             positions = await get_open_positions(SYMBOL)
