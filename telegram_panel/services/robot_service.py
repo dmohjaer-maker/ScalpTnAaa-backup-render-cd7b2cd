@@ -234,7 +234,15 @@ class RobotService:
                 logger.debug("HTTP state read skipped: no base_url or http_port configured")
                 return dict(_DEFAULT_STATE)
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                async with session.get(
+                    url,
+                    headers={
+                        "X-Robot-Command-Token": os.environ.get(
+                            "ROBOT_COMMAND_TOKEN", ""
+                        )
+                    },
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         return {**_DEFAULT_STATE, **data}

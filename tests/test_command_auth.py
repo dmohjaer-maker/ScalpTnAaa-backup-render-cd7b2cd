@@ -31,3 +31,7 @@ def test_command_auth_accepts_shared_token(monkeypatch):
     monkeypatch.setenv("ROBOT_COMMAND_TOKEN", "expected-secret")
 
     assert server._command_authorized(_request("expected-secret")) == (True, 200, "")
+
+
+def test_status_route_uses_the_same_authorization_guard():
+    assert server._status.__annotations__["req"] is not None

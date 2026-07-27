@@ -126,7 +126,7 @@ async def _health(_req):
     return _health_response(_robot_status)
 
 
-async def _status(_req):
+async def _status(req: web.Request):
     """JSON status endpoint — consumed by the Telegram panel's HTTP fallback.
 
     Priority:
@@ -134,6 +134,10 @@ async def _status(_req):
       2. Local state file (same-process fallback when Redis is down)
       3. In-memory _robot_status (last resort: only status string, no trade data)
     """
+    authorized, status, message = _command_authorized(req)
+    if not authorized:
+        return web.Response(status=status, text=message)
+
     # 1. Try Redis first (cross-service IPC on Render)
     try:
         from live_trading.redis_ipc import redis_read_state, redis_available
