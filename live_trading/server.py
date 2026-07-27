@@ -6,6 +6,7 @@ restarts with exponential backoff on any failure.
 Ping /health every 14 min (UptimeRobot free) to keep the free-tier warm.
 """
 import asyncio
+import json
 import os
 import sys
 import traceback
@@ -54,10 +55,32 @@ async def _health(_req):
     return _health_response(_robot_status)
 
 
+async def _status(_req):
+    """JSON status endpoint — consumed by the Telegram panel's HTTP fallback."""
+    try:
+        from live_trading.redis_ipc import redis_read_state, redis_available
+        if redis_available():
+            state = redis_read_state()
+            if state:
+                return web.Response(
+                    status=200,
+                    text=json.dumps(state),
+                    content_type="application/json",
+                )
+    except Exception:
+        pass
+    return web.Response(
+        status=200,
+        text=json.dumps({"status": _robot_status.lower()}),
+        content_type="application/json",
+    )
+
+
 async def _run_health_server():
     app = web.Application()
     app.router.add_get("/", _health)
     app.router.add_get("/health", _health)
+    app.router.add_get("/status", _status)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)

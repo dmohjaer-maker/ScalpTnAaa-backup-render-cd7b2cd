@@ -91,6 +91,7 @@ class BotApplication:
             state_path=self._settings.robot.state_path,
             config_path=self._settings.robot.config_path,
             interface_mode=self._settings.robot.interface_mode,
+            base_url=self._settings.robot.base_url,
         )
         snapshot_path = self._settings.robot.state_path.replace(
             "state", "mt5_snapshot"

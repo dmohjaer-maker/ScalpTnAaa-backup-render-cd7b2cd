@@ -49,12 +49,17 @@ class RobotService:
         state_path: str = "robot_state.json",
         config_path: str = "robot_config.json",
         interface_mode: str = "file",
+        base_url: str = "",
     ) -> None:
         self._state_path = state_path
         self._config_path = config_path
         self._cmd_path = state_path.replace("state", "commands")
         self._interface_mode = interface_mode
-        self._http_port: int = 0  # not used when Redis IPC is active; prevents AttributeError
+        # base_url: full URL of the robot service (e.g. https://goldscalper-v4-robot.onrender.com).
+        # Used by _read_state_http for cross-service communication on Render.
+        # When empty, falls back to localhost:{_http_port} for single-machine deployments.
+        self._base_url: str = base_url.rstrip("/") if base_url else ""
+        self._http_port: int = 0  # fallback for single-machine; unused when base_url is set
         self._cached_state: dict[str, Any] = dict(_DEFAULT_STATE)
         self._cache_ts: Optional[float] = None
         self._cache_ttl: float = 5.0    # seconds
@@ -219,9 +224,17 @@ class RobotService:
     async def _read_state_http(self) -> dict[str, Any]:
         try:
             import aiohttp
-            url = f"http://127.0.0.1:{self._http_port}/status"
+            if self._base_url:
+                # Cross-service mode (e.g. separate Render services): use configured base URL.
+                url = f"{self._base_url}/status"
+            elif self._http_port:
+                # Single-machine mode: localhost with explicit port.
+                url = f"http://127.0.0.1:{self._http_port}/status"
+            else:
+                logger.debug("HTTP state read skipped: no base_url or http_port configured")
+                return dict(_DEFAULT_STATE)
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         return {**_DEFAULT_STATE, **data}

@@ -47,6 +47,9 @@ class RobotSettings:
     interface_mode: str = "file"
     interface_host: str = "127.0.0.1"
     interface_port: int = 9876
+    # For cross-service HTTP reads (e.g. on Render): full base URL of the robot service.
+    # When set, ROBOT_INTERFACE_MODE=http will call {base_url}/status instead of localhost.
+    base_url: str = ""
     heartbeat_interval_seconds: int = 30
 
 
@@ -124,6 +127,7 @@ class Settings:
         s.robot.log_path = os.environ.get("ROBOT_LOG_PATH", "logs/robot.log")
         s.robot.interface_mode = os.environ.get("ROBOT_INTERFACE_MODE", "file")
         s.robot.interface_host = os.environ.get("ROBOT_INTERFACE_HOST", "127.0.0.1")
+        s.robot.base_url = os.environ.get("ROBOT_BASE_URL", "")
         try:
             s.robot.interface_port = int(os.environ.get("ROBOT_INTERFACE_PORT", "9876"))
         except ValueError:
