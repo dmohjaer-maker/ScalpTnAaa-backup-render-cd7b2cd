@@ -349,7 +349,7 @@ def _detect_liquidity_sweeps(
         c = candles[i]
 
         # Bullish sweep: wick below swing low, close above level
-        for sl_idx in reversed([idx for idx in swing_low_idx if i - 20 <= idx < i]):
+        for sl_idx in reversed([idx for idx in swing_low_idx if i - cfg.swing_lookback <= idx < i]):
             level = candles[sl_idx].low
             if (level - c.low  >= cfg.liquidity_sweep_min and
                     c.close - level >= cfg.min_sweep_close_margin and
@@ -361,7 +361,7 @@ def _detect_liquidity_sweeps(
                 break
 
         # Bearish sweep: wick above swing high, close below level
-        for sh_idx in reversed([idx for idx in swing_high_idx if i - 20 <= idx < i]):
+        for sh_idx in reversed([idx for idx in swing_high_idx if i - cfg.swing_lookback <= idx < i]):
             level = candles[sh_idx].high
             if (c.high - level  >= cfg.liquidity_sweep_min and
                     level - c.close >= cfg.min_sweep_close_margin and
