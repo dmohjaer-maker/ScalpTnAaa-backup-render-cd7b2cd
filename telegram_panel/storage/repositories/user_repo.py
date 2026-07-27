@@ -3,11 +3,11 @@ User Repository — all DB operations for Telegram users.
 """
 
 import logging
-from datetime import datetime
 from typing import Optional
 from ..database import Database
 from ...models.user import User
 from ...config.constants import BotRole
+from ...utils.time import parse_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +49,8 @@ class UserRepository:
                        last_seen_at=?, updated_at=? WHERE telegram_id=?""",
                     (
                         user.username, user.first_name, user.last_name,
-                        datetime.utcnow().isoformat(),
-                        datetime.utcnow().isoformat(),
+                        utc_now().isoformat(),
+                        utc_now().isoformat(),
                         user.telegram_id,
                     ),
                 )
@@ -66,7 +66,7 @@ class UserRepository:
                         user.telegram_id, user.username, user.first_name,
                         user.last_name, user.role.value,
                         1 if user.is_active else 0,
-                        datetime.utcnow().isoformat(),
+                        utc_now().isoformat(),
                     ),
                 )
                 await db.commit()
@@ -76,7 +76,7 @@ class UserRepository:
         async with self._db.connection() as db:
             await db.execute(
                 "UPDATE users SET role=?, updated_at=? WHERE telegram_id=?",
-                (role.value, datetime.utcnow().isoformat(), telegram_id),
+                (role.value, utc_now().isoformat(), telegram_id),
             )
             await db.commit()
         return True
@@ -90,7 +90,7 @@ class UserRepository:
                    updated_at = ?
                    WHERE telegram_id = ?
                    RETURNING failed_auth_attempts""",
-                (datetime.utcnow().isoformat(), datetime.utcnow().isoformat(), telegram_id),
+                (utc_now().isoformat(), utc_now().isoformat(), telegram_id),
             )
             row = await cursor.fetchone()
             await db.commit()
@@ -109,7 +109,7 @@ class UserRepository:
         async with self._db.connection() as db:
             await db.execute(
                 "UPDATE users SET last_seen_at=? WHERE telegram_id=?",
-                (datetime.utcnow().isoformat(), telegram_id),
+                (utc_now().isoformat(), telegram_id),
             )
             await db.commit()
 
@@ -117,7 +117,7 @@ class UserRepository:
         async with self._db.connection() as db:
             await db.execute(
                 "UPDATE users SET is_active=0, role='blocked', updated_at=? WHERE telegram_id=?",
-                (datetime.utcnow().isoformat(), telegram_id),
+                (utc_now().isoformat(), telegram_id),
             )
             await db.commit()
         return True
@@ -131,11 +131,9 @@ class UserRepository:
             role=BotRole(row["role"]),
             is_active=bool(row["is_active"]),
             failed_auth_attempts=row["failed_auth_attempts"],
-            last_failed_auth_at=datetime.fromisoformat(row["last_failed_auth_at"])
-                if row["last_failed_auth_at"] else None,
-            last_seen_at=datetime.fromisoformat(row["last_seen_at"])
-                if row["last_seen_at"] else None,
+            last_failed_auth_at=parse_utc(row["last_failed_auth_at"]),
+            last_seen_at=parse_utc(row["last_seen_at"]),
             notes=row["notes"],
-            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.utcnow(),
-            updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.utcnow(),
+            created_at=parse_utc(row["created_at"]) or utc_now(),
+            updated_at=parse_utc(row["updated_at"]) or utc_now(),
         )

@@ -3,7 +3,7 @@ Report models — daily, weekly, monthly trading performance.
 """
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Optional
 
 
@@ -29,7 +29,7 @@ class TradeRecord:
     rr_ratio: Optional[float]
     duration_minutes: int
     close_reason: Optional[str] = None   # "TP", "SL", "Manual", "Trailing", "BE"
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def net_profit(self) -> float:
@@ -69,8 +69,8 @@ class DailyReport:
     ending_balance: float = 0.0
     profit_factor: float = 0.0
     sharpe_ratio: float = 0.0
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def loss_rate(self) -> float:

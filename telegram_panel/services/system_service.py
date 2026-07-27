@@ -7,8 +7,8 @@ import asyncio
 import logging
 import socket
 import time
-from datetime import datetime
 from typing import Optional
+from ..utils.time import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -151,5 +151,5 @@ class SystemService:
             "internet": internet,
             "latency_ms": latency,
             "version": version,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now().isoformat(),
         }

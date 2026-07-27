@@ -5,11 +5,11 @@ Repository pattern: no SQL outside this file.
 
 import json
 import logging
-from datetime import datetime
 from typing import Optional
 from ..database import Database
 from ...models.account import Account
 from ...config.constants import AccountType, ConnectionStatus
+from ...utils.time import parse_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ class AccountRepository:
         return account
 
     async def update(self, account: Account) -> bool:
-        account.updated_at = datetime.utcnow()
+        account.updated_at = utc_now()
         async with self._db.connection() as db:
             await db.execute(
                 """UPDATE accounts SET
@@ -101,7 +101,7 @@ class AccountRepository:
         async with self._db.connection() as db:
             await db.execute(
                 "UPDATE accounts SET password_encrypted=?, updated_at=? WHERE id=?",
-                (encrypted_password, datetime.utcnow().isoformat(), account_id),
+                (encrypted_password, utc_now().isoformat(), account_id),
             )
             await db.commit()
         return True
@@ -117,7 +117,7 @@ class AccountRepository:
         async with self._db.connection() as db:
             await db.execute(
                 "UPDATE accounts SET is_enabled=?, updated_at=? WHERE id=?",
-                (1 if enabled else 0, datetime.utcnow().isoformat(), account_id),
+                (1 if enabled else 0, utc_now().isoformat(), account_id),
             )
             await db.commit()
         return True
@@ -127,11 +127,11 @@ class AccountRepository:
         async with self._db.connection() as db:
             await db.execute(
                 "UPDATE accounts SET is_active=0, updated_at=?",
-                (datetime.utcnow().isoformat(),),
+                (utc_now().isoformat(),),
             )
             await db.execute(
                 "UPDATE accounts SET is_active=1, updated_at=? WHERE id=?",
-                (datetime.utcnow().isoformat(), account_id),
+                (utc_now().isoformat(), account_id),
             )
             await db.commit()
         return True
@@ -155,6 +155,6 @@ class AccountRepository:
             prop_max_total_loss=row["prop_max_total_loss"],
             prop_profit_target=row["prop_profit_target"],
             notes=row["notes"],
-            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.utcnow(),
-            updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.utcnow(),
+            created_at=parse_utc(row["created_at"]) or utc_now(),
+            updated_at=parse_utc(row["updated_at"]) or utc_now(),
         )

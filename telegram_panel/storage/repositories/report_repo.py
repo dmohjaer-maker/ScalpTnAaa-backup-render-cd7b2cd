@@ -7,6 +7,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional
 from ..database import Database
 from ...models.report import TradeRecord, DailyReport
+from ...utils.time import parse_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ class ReportRepository:
         return [self._row_to_trade(r) for r in rows]
 
     async def upsert_daily_report(self, report: DailyReport) -> DailyReport:
-        report.updated_at = datetime.utcnow()
+        report.updated_at = utc_now()
         async with self._db.connection() as db:
             await db.execute(
                 """INSERT INTO daily_reports
@@ -151,8 +152,8 @@ class ReportRepository:
             symbol=row["symbol"], direction=row["direction"], volume=row["volume"],
             open_price=row["open_price"], close_price=row["close_price"],
             stop_loss=row["stop_loss"], take_profit=row["take_profit"],
-            open_time=datetime.fromisoformat(row["open_time"]),
-            close_time=datetime.fromisoformat(row["close_time"]),
+            open_time=parse_utc(row["open_time"]) or utc_now(),
+            close_time=parse_utc(row["close_time"]) or utc_now(),
             profit=row["profit"], commission=row["commission"], swap=row["swap"],
             pips=row["pips"], rr_ratio=row["rr_ratio"],
             duration_minutes=row["duration_minutes"], close_reason=row["close_reason"],

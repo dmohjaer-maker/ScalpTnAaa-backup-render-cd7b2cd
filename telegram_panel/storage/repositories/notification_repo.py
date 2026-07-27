@@ -3,11 +3,11 @@ Notification Repository.
 """
 
 import logging
-from datetime import datetime
 from typing import Optional
 from ..database import Database
 from ...models.notification import NotificationSetting, NotificationLog
 from ...config.constants import NotificationType
+from ...utils.time import parse_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ class NotificationRepository:
         async with self._db.connection() as db:
             await db.execute(
                 "UPDATE notification_settings SET last_sent_at=? WHERE notification_type=?",
-                (datetime.utcnow().isoformat(), notification_type.value),
+                (utc_now().isoformat(), notification_type.value),
             )
             await db.commit()
 
@@ -108,8 +108,7 @@ class NotificationRepository:
             user_telegram_id=row["user_telegram_id"],
             enabled=bool(row["enabled"]),
             cooldown_seconds=row["cooldown_seconds"],
-            last_sent_at=datetime.fromisoformat(row["last_sent_at"])
-                if row["last_sent_at"] else None,
+            last_sent_at=parse_utc(row["last_sent_at"]),
         )
 
     def _row_to_log(self, row) -> NotificationLog:
@@ -118,7 +117,7 @@ class NotificationRepository:
             notification_type=NotificationType(row["notification_type"]),
             recipient_telegram_id=row["recipient_telegram_id"],
             message_text=row["message_text"],
-            sent_at=datetime.fromisoformat(row["sent_at"]),
+            sent_at=parse_utc(row["sent_at"]) or utc_now(),
             success=bool(row["success"]),
             error_message=row["error_message"],
             message_id=row["message_id"],

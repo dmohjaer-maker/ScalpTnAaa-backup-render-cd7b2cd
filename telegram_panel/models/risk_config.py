@@ -3,7 +3,7 @@ Risk configuration model — persisted risk management settings.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -28,8 +28,8 @@ class RiskConfig:
     trail_distance_pips: float = 80.0
     trail_activation_pips: float = 120.0
 
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def validate(self) -> list[str]:
         errors = []

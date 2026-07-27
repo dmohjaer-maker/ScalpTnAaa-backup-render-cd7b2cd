@@ -4,10 +4,11 @@ Session Repository — user session persistence.
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 from ..database import Database
 from ...models.session import UserSession
+from ...utils.time import parse_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ class SessionRepository:
             await db.commit()
 
     async def purge_expired(self) -> int:
-        cutoff = datetime.utcnow().isoformat()
+        cutoff = utc_now().isoformat()
         async with self._db.connection() as db:
             cursor = await db.execute(
                 "DELETE FROM user_sessions WHERE expires_at < ? OR is_active=0",
@@ -97,7 +98,7 @@ class SessionRepository:
             breadcrumb=breadcrumb,
             context=context,
             is_active=bool(row["is_active"]),
-            started_at=datetime.fromisoformat(row["started_at"]),
-            last_activity_at=datetime.fromisoformat(row["last_activity_at"]),
-            expires_at=datetime.fromisoformat(row["expires_at"]),
+            started_at=parse_utc(row["started_at"]) or utc_now(),
+            last_activity_at=parse_utc(row["last_activity_at"]) or utc_now(),
+            expires_at=parse_utc(row["expires_at"]) or utc_now(),
         )

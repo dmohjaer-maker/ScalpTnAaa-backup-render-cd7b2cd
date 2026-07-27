@@ -3,7 +3,7 @@ Audit log model — every admin action is recorded.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -21,7 +21,7 @@ class AuditLog:
     ip_address: Optional[str] = None
     success: bool = True
     error_message: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def result_icon(self) -> str:

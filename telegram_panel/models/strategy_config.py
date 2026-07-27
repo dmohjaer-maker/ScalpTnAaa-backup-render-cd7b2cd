@@ -3,7 +3,7 @@ Strategy configuration model — which SMC components are active.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from ..config.constants import StrategyComponent
 
@@ -35,8 +35,8 @@ class StrategyConfig:
     min_confidence_score: float = 60.0
     min_rr_ratio: float = 2.0
 
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def is_component_enabled(self, component: StrategyComponent) -> bool:
         mapping = {
@@ -75,4 +75,4 @@ class StrategyConfig:
         attr = attr_map.get(component)
         if attr:
             setattr(self, attr, enabled)
-            self.updated_at = datetime.utcnow()
+            self.updated_at = datetime.now(timezone.utc)

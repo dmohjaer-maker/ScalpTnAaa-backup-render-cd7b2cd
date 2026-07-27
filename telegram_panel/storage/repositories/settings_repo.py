@@ -3,11 +3,11 @@ Settings Repository — risk configs and strategy configs.
 """
 
 import logging
-from datetime import datetime
 from typing import Optional
 from ..database import Database
 from ...models.risk_config import RiskConfig
 from ...models.strategy_config import StrategyConfig
+from ...utils.time import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class SettingsRepository:
 
     async def save_risk_config(self, config: RiskConfig) -> RiskConfig:
         existing = await self.get_risk_config(config.account_id)
-        config.updated_at = datetime.utcnow()
+        config.updated_at = utc_now()
 
         async with self._db.connection() as db:
             if existing.id:
@@ -102,7 +102,7 @@ class SettingsRepository:
 
     async def save_strategy_config(self, config: StrategyConfig) -> StrategyConfig:
         existing = await self.get_strategy_config(config.account_id)
-        config.updated_at = datetime.utcnow()
+        config.updated_at = utc_now()
 
         async with self._db.connection() as db:
             if existing.id:

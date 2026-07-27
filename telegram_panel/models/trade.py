@@ -3,7 +3,7 @@ Trade, Position, and PendingOrder models.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from ..config.constants import TradeDirection, TradeStatus
 
@@ -81,7 +81,7 @@ class PendingOrder:
     stop_loss: Optional[float]
     take_profit: Optional[float]
     expiry: Optional[datetime] = None
-    placed_at: datetime = field(default_factory=datetime.utcnow)
+    placed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     comment: Optional[str] = None
     magic: int = 0
     account_id: Optional[int] = None

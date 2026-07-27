@@ -5,11 +5,11 @@ Runs on a queue to never block the trading engine.
 
 import asyncio
 import logging
-from datetime import datetime
 from typing import Optional, Any
 from ..config.constants import NotificationType
 from ..models.notification import NotificationSetting, NotificationLog
 from ..storage.repositories.notification_repo import NotificationRepository
+from ..utils.time import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,10 @@ class NotificationService:
 
         # Check cooldown
         if setting and setting.cooldown_seconds > 0 and setting.last_sent_at:
-            elapsed = (datetime.utcnow() - setting.last_sent_at).total_seconds()
+            last_sent_at = setting.last_sent_at
+            if last_sent_at.tzinfo is None:
+                last_sent_at = last_sent_at.replace(tzinfo=utc_now().tzinfo)
+            elapsed = (utc_now() - last_sent_at).total_seconds()
             if elapsed < setting.cooldown_seconds:
                 logger.debug(f"Skipping {notification_type} — cooldown")
                 return
