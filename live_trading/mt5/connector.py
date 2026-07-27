@@ -265,7 +265,9 @@ async def fetch_candles(
 
 async def get_account_info() -> dict:
     if not _conn_id:
-        await ensure_connected()
+        if not await ensure_connected():
+            log.error("get_account_info: not connected to mt5rest bridge")
+            return {}
     try:
         sess = _get_session()
         async with sess.get(
@@ -306,7 +308,8 @@ async def get_open_positions(symbol: str = "") -> List[dict]:
     a second trade on top of an existing one.
     """
     if not _conn_id:
-        await ensure_connected()
+        if not await ensure_connected():
+            raise RuntimeError("get_open_positions: not connected to mt5rest bridge")
     try:
         params: dict = {"id": _conn_id}
         if symbol:
