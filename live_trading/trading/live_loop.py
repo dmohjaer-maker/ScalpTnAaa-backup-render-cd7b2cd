@@ -445,6 +445,21 @@ class GoldScalperLive:
                 "bar_time":    bar_time.isoformat(),
             }
             log_trade(self.trade_history, entry_log)
+            # Build a synthetic position so the Telegram panel reflects the
+            # newly opened trade immediately rather than waiting up to 5 min
+            # for the next bar to re-fetch live positions.
+            pos = {
+                "id":         result.position_id,
+                "ticket":     result.position_id,
+                "symbol":     SYMBOL,
+                "type":       decision.direction,
+                "volume":     tp_params.lot_size,
+                "open_price": tp_params.entry_price,
+                "sl":         tp_params.stop_loss,
+                "tp":         tp_params.take_profit,
+                "profit":     0.0,
+                "comment":    COMMENT,
+            }
         else:
             log.error(f"❌ Trade failed: {result.message}")
 

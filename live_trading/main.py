@@ -14,7 +14,7 @@ Required environment variables:
     MT5_PASSWORD   – MT5 account password
 
 Optional:
-    SYMBOL               – default: XAUUSD
+    SYMBOL               – default: XAUUSDb  (AMarkets uses the 'b' suffix; adjust for your broker)
     RISK_PERCENT         – default: 1.0
     MIN_CONFIRMATIONS    – default: 3
     DAILY_LOSS_LIMIT_PCT – default: 3.0

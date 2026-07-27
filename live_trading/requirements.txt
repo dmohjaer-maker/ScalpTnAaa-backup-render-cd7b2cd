@@ -9,8 +9,5 @@
 # ── Async HTTP – mt5rest bridge calls and health checks ──────────────────────
 aiohttp==3.9.5
 
-# ── Async file writes – atomic state file updates ────────────────────────────
-aiofiles==23.2.1
-
 # ── Redis – cross-service IPC between robot and Telegram panel ───────────────
 redis==5.2.1
