@@ -368,12 +368,24 @@ class GoldScalperLive:
 
         # 6. Write MT5 snapshot for Telegram panel
         last_c = candles[-1]
+        # Compute actual ATR (last True Range) in price units — the same
+        # formula used by market_regime._calc_atr_values().
+        # decision.regime_rules.sl_atr_mult_adjust is a dimensionless
+        # multiplier (0.7-1.3), NOT an ATR value, so we must calculate it
+        # directly from candles.
+        _snap_trs = [
+            max(candles[i].high - candles[i].low,
+                abs(candles[i].high - candles[i - 1].close),
+                abs(candles[i].low  - candles[i - 1].close))
+            for i in range(1, len(candles))
+        ]
+        _snap_atr = round(_snap_trs[-1], 4) if _snap_trs else 0.0
         write_mt5_snapshot(
             candle_time=last_c.time,
             price=last_c.close,
             regime=decision.regime,
             adx=decision.quality_filter.adx,
-            atr=decision.regime_rules.sl_atr_mult_adjust,
+            atr=_snap_atr,
             smc_signal=decision.smc.smc_signal,
             trend=decision.trend.trend,
         )
