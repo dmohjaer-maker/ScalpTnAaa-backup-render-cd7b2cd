@@ -3,7 +3,7 @@ User and permission models for the Telegram Control Panel.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from ..config.constants import BotRole
 
@@ -102,8 +102,8 @@ class User:
     is_active: bool = True
     permissions: UserPermission = field(default_factory=UserPermission)
     last_seen_at: Optional[datetime] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     failed_auth_attempts: int = 0
     last_failed_auth_at: Optional[datetime] = None
     notes: Optional[str] = None

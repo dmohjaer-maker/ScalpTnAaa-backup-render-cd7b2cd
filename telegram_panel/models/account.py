@@ -4,7 +4,7 @@ Supports Real, Demo, and Prop Firm account types.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from ..config.constants import AccountType, ConnectionStatus
 
@@ -33,8 +33,8 @@ class Account:
     connection_status: ConnectionStatus = ConnectionStatus.DISCONNECTED
     last_connected_at: Optional[datetime] = None
     last_error: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     # Prop firm specific
     prop_firm_name: Optional[str] = None
     prop_challenge_phase: Optional[str] = None   # e.g. "Phase 1", "Funded"

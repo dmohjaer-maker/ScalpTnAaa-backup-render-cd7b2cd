@@ -3,7 +3,7 @@ Message Formatter — professional Unicode card-style message templates.
 Produces beautiful, consistent messages for every panel screen.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Any
 from ...config.constants import RobotStatus, ConnectionStatus, ICONS
 from ...models.account import Account
@@ -70,7 +70,9 @@ class MessageFormatter:
         if last_hb and last_hb != "—":
             try:
                 hb_dt = datetime.fromisoformat(last_hb)
-                elapsed = (datetime.utcnow() - hb_dt).total_seconds()
+                if hb_dt.tzinfo is None:
+                    hb_dt = hb_dt.replace(tzinfo=timezone.utc)
+                elapsed = (datetime.now(timezone.utc) - hb_dt).total_seconds()
                 last_hb = f"{int(elapsed)}s ago"
             except Exception:
                 pass
@@ -116,7 +118,7 @@ class MessageFormatter:
             f"🖥️ <b>CPU:</b>  {cpu:.1f}%\n"
             f"🧮 <b>RAM:</b>  {ram:.1f}%\n"
             f"<code>{_THICK_DIVIDER}</code>\n"
-            f"<i>Updated: {datetime.utcnow().strftime('%H:%M:%S UTC')}</i>"
+            f"<i>Updated: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}</i>"
         )
 
     # ─── Accounts ────────────────────────────────────────────────────────────
@@ -177,7 +179,8 @@ class MessageFormatter:
             return MessageFormatter.no_positions()
         lines = [f"📈 <b>OPEN POSITIONS ({len(positions)})</b>\n<code>{_THICK_DIVIDER}</code>"]
         for pos in positions:
-            elapsed = int((datetime.utcnow() - pos.open_time).total_seconds() / 60)
+            _ot = pos.open_time if pos.open_time.tzinfo else pos.open_time.replace(tzinfo=timezone.utc)
+            elapsed = int((datetime.now(timezone.utc) - _ot).total_seconds() / 60)
             profit_str = f"{pos.floating_profit:+.2f}"
             lines.append(
                 f"\n{pos.direction_icon} <b>#{pos.ticket}</b> · {pos.symbol}\n"
@@ -190,7 +193,8 @@ class MessageFormatter:
 
     @staticmethod
     def position_detail(pos: Position) -> str:
-        elapsed_m = int((datetime.utcnow() - pos.open_time).total_seconds() / 60)
+        _ot2 = pos.open_time if pos.open_time.tzinfo else pos.open_time.replace(tzinfo=timezone.utc)
+        elapsed_m = int((datetime.now(timezone.utc) - _ot2).total_seconds() / 60)
         return (
             f"📈 <b>POSITION #{pos.ticket}</b>\n"
             f"<code>{_THICK_DIVIDER}</code>\n"
@@ -327,7 +331,7 @@ class MessageFormatter:
             f"📡 <b>Sent:</b>     {stats.get('net_sent_mb', 0):.1f}MB\n"
             f"📥 <b>Recv:</b>     {stats.get('net_recv_mb', 0):.1f}MB\n"
             f"<code>{_THICK_DIVIDER}</code>\n"
-            f"<i>{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}</i>"
+            f"<i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}</i>"
         )
 
     @staticmethod
@@ -368,7 +372,7 @@ class MessageFormatter:
             f"❌ <b>ERROR ALERT</b>\n"
             f"<code>{_DIVIDER}</code>\n"
             f"<pre>{error[:1000]}</pre>\n"
-            f"<i>{datetime.utcnow().strftime('%H:%M:%S UTC')}</i>"
+            f"<i>{datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}</i>"
         )
 
     @staticmethod
@@ -379,7 +383,7 @@ class MessageFormatter:
         return (
             f"💓 <b>Heartbeat</b> · {status.upper()}\n"
             f"⏱️ Uptime: {d}d {h:02d}h {m:02d}m\n"
-            f"<i>{datetime.utcnow().strftime('%H:%M:%S UTC')}</i>"
+            f"<i>{datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}</i>"
         )
 
     # ─── Helpers ─────────────────────────────────────────────────────────────

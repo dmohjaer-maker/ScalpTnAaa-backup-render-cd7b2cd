@@ -9,7 +9,7 @@ Fix: Periodic heartbeat notifications are ONLY sent when the robot is RUNNING.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from .event_bus import EventBus, Events
 from ..services.robot_service import RobotService
@@ -81,7 +81,7 @@ class HeartbeatMonitor:
             elif current_status == RobotStatus.RUNNING and self._last_status != RobotStatus.RUNNING:
                 await self._bus.publish(Events.ROBOT_STARTED, {"status": current_status.value})
                 # Reset heartbeat timer so the first running-heartbeat fires after a full interval
-                self._last_hb_notify = datetime.utcnow()
+                self._last_hb_notify = datetime.now(timezone.utc)
             elif current_status == RobotStatus.STOPPED:
                 await self._bus.publish(Events.ROBOT_STOPPED, {"status": current_status.value})
             elif current_status == RobotStatus.PAUSED:
@@ -103,7 +103,7 @@ class HeartbeatMonitor:
         # When STOPPED/PAUSED/ERROR: status-change events already notified the user.
         # No need to spam every N seconds with a "still stopped" message.
         if current_status == RobotStatus.RUNNING:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             if (
                 self._last_hb_notify is None
                 or (now - self._last_hb_notify).total_seconds() >= self._hb_interval

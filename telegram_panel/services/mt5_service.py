@@ -14,7 +14,7 @@ import os
 import json
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Any
 from ..config.constants import ConnectionStatus, TradeDirection, TradeStatus
 from ..models.account import Account
@@ -70,7 +70,7 @@ class MT5Service:
                     stop_loss=raw.get("sl"),
                     take_profit=raw.get("tp"),
                     open_time=datetime.fromisoformat(raw["open_time"])
-                        if raw.get("open_time") else datetime.utcnow(),
+                        if raw.get("open_time") else datetime.now(timezone.utc),
                     profit=raw.get("profit", 0.0),
                     commission=raw.get("commission", 0.0),
                     swap=raw.get("swap", 0.0),
@@ -101,7 +101,7 @@ class MT5Service:
                     stop_loss=raw.get("sl"),
                     take_profit=raw.get("tp"),
                     placed_at=datetime.fromisoformat(raw["placed_at"])
-                        if raw.get("placed_at") else datetime.utcnow(),
+                        if raw.get("placed_at") else datetime.now(timezone.utc),
                     comment=raw.get("comment"),
                     magic=raw.get("magic", 0),
                 )
@@ -142,7 +142,7 @@ class MT5Service:
         The robot engine processes these on next tick.
         """
         cmd_path = self._snapshot_path.replace("snapshot", "trade_commands")
-        cmd = {"command": command, "params": params, "issued_at": datetime.utcnow().isoformat()}
+        cmd = {"command": command, "params": params, "issued_at": datetime.now(timezone.utc).isoformat()}
         try:
             loop = asyncio.get_event_loop()
             def _write():
