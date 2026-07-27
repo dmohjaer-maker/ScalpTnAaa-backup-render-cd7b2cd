@@ -220,6 +220,11 @@ async def _command(req: web.Request) -> web.Response:
         # _commands_lock is defined at module level so ALL concurrent requests
         # share the same lock — unlike a local lock which provides no exclusion.
         with _commands_lock:
+            # Ensure the commands file directory exists (e.g. /data/ on a
+            # Render persistent disk that may not have been pre-created).
+            _cmd_dir = os.path.dirname(COMMANDS_FILE)
+            if _cmd_dir:
+                os.makedirs(_cmd_dir, exist_ok=True)
             existing: list = []
             if os.path.exists(COMMANDS_FILE):
                 try:
