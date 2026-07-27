@@ -225,6 +225,19 @@ async def fetch_candles(
                     volume=float(bar.get("tickVolume", bar.get("volume", 0))),
                 ))
 
+            # Sort and deduplicate by timestamp before removing the open bar.
+            # The bridge can return overlapping pages with duplicate candles;
+            # feeding those into indicators shifts the entire signal window.
+            candles.sort(key=lambda candle: candle.time)
+            deduplicated: List[OHLCV] = []
+            seen_times: set[str] = set()
+            for candle in candles:
+                if candle.time in seen_times:
+                    continue
+                seen_times.add(candle.time)
+                deduplicated.append(candle)
+            candles = deduplicated
+
             # Drop the last bar (may be the still-open current bar)
             if candles:
                 candles = candles[:-1]
