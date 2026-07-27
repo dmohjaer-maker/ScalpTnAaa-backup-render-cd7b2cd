@@ -16,6 +16,7 @@ Redis keys
   goldscalper:state    — robot state JSON (TTL 5 min)
   goldscalper:snapshot — MT5 snapshot JSON (TTL 5 min)
   goldscalper:commands — pending commands dict in engine-key format (TTL 5 min)
+  goldscalper:guardian — RiskGuardian circuit-breaker state (TTL 27 hours)
 """
 
 import json
