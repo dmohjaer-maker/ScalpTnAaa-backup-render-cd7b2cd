@@ -33,13 +33,21 @@ _COMMAND_MAX_AGE_SECONDS = int(os.getenv("COMMAND_MAX_AGE_SECONDS", "300"))
 
 # Explicit mapping from Telegram panel command names to engine dict keys.
 # Panel commands not present in this table are silently ignored.
+# Keep this map in sync with _process_commands() in live_trading/trading/live_loop.py
+# and _PANEL_COMMAND_MAP in live_trading/redis_ipc.py.
 _PANEL_COMMAND_MAP: dict = {
-    "PAUSE":          "pause",
-    "RESUME":         "resume",
-    "EMERGENCY_STOP": "stop",
-    "SAFE_SHUTDOWN":  "stop",
-    "CLOSE_ALL":      "close_all",
-    "RESET_GUARDIAN": "reset_guardian",
+    "PAUSE":            "pause",
+    "RESUME":           "resume",
+    "EMERGENCY_STOP":   "stop",
+    "SAFE_SHUTDOWN":    "stop",
+    "CLOSE_ALL":        "close_all",
+    "RESET_GUARDIAN":   "reset_guardian",
+    # Commands below were missing from the file-based fallback path;
+    # they are now mirrored from live_trading/redis_ipc.py.
+    "START":            "start",
+    "RESTART_ENGINE":   "restart_engine",
+    "RESTART_MT5":      "restart_mt5",
+    "RESTART_TELEGRAM": "restart_telegram",
 }
 
 # ── Engine version and uptime tracking ───────────────────────────────────────
@@ -231,6 +239,20 @@ def write_mt5_snapshot(
 # ── Read robot_commands.json ──────────────────────────────────────────────────
 
 def read_commands() -> dict:
+    """Read commands written by Telegram panel.  Returns {} if none.
+
+    Tries Redis first (required for cross-service IPC on Render where robot and
+    panel run in separate containers with separate filesystems).  Falls back to
+    the local command file for single-machine / local deployments.
+
+    Supports two on-disk formats:
+      • Dict format (legacy / future): ``{"pause": true, ...}`` — returned as-is.
+      • List format (current panel):   ``[{"command": "PAUSE", "issued_at": "..."}]``
+        — translated to engine dict keys via _PANEL_COMMAND_MAP; unknown commands
+        and stale entries are silently discarded.
+
+    Invalid or corrupted files always return {} without raising.
+    """
     # Try Redis first — works across separate Render services
     try:
         from live_trading.redis_ipc import redis_read_commands, redis_available
@@ -240,16 +262,6 @@ def read_commands() -> dict:
                 return result
     except Exception:
         pass
-    """Read commands written by Telegram panel.  Returns {} if none.
-
-    Supports two on-disk formats:
-      • Dict format (legacy / future): ``{"pause": true, ...}`` — returned as-is.
-      • List format (current panel):   ``[{"command": "PAUSE", "issued_at": "..."}]``
-        — translated to engine dict keys; unknown commands and stale entries
-        are silently discarded.
-
-    Invalid or corrupted files always return {} without raising.
-    """
     try:
         if not os.path.exists(COMMANDS_FILE):
             return {}
