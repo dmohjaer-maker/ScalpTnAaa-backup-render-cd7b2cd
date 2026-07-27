@@ -10,6 +10,7 @@ import hmac
 import json
 import os
 import sys
+import threading
 import traceback
 from datetime import datetime, timezone
 
@@ -20,6 +21,19 @@ if _root not in sys.path:
 from aiohttp import web
 
 PORT = int(os.environ.get("PORT", 10000))
+
+# Module-level lock for thread-safe atomic writes to COMMANDS_FILE.
+# Must be module-level — a local lock inside the handler provides zero
+# mutual exclusion between concurrent requests (each call gets its own lock).
+_commands_lock = threading.Lock()
+
+# Allowlist for /command endpoint — validated once at import time.
+_ALLOWED_COMMANDS = frozenset({
+    "PAUSE", "RESUME", "EMERGENCY_STOP", "SAFE_SHUTDOWN",
+    "CLOSE_ALL", "RESET_GUARDIAN", "START",
+    "RESTART_ENGINE", "RESTART_MT5", "RESTART_TELEGRAM",
+    "UPDATE_RISK", "UPDATE_STRATEGY",
+})
 
 _BACKOFF_BASE = 30
 _BACKOFF_MAX  = 300
@@ -190,18 +204,11 @@ async def _command(req: web.Request) -> web.Response:
     if not command:
         return web.Response(status=400, text="missing 'command' field")
 
-    _ALLOWED_COMMANDS = {
-        "PAUSE", "RESUME", "EMERGENCY_STOP", "SAFE_SHUTDOWN",
-        "CLOSE_ALL", "RESET_GUARDIAN", "START",
-        "RESTART_ENGINE", "RESTART_MT5", "RESTART_TELEGRAM",
-        "UPDATE_RISK", "UPDATE_STRATEGY",
-    }
     if command not in _ALLOWED_COMMANDS:
         return web.Response(status=400, text=f"unknown command: {command}")
 
     try:
         from live_trading.config import COMMANDS_FILE
-        import threading
 
         cmd_entry = {
             "command":   command,
@@ -209,9 +216,10 @@ async def _command(req: web.Request) -> web.Response:
             "issued_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Thread-safe file append
-        _lock = threading.Lock()
-        with _lock:
+        # Thread-safe atomic file append using the module-level lock.
+        # _commands_lock is defined at module level so ALL concurrent requests
+        # share the same lock — unlike a local lock which provides no exclusion.
+        with _commands_lock:
             existing: list = []
             if os.path.exists(COMMANDS_FILE):
                 try:
