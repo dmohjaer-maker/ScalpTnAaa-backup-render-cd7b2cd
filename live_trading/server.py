@@ -22,6 +22,20 @@ _BACKOFF_BASE = 30
 _BACKOFF_MAX  = 300
 _backoff      = _BACKOFF_BASE
 _robot_status = "STARTING"
+_UNHEALTHY_STATUSES = {"CONFIG_ERROR", "DISCONNECTED", "ERROR", "STOPPED"}
+
+
+def _health_response(status: str) -> web.Response:
+    normalized = status.upper()
+    unhealthy = (
+        normalized in _UNHEALTHY_STATUSES
+        or normalized.startswith("RETRY_IN_")
+    )
+    return web.Response(
+        status=503 if unhealthy else 200,
+        text=f"OK status={status}",
+        content_type="text/plain",
+    )
 
 
 async def _health(_req):
@@ -34,13 +48,10 @@ async def _health(_req):
         if redis_available():
             state = redis_read_state()
             if state and "status" in state:
-                return web.Response(
-                    text=f"OK status={state['status']}",
-                    content_type="text/plain",
-                )
+                return _health_response(str(state["status"]))
     except Exception:
         pass
-    return web.Response(text=f"OK status={_robot_status}", content_type="text/plain")
+    return _health_response(_robot_status)
 
 
 async def _run_health_server():
