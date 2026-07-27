@@ -40,7 +40,9 @@ def setup_logging(level: str = "INFO", log_path: str = "") -> None:
     if log_path:
         import os
         from logging.handlers import RotatingFileHandler
-        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        log_dir = os.path.dirname(log_path)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
         handlers.append(
             RotatingFileHandler(
                 log_path,
