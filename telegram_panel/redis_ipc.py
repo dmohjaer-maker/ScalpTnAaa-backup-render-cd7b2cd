@@ -214,6 +214,8 @@ _PANEL_COMMAND_MAP: dict = {
     "RESET_GUARDIAN": "reset_guardian",
     "START":          "start",
     "RESTART_ENGINE": "restart_engine",
+    "RESTART_MT5":    "restart_mt5",
+    "RESTART_TELEGRAM": "restart_telegram",
 }
 
 
