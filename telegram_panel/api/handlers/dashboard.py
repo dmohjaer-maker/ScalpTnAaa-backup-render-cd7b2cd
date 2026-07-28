@@ -74,6 +74,13 @@ class DashboardHandler(BaseHandler):
         if not ok:
             return
 
+        # Keyboard buttons send "stop_confirm", "emergency_confirm" etc.
+        # Normalise to base action so confirm_needed lookup works and
+        # Keyboards.confirm_action(action, label) produces "robot:<action>_confirmed"
+        # which matches the action_map keys below.
+        if action.endswith("_confirm"):
+            action = action[: -len("_confirm")]
+
         # Actions that require explicit confirmation
         confirm_needed = {
             "stop": ("stop_confirmed", "Stop Robot"),
