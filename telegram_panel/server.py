@@ -7,6 +7,7 @@ UptimeRobot needed to prevent Render free-tier sleep.
 import asyncio
 import os
 import sys
+import traceback
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _root not in sys.path:
@@ -92,8 +93,10 @@ async def _main() -> None:
         await _run_panel()
     except SystemExit as exc:
         _exit_code = exc.code if exc.code is not None else 1
+        print(f"[server] Panel called sys.exit({_exit_code!r}) — check log lines above for config errors.", flush=True)
     except Exception as exc:
         print(f"[server] Unhandled panel exception: {exc}", flush=True)
+        traceback.print_exc()
         _exit_code = 1
 
     keepalive_task.cancel()
