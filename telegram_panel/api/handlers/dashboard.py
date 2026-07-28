@@ -33,25 +33,49 @@ class DashboardHandler(BaseHandler):
     async def show_home(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ok, user = await self._auth.is_authorized(update)
         if not ok:
+            # Answer the callback so Telegram doesn't show "An error occurred"
+            if update.callback_query:
+                try:
+                    await update.callback_query.answer()
+                except Exception:
+                    pass
             return
         formatter = MessageFormatter()
         text = formatter.welcome(user.display_name if user else "User")
         await self.edit_or_reply(update, context, text, Keyboards.main_menu())
 
     async def show_dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # Answer callback immediately — prevents Telegram timeout / "An error occurred"
+        if update.callback_query:
+            try:
+                await update.callback_query.answer()
+            except Exception:
+                pass
+
         ok, user = await self._auth.is_authorized(update)
         if not ok:
             return
 
-        # Gather all data concurrently
-        robot_state, account, today_profit, floating, drawdown, sys_stats = await asyncio.gather(
-            self._robot.get_state(),
-            self._accounts.get_active_account(),
-            self._mt5.get_today_profit(),
-            self._mt5.get_floating_profit(),
-            self._mt5.get_drawdown(),
-            self._system.get_system_stats(),
-        )
+        # Gather all data concurrently; each service is individually guarded
+        try:
+            robot_state, account, today_profit, floating, drawdown, sys_stats = await asyncio.gather(
+                self._robot.get_state(),
+                self._accounts.get_active_account(),
+                self._mt5.get_today_profit(),
+                self._mt5.get_floating_profit(),
+                self._mt5.get_drawdown(),
+                self._system.get_system_stats(),
+            )
+        except Exception as exc:
+            logger.error(f"show_dashboard gather failed: {exc}", exc_info=True)
+            # Fallback: show minimal dashboard rather than crashing
+            robot_state = {"status": "unknown", "active_trades": 0, "pending_orders": 0}
+            account = None
+            today_profit = 0.0
+            floating = 0.0
+            drawdown = {"current_percent": 0.0, "max_percent": 0.0}
+            sys_stats = {"cpu_percent": 0.0, "ram_percent": 0.0}
+
         active_count = robot_state.get("active_trades", 0)
         pending_count = robot_state.get("pending_orders", 0)
 

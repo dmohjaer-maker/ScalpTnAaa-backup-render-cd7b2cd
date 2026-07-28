@@ -149,6 +149,16 @@ class MT5Service:
                 logger.warning(f"Failed to parse trade: {e}")
         return trades
 
+    async def get_today_profit(self) -> float:
+        """Return today's realised profit from the MT5 snapshot."""
+        snapshot = await self._read_snapshot()
+        return float(snapshot.get("today_profit", 0.0))
+
+    async def get_floating_profit(self) -> float:
+        """Return current floating (unrealised) profit from the MT5 snapshot."""
+        snapshot = await self._read_snapshot()
+        return float(snapshot.get("floating_profit", 0.0))
+
     async def get_drawdown(self) -> dict[str, float]:
         snapshot = await self._read_snapshot()
         dd = snapshot.get("drawdown", {})

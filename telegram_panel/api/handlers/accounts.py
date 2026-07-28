@@ -29,6 +29,11 @@ class AccountsHandler(BaseHandler):
     async def show_accounts(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ok, user = await self._auth.check_permission(update, "can_view_accounts")
         if not ok:
+            if update.callback_query:
+                try:
+                    await update.callback_query.answer()
+                except Exception:
+                    pass
             return
         accounts = await self._accounts.get_all_accounts()
         text = self._fmt.account_list(accounts)
