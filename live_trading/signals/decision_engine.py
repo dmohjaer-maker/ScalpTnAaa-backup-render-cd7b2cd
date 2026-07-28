@@ -96,24 +96,34 @@ def run_decision_engine(
         reason = f"EMA trend ({trend.trend}) opposes SMC ({candidate})"
         return _make_neutral(smc, wyckoff, pa, trend, [reason], [reason])
 
+    # Detect regime early — needed to set the adaptive confirmation threshold.
+    # RANGE / ACCUMULATION / DISTRIBUTION / HIGH_VOLATILITY markets suppress
+    # PA and Wyckoff signals by design, so we lower the bar to 2 in those
+    # regimes. Trending regimes keep the stricter operator-configured value.
+    regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
+
+    _RANGE_REGIMES = {"RANGE", "ACCUMULATION", "DISTRIBUTION", "HIGH_VOLATILITY"}
+    if regime.regime in _RANGE_REGIMES:
+        effective_min_confirmations = min(2, min_confirmations)
+    else:
+        effective_min_confirmations = min_confirmations
+
     # Entry filter — minimum N-of-4 vote gate (SMC always required)
     ef = apply_entry_filter(
         smc_signal      = candidate,
         ema_trend       = trend.trend,
         pa_signal       = pa.pa_signal,
         wyckoff_signal  = wyckoff.wyckoff_signal,
-        min_confirmations = min_confirmations,
+        min_confirmations = effective_min_confirmations,
     )
     if not ef.allowed:
         votes = (f"SMC={'✓' if ef.smc else '✗'}  "
                  f"Trend={'✓' if ef.trend else '✗'}  "
                  f"PA={'✓' if ef.price_action else '✗'}  "
                  f"Wyckoff={'✓' if ef.wyckoff else '✗'}")
-        reason = (f"Entry filter: only {ef.confirmation_count}/{min_confirmations} "
-                  f"confirmations — {votes}")
+        reason = (f"Entry filter: only {ef.confirmation_count}/{effective_min_confirmations} "
+                  f"confirmations — {votes}  [regime={regime.regime}]")
         return _make_neutral(smc, wyckoff, pa, trend, [reason], [reason])
-
-    regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
 
     if candidate == "BUY"  and not regime.rules.allow_long:
         return _make_neutral(smc, wyckoff, pa, trend,
