@@ -1,8 +1,12 @@
 """
-Render free-tier web service wrapper — Telegram Control Panel.
-Runs a /health HTTP endpoint on $PORT alongside the Telegram bot.
-Self-ping keepalive task pings /health every 14 min — no external
-UptimeRobot needed to prevent Render free-tier sleep.
+Render worker service wrapper — Telegram Control Panel.
+Runs the Telegram bot with a supervisor loop for auto-restart on crash.
+Runs a /health HTTP endpoint on \$PORT for manual debugging via curl.
+
+type: worker — workers NEVER sleep on Render's free tier.
+    Telegram bots use long-polling (outbound requests to Telegram) and receive
+    no inbound HTTP traffic, so 'type: web' would cause the service to spin down
+    after 15 min of inactivity.  Workers run 24/7 for free.
 """
 import asyncio
 import os
@@ -15,17 +19,14 @@ if _root not in sys.path:
 
 from aiohttp import web
 
+# Render workers don't provision PORT, but we keep a health server for
+# manual debugging (e.g. curl /health from Render shell).
 PORT = int(os.environ.get("PORT", 8081))
 
-# How long (seconds) to keep the health server alive after startup before
-# allowing the process to exit on a fatal error.  Render polls /health on a
-# schedule; 30 s ensures at least 2-3 successful responses so the deploy is
-# marked healthy before Render's restart policy takes over.
-_HEALTH_GRACE_SECONDS = 30
-
-# Self-ping keepalive: ping /health every 14 min so Render free-tier services
-# never spin down.  14 min < Render's 15-min inactivity threshold.
-_KEEPALIVE_INTERVAL_SECONDS = 840  # 14 minutes
+# Supervisor backoff: start at 10 s, double on each crash, cap at 5 min.
+# Reset to base on a clean (non-error) exit.
+_BACKOFF_BASE = 10
+_BACKOFF_MAX  = 300
 
 
 async def _health(_req: web.Request) -> web.Response:
@@ -45,21 +46,6 @@ async def _run_health_server() -> None:
         await asyncio.sleep(3600)
 
 
-async def _keepalive() -> None:
-    """Self-ping /health every 14 min to prevent Render free-tier sleep."""
-    await asyncio.sleep(30)  # wait for health server to fully start
-    url = f"http://127.0.0.1:{PORT}/health"
-    while True:
-        try:
-            import aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    print(f"[keepalive] ping /health → {resp.status}", flush=True)
-        except Exception as exc:
-            print(f"[keepalive] ping failed: {exc}", flush=True)
-        await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
-
-
 async def _run_panel() -> None:
     from telegram_panel.main import TelegramPanel
     panel = TelegramPanel()
@@ -67,20 +53,14 @@ async def _run_panel() -> None:
 
 
 async def _main() -> None:
-    # Start the health server as a background task.  It must be able to
-    # respond to Render's health check polling BEFORE we exit for any reason
-    # (bad config, Telegram auth failure).  We hold the process alive for at
-    # least _HEALTH_GRACE_SECONDS so Render records several successful checks
-    # and marks the deploy healthy; its restart policy then handles the re-launch.
-    health_task = asyncio.create_task(_run_health_server())
-    keepalive_task = asyncio.create_task(_keepalive())
-
-    # Give the TCP server time to bind before anything else runs.
+    # Health server runs in the background for debugging; never stopped.
+    asyncio.create_task(_run_health_server())
     await asyncio.sleep(1)
     print("[server] Health server ready. Starting Telegram panel...", flush=True)
 
-    # ── Auto-seed broker account from env vars (fixes "No accounts configured"
-    # after every Render free-tier restart that wipes /tmp/panel.db) ────────
+    # ── Auto-seed broker account from env vars once at startup ────────────────
+    # Fixes "No accounts configured" after every Render restart that wipes
+    # the ephemeral /tmp/panel.db SQLite database.
     try:
         from telegram_panel.utils.auto_seed import run as _auto_seed
         _auto_seed()
@@ -88,47 +68,46 @@ async def _main() -> None:
     except Exception as _seed_exc:
         print(f"[server] auto_seed warning (non-fatal): {_seed_exc}", flush=True)
 
-    _exit_code = 0
-    try:
-        await _run_panel()
-    except SystemExit as exc:
-        _exit_code = exc.code if exc.code is not None else 1
-        print(f"[server] Panel called sys.exit({_exit_code!r}) — check log lines above for config errors.", flush=True)
-    except Exception as exc:
-        print(f"[server] Unhandled panel exception: {exc}", flush=True)
-        traceback.print_exc()
-        _exit_code = 1
+    # ── Supervisor loop — restart panel on any crash ──────────────────────────
+    # The panel runs indefinitely; this loop ensures it restarts automatically
+    # with exponential backoff rather than letting the entire worker process exit.
+    _backoff = _BACKOFF_BASE
+    attempt = 0
+    while True:
+        attempt += 1
+        print(f"[supervisor] Starting panel (attempt #{attempt})...", flush=True)
+        try:
+            await _run_panel()
+            # Panel exited cleanly (rare — normally runs forever until signal).
+            print(
+                f"[supervisor] Panel exited cleanly — restarting in {_BACKOFF_BASE}s...",
+                flush=True,
+            )
+            _backoff = _BACKOFF_BASE  # reset on clean exit
+        except SystemExit as exc:
+            code = exc.code if exc.code is not None else 1
+            if code == 0:
+                print(
+                    f"[supervisor] Panel sys.exit(0) — restarting in {_BACKOFF_BASE}s...",
+                    flush=True,
+                )
+                _backoff = _BACKOFF_BASE
+            else:
+                print(
+                    f"[supervisor] Panel sys.exit({code}) — check config/env vars above. "
+                    f"Restarting in {_backoff}s...",
+                    flush=True,
+                )
+        except Exception as exc:
+            print(f"[supervisor] Panel crashed ({type(exc).__name__}): {exc}", flush=True)
+            traceback.print_exc()
 
-    keepalive_task.cancel()
-    try:
-        await keepalive_task
-    except asyncio.CancelledError:
-        pass
-
-    if _exit_code != 0:
-        # Keep health server alive so Render's health check can pass before
-        # we exit.  Without this window, the deploy would be marked failed
-        # instead of triggering an automatic restart.
-        elapsed = 1  # already slept 1 s above
-        remaining = max(0, _HEALTH_GRACE_SECONDS - elapsed)
-        print(
-            f"[server] Panel exited (code {_exit_code}). "
-            f"Keeping health server alive for {remaining}s before exit.",
-            flush=True,
-        )
-        await asyncio.sleep(remaining)
-
-    health_task.cancel()
-    try:
-        await health_task
-    except asyncio.CancelledError:
-        pass
-
-    sys.exit(_exit_code)
+        await asyncio.sleep(_backoff)
+        _backoff = min(_backoff * 2, _BACKOFF_MAX)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(_main())
     except KeyboardInterrupt:
-        print("[server] Shutting down.", flush=True)
+        print("[server] Keyboard interrupt — shutting down.", flush=True)
