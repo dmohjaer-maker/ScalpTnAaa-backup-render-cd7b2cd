@@ -40,17 +40,17 @@ class RegimeResult:
 
 
 REGIME_RULES = {
-    "STRONG_TREND_BULL": RegimeEntryRules(73, 1.5, True,  False, 1.0,  "Strong Bull Trend"),
-    "STRONG_TREND_BEAR": RegimeEntryRules(73, 1.5, False, True,  1.0,  "Strong Bear Trend"),
-    "WEAK_TREND_BULL":   RegimeEntryRules(76, 2.0, True,  False, 0.9,  "Weak Bull Trend"),
-    "WEAK_TREND_BEAR":   RegimeEntryRules(76, 2.0, False, True,  0.9,  "Weak Bear Trend"),
-    "PULLBACK_BULL":     RegimeEntryRules(74, 1.8, True,  False, 0.95, "Bull Pullback"),
-    "PULLBACK_BEAR":     RegimeEntryRules(74, 1.8, False, True,  0.95, "Bear Pullback"),
-    "RANGE":             RegimeEntryRules(79, 2.5, True,  True,  0.8,  "Range / Choppy"),
-    "ACCUMULATION":      RegimeEntryRules(75, 1.5, True,  False, 1.0,  "Wyckoff Accumulation"),
-    "DISTRIBUTION":      RegimeEntryRules(75, 1.5, False, True,  1.0,  "Wyckoff Distribution"),
-    "HIGH_VOLATILITY":   RegimeEntryRules(77, 2.0, True,  True,  1.3,  "High Volatility"),
-    "LOW_VOLATILITY":    RegimeEntryRules(79, 2.5, True,  True,  0.7,  "Low Volatility / Squeeze"),
+    "STRONG_TREND_BULL": RegimeEntryRules(65, 1.5, True,  False, 1.0,  "Strong Bull Trend"),
+    "STRONG_TREND_BEAR": RegimeEntryRules(65, 1.5, False, True,  1.0,  "Strong Bear Trend"),
+    "WEAK_TREND_BULL":   RegimeEntryRules(65, 1.5, True,  False, 0.9,  "Weak Bull Trend"),
+    "WEAK_TREND_BEAR":   RegimeEntryRules(65, 1.5, False, True,  0.9,  "Weak Bear Trend"),
+    "PULLBACK_BULL":     RegimeEntryRules(65, 1.5, True,  False, 0.95, "Bull Pullback"),
+    "PULLBACK_BEAR":     RegimeEntryRules(65, 1.5, False, True,  0.95, "Bear Pullback"),
+    "RANGE":             RegimeEntryRules(68, 1.8, True,  True,  0.8,  "Range / Choppy"),
+    "ACCUMULATION":      RegimeEntryRules(65, 1.3, True,  False, 1.0,  "Wyckoff Accumulation"),
+    "DISTRIBUTION":      RegimeEntryRules(65, 1.3, False, True,  1.0,  "Wyckoff Distribution"),
+    "HIGH_VOLATILITY":   RegimeEntryRules(70, 1.8, True,  True,  1.3,  "High Volatility"),
+    "LOW_VOLATILITY":    RegimeEntryRules(68, 1.8, True,  True,  0.7,  "Low Volatility / Squeeze"),
 }
 
 
