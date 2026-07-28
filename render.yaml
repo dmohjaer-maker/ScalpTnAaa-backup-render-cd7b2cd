@@ -42,7 +42,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r live_trading/requirements.txt
-    startCommand: python live_trading/main.py
+    startCommand: python live_trading/server.py
     envVars:
       # ── mt5rest bridge URL (set to the goldscalper-mtapi service URL) ──────
       - key: MTAPI_URL
@@ -92,11 +92,11 @@ services:
           property: connectionString
 
   # ─── Telegram control panel ────────────────────────────────────────────────
-  - type: web
+  - type: worker
     name: goldscalper-v4-panel
     runtime: python
     plan: free
-    healthCheckPath: /health
+    # type: worker — NEVER sleeps on Render free tier (Telegram long-polling = no inbound HTTP)
     buildCommand: pip install -r telegram_panel/requirements.txt
     startCommand: python telegram_panel/server.py
     envVars:
