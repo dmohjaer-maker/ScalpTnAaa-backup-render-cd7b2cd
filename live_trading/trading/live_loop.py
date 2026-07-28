@@ -314,6 +314,21 @@ class GoldScalperLive:
 
         # 3. ── RISK GUARDIAN CHECK ────────────────────────────────────────────
         #    Must run BEFORE any position check or order placement.
+        #
+        # Lazy initialization: if get_account_info() failed at start() time
+        # (e.g. broker was slow to respond) the Guardian was left uninitialized
+        # and would block every bar forever — even after /reset_guardian, because
+        # reset_halt() clears _halted but not the _initialized=False flag, so
+        # check() would return halted=True again on the next poll.
+        # Now that we have fresh account data, initialize the Guardian on the
+        # first bar where it is still uninitialized.
+        if not self.guardian.is_initialized:
+            log.info(
+                "Guardian was not initialized at startup — performing lazy "
+                f"initialization now (balance={balance:.2f}  equity={equity:.2f})"
+            )
+            self.guardian.initialize(balance, equity)
+
         gs = self.guardian.check(balance, equity)
         self._last_guardian_status = gs
 

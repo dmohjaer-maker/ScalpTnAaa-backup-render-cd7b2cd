@@ -239,6 +239,11 @@ class RiskGuardian:
     def is_halted(self) -> bool:
         return self._halted
 
+    @property
+    def is_initialized(self) -> bool:
+        """True once initialize() or restore_state() has been called."""
+        return self._initialized
+
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _trigger(self, reason: str) -> None:
