@@ -36,6 +36,7 @@ class AccountService:
                     account.free_margin = info.get("free_margin", account.free_margin)
                     account.margin_level = info.get("margin_level", account.margin_level)
                     account.floating_profit = info.get("floating_profit", account.floating_profit)
+                    account.leverage         = info.get("leverage",         account.leverage)
                     raw_status = info.get("connection_status", "disconnected")
                     try:
                         account.connection_status = ConnectionStatus(raw_status)
@@ -77,6 +78,12 @@ class AccountService:
                 account.free_margin = info.get("free_margin", account.free_margin)
                 account.margin_level = info.get("margin_level", account.margin_level)
                 account.floating_profit = info.get("floating_profit", account.floating_profit)
+                account.leverage         = info.get("leverage",         account.leverage)
+                raw_status = info.get("connection_status", "disconnected")
+                try:
+                    account.connection_status = ConnectionStatus(raw_status)
+                except ValueError:
+                    account.connection_status = ConnectionStatus.DISCONNECTED
             except Exception as e:
                 logger.warning(f"Failed to enrich active account: {e}")
         return account

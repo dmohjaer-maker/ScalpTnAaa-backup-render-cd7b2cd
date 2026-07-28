@@ -334,7 +334,7 @@ async def get_account_info() -> dict:
                     "freeMargin":  float(data.get("freeMargin",  0.0)),
                     "marginLevel": float(data.get("marginLevel", 0.0)),
                     "currency":    data.get("currency", "USD"),
-                    "leverage":    data.get("leverage",  1),
+                    "leverage":    int(data.get("leverage") or 0),
                 }
             log.error(f"AccountSummary unexpected response: {data}")
             return {}

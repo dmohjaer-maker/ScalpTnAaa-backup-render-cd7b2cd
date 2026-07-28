@@ -277,7 +277,7 @@ class MT5Service:
                 "free_margin":      account.get("margin_free", 0.0),
                 "floating_profit":  account.get("profit",  0.0),
                 "currency":         account.get("currency", "USD"),
-                "leverage":         account.get("leverage", 100),
+                "leverage":         account.get("leverage", 0),
                 "connection_status": conn_status,
             },
             "connection_status": conn_status,

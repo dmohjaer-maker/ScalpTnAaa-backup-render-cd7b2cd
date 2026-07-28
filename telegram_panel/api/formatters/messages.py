@@ -160,7 +160,7 @@ class MessageFormatter:
             f"📈 <b>Equity:</b>   {account.currency} {account.equity:,.2f}\n"
             f"📊 <b>Margin:</b>   {account.currency} {account.margin:,.2f}\n"
             f"💰 <b>Float:</b>    {account.currency} {account.floating_profit:+,.2f}\n"
-            f"🔢 <b>Leverage:</b> 1:{account.leverage}\n"
+            f"🔢 <b>Leverage:</b> {("1:" + str(account.leverage)) if account.leverage else "—"}\n"
         )
 
     # ─── Trading ─────────────────────────────────────────────────────────────

@@ -187,7 +187,7 @@ def write_robot_state(
         "margin":      account_info.get("margin", 0),
         "margin_free": account_info.get("freeMargin", account_info.get("free_margin", 0)),
         "currency":    account_info.get("currency", "USD"),
-        "leverage":    account_info.get("leverage", 100),
+        "leverage":    account_info.get("leverage", 0),
     }
 
     state = {
