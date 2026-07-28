@@ -47,7 +47,7 @@ class AuthMiddleware:
         Get or create a user record. Auto-promotes owner and pre-configured admins.
         """
         import asyncio
-        now = asyncio.get_event_loop().time()
+        now = asyncio.get_running_loop().time()
         if telegram_id in self._cache:
             user, ts = self._cache[telegram_id]
             if now - ts < self._cache_ttl:
