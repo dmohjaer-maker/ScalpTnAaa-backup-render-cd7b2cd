@@ -429,7 +429,7 @@ async def _run_robot_once():
     engine = GoldScalperLive()
     try:
         _robot_status = "RUNNING"
-        await engine.run()
+        await engine.start()
     finally:
         _robot_status = "STOPPED"
         try:
