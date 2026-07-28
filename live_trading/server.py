@@ -10,7 +10,6 @@ import hmac
 import json
 import os
 import sys
-import threading
 import traceback
 from datetime import datetime, timezone
 
@@ -25,7 +24,7 @@ PORT = int(os.environ.get("PORT", 10000))
 # Module-level lock for thread-safe atomic writes to COMMANDS_FILE.
 # Must be module-level — a local lock inside the handler provides zero
 # mutual exclusion between concurrent requests (each call gets its own lock).
-_commands_lock = threading.Lock()
+_commands_lock = asyncio.Lock()
 
 # Allowlist for /command endpoint — validated once at import time.
 _ALLOWED_COMMANDS = frozenset({
@@ -219,7 +218,7 @@ async def _command(req: web.Request) -> web.Response:
         # Thread-safe atomic file append using the module-level lock.
         # _commands_lock is defined at module level so ALL concurrent requests
         # share the same lock — unlike a local lock which provides no exclusion.
-        with _commands_lock:
+        async with _commands_lock:
             # Ensure the commands file directory exists (e.g. /data/ on a
             # Render persistent disk that may not have been pre-created).
             _cmd_dir = os.path.dirname(COMMANDS_FILE)
