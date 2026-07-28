@@ -34,13 +34,15 @@ services:
         description: robot and panel IPC
 
   # ─── Trading robot ─────────────────────────────────────────────────────────
-  - type: web
+  # type: worker — background workers NEVER sleep on Render's free tier.
+  # Web services sleep after 15 min of inactivity; workers run 24/7 for free.
+  # The robot has no public HTTP URL but uses Redis for all IPC with the panel.
+  - type: worker
     name: goldscalper-v4-robot
     runtime: python
     plan: free
-    healthCheckPath: /health
     buildCommand: pip install -r live_trading/requirements.txt
-    startCommand: python live_trading/server.py
+    startCommand: python live_trading/main.py
     envVars:
       # ── mt5rest bridge URL (set to the goldscalper-mtapi service URL) ──────
       - key: MTAPI_URL
@@ -82,9 +84,6 @@ services:
         value: "/tmp/guardian_state.json"
       - key: LOG_FILE
         value: "/tmp/robot.log"
-      # Shared secret for the panel's HTTP command fallback.
-      - key: ROBOT_COMMAND_TOKEN
-        sync: false
       # ── Redis IPC — auto-wired from the goldscalper-redis service ────────────
       - key: REDIS_URL
         fromService:
@@ -125,14 +124,9 @@ services:
       - key: LOG_LEVEL
         value: "INFO"
       # ── Robot control interface ────────────────────────────────────────────
-      # The panel and robot run as separate Render services; use the robot's
-      # public HTTP interface instead of local file IPC.
+      # Robot is now a worker (no public URL). All commands go through Redis.
       - key: ROBOT_INTERFACE_MODE
-        value: "http"
-      - key: ROBOT_BASE_URL
-        value: "https://goldscalper-v4-robot.onrender.com"
-      - key: ROBOT_COMMAND_TOKEN
-        sync: false
+        value: "redis"
       - key: ROBOT_STATE_PATH
         value: "/tmp/robot_state.json"
       # ── Redis IPC — auto-wired from the goldscalper-redis service ────────────
