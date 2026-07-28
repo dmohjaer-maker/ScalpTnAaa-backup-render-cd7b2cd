@@ -78,6 +78,15 @@ async def _main() -> None:
     await asyncio.sleep(1)
     print("[server] Health server ready. Starting Telegram panel...", flush=True)
 
+    # ── Auto-seed broker account from env vars (fixes "No accounts configured"
+    # after every Render free-tier restart that wipes /tmp/panel.db) ────────
+    try:
+        from telegram_panel.utils.auto_seed import run as _auto_seed
+        _auto_seed()
+        print("[server] auto_seed completed", flush=True)
+    except Exception as _seed_exc:
+        print(f"[server] auto_seed warning (non-fatal): {_seed_exc}", flush=True)
+
     _exit_code = 0
     try:
         await _run_panel()
