@@ -3,7 +3,8 @@ Render web-service wrapper — GoldScalperPro v4 Live Trading Engine.
 
 Design: health server runs forever (process never exits); robot loop
 restarts with exponential backoff on any failure.
-Ping /health every 14 min (UptimeRobot free) to keep the free-tier warm.
+Self-ping keepalive task pings /health every 14 min to prevent Render
+free-tier sleep (no external UptimeRobot required).
 """
 import asyncio
 import hmac
@@ -38,8 +39,16 @@ _BACKOFF_BASE = 30
 _BACKOFF_MAX  = 300
 _backoff      = _BACKOFF_BASE
 _robot_status = "STARTING"
+# CONFIG_ERROR and DISCONNECTED are genuinely unhealthy (operator action needed).
+# RETRY_IN_* is intentionally excluded: the process is alive and retrying as
+# designed.  Returning 503 during retry would cause Render's health monitor to
+# restart the service before the backoff completes, defeating the backoff logic.
 _UNHEALTHY_STATUSES = {"CONFIG_ERROR", "DISCONNECTED", "ERROR", "STOPPED"}
 _HEARTBEAT_MAX_AGE_SECONDS = 180
+
+# Self-ping keepalive: ping /health every 14 minutes so Render free-tier
+# services never spin down.  14 min < Render's 15-min inactivity threshold.
+_KEEPALIVE_INTERVAL_SECONDS = 840  # 14 minutes
 
 
 def _parse_heartbeat(value: object) -> datetime | None:
@@ -56,10 +65,8 @@ def _parse_heartbeat(value: object) -> datetime | None:
 
 def _health_response(status: str) -> web.Response:
     normalized = status.upper()
-    unhealthy = (
-        normalized in _UNHEALTHY_STATUSES
-        or normalized.startswith("RETRY_IN_")
-    )
+    # RETRY_IN_* removed from unhealthy check: process is alive and retrying.
+    unhealthy = normalized in _UNHEALTHY_STATUSES
     return web.Response(
         status=503 if unhealthy else 200,
         text=f"OK status={status}",
@@ -263,6 +270,27 @@ async def _run_health_server():
         await asyncio.sleep(60)
 
 
+async def _keepalive():
+    """Self-ping /health every 14 min to prevent Render free-tier sleep.
+
+    Render spins down free-tier services after 15 minutes of inactivity.
+    Pinging our own health endpoint keeps the service awake without relying
+    on an external UptimeRobot or cron job.
+    """
+    # Wait for health server to fully start before first ping.
+    await asyncio.sleep(30)
+    import aiohttp
+    url = f"http://127.0.0.1:{PORT}/health"
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    print(f"[keepalive] ping /health → {resp.status}", flush=True)
+        except Exception as exc:
+            print(f"[keepalive] ping failed: {exc}", flush=True)
+        await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
+
+
 async def _run_robot_once():
     global _robot_status
     from live_trading.config import MTAPI_URL, MT5_USER, MT5_PASSWORD
@@ -328,9 +356,10 @@ async def _main():
     health = asyncio.create_task(_run_health_server())
     # Give the health server a moment to bind before loading the trading engine.
     await asyncio.sleep(1)
+    keepalive  = asyncio.create_task(_keepalive())
     supervisor = asyncio.create_task(_robot_supervisor())
     try:
-        await asyncio.gather(health, supervisor)
+        await asyncio.gather(health, keepalive, supervisor)
     except Exception:
         traceback.print_exc()
         # Never exit — keep alive even if both tasks somehow die.
