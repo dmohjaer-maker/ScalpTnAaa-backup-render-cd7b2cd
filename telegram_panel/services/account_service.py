@@ -46,7 +46,25 @@ class AccountService:
         return accounts
 
     async def get_account(self, account_id: int) -> Optional[Account]:
-        return await self._repo.get_by_id(account_id)
+        account = await self._repo.get_by_id(account_id)
+        if account and self._mt5:
+            try:
+                info = await self._mt5.get_account_info(account)
+                account.balance          = info.get("balance",          account.balance)
+                account.equity           = info.get("equity",           account.equity)
+                account.margin           = info.get("margin",           account.margin)
+                account.free_margin      = info.get("free_margin",      account.free_margin)
+                account.margin_level     = info.get("margin_level",     account.margin_level)
+                account.floating_profit  = info.get("floating_profit",  account.floating_profit)
+                account.leverage         = info.get("leverage",         account.leverage)
+                raw_status = info.get("connection_status", "disconnected")
+                try:
+                    account.connection_status = ConnectionStatus(raw_status)
+                except ValueError:
+                    account.connection_status = ConnectionStatus.DISCONNECTED
+            except Exception as e:
+                logger.warning(f"Failed to enrich account {account_id}: {e}")
+        return account
 
     async def get_active_account(self) -> Optional[Account]:
         account = await self._repo.get_active()
