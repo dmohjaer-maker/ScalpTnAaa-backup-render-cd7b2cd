@@ -42,6 +42,7 @@ from live_trading.signals.decision_engine import run_decision_engine, DecisionRe
 from live_trading.signals.wyckoff_engine import calibrate_wyckoff, set_calibrated_config
 from live_trading.mt5.connector import (
     connect, disconnect, ensure_connected,
+    connect_with_retry, keepalive_mtapi,
     fetch_candles, get_account_balance, get_account_info,
     get_open_positions, get_last_completed_bar_time,
     mt5_pos_to_dict,
@@ -99,13 +100,16 @@ class GoldScalperLive:
         # Restore trade history from previous session (survives restarts)
         self.trade_history = self._load_trade_history()
 
-        connected = await connect()
+        connected = await connect_with_retry(max_attempts=3, retry_delay=40.0)
         if not connected:
-            log.error("Could not connect to MT5 via mt5rest bridge. "
+            log.error("Could not connect to MT5 via mt5rest bridge after 3 attempts. "
                       "Check MTAPI_URL, MT5_USER, and MT5_PASSWORD.")
             self._write_state("DISCONNECTED",
-                              extra={"error": "mt5rest connection failed"})
+                              extra={"error": "mt5rest connection failed after retries"})
             return False  # non-False return signals failure to main.py for sys.exit(1)
+
+        # ── MTAPI keepalive task — prevents Render free-tier sleep ─────────────
+        asyncio.create_task(self._keepalive_loop(), name="mtapi_keepalive")
 
         # ── Guardian state restore (VB-02) ───────────────────────────────────
         # Redis is the cross-service persistent copy on Render; the local file
@@ -210,6 +214,16 @@ class GoldScalperLive:
                         "using defaults")
 
     # ── Main async loop ───────────────────────────────────────────────────────
+
+    async def _keepalive_loop(self) -> None:
+        """Ping mt5rest bridge every 10 minutes to prevent Render free-tier sleep."""
+        _INTERVAL = 600  # 10 minutes
+        while True:
+            await asyncio.sleep(_INTERVAL)
+            try:
+                await keepalive_mtapi()
+            except Exception:
+                pass
 
     async def _run_loop(self) -> None:
         log.info("Entering main loop — checking every "
