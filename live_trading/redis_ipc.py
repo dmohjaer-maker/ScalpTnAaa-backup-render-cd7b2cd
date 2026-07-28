@@ -249,6 +249,8 @@ _PANEL_COMMAND_MAP: dict = {
     "RESTART_ENGINE": "restart_engine",
     "RESTART_MT5":    "restart_mt5",
     "RESTART_TELEGRAM": "restart_telegram",
+    # "RECONNECT" sent by account_service.reconnect() maps to restart_mt5
+    "RECONNECT":         "restart_mt5",
 }
 
 
