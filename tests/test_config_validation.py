@@ -41,8 +41,9 @@ class TestConfigDefaults:
     """Verify that default values are correct when no env vars are set."""
 
     def test_symbol_default(self):
-        cfg = _reload_config({"SYMBOL": "XAUUSD"})
-        assert cfg.SYMBOL == "XAUUSD"
+        """When SYMBOL is not set, default is XAUUSDb (AMarkets gold symbol)."""
+        cfg = _reload_config({})
+        assert cfg.SYMBOL == "XAUUSDb"
 
     def test_risk_percent_default(self):
         cfg = _reload_config({})
