@@ -193,6 +193,13 @@ class Router:
                     await self._show_settings(update, context)
                 elif dest == "system":
                     await self._system.show_system(update, context)
+                elif dest == "news":
+                    await update.callback_query.edit_message_text(
+                        "📰 <b>NEWS</b>\n\nNews feed is not yet available.",
+                        reply_markup=Keyboards.back_only("nav:home"),
+                        parse_mode="HTML",
+                    )
+                    await update.callback_query.answer()
 
             # ── Dashboard / Robot Control ────────────────────────────────
             elif section == "dashboard":
@@ -336,6 +343,53 @@ class Router:
                 elif action == "menu":
                     await self._system.show_system(update, context)
 
+            # ── Settings ────────────────────────────────────────────────
+            elif section == "settings":
+                action = parts[1] if len(parts) > 1 else ""
+                if action == "token":
+                    await update.callback_query.edit_message_text(
+                        "🔑 <b>CHANGE BOT TOKEN</b>\n\n"
+                        "Set <code>TELEGRAM_BOT_TOKEN</code> in your Render environment variables, "
+                        "then redeploy the panel service.",
+                        reply_markup=Keyboards.back_only("nav:settings"),
+                        parse_mode="HTML",
+                    )
+                    await update.callback_query.answer()
+                elif action == "admins":
+                    await update.callback_query.edit_message_text(
+                        "👥 <b>MANAGE ADMINS</b>\n\n"
+                        "Add admin Telegram IDs to <code>TELEGRAM_ADMIN_IDS</code> "
+                        "(comma-separated) in your Render environment variables, "
+                        "then redeploy the panel service.",
+                        reply_markup=Keyboards.back_only("nav:settings"),
+                        parse_mode="HTML",
+                    )
+                    await update.callback_query.answer()
+                elif action == "session_timeout":
+                    await update.callback_query.edit_message_text(
+                        "⏱️ <b>SESSION TIMEOUT</b>\n\n"
+                        "Configure session timeout in "
+                        "<code>telegram_panel/config/panel.json</code> under "
+                        "<code>security.session_timeout_minutes</code>.",
+                        reply_markup=Keyboards.back_only("nav:settings"),
+                        parse_mode="HTML",
+                    )
+                    await update.callback_query.answer()
+                elif action == "gen_key":
+                    from cryptography.fernet import Fernet
+                    key = Fernet.generate_key().decode()
+                    await update.callback_query.edit_message_text(
+                        f"🔒 <b>NEW ENCRYPTION KEY</b>\n\n"
+                        f"<code>{key}</code>\n\n"
+                        f"⚠️ Set this as <code>PANEL_ENCRYPTION_KEY</code> in Render and redeploy. "
+                        f"<b>Store it securely — losing it means losing access to encrypted credentials.</b>",
+                        reply_markup=Keyboards.back_only("nav:settings"),
+                        parse_mode="HTML",
+                    )
+                    await update.callback_query.answer()
+                else:
+                    await self._show_settings(update, context)
+
             else:
                 logger.debug(f"Unhandled callback: {data}")
                 await update.callback_query.answer()
@@ -397,7 +451,7 @@ class Router:
             "<i>See README.md for full configuration guide.</i>"
         )
         await update.callback_query.edit_message_text(
-            text, reply_markup=Keyboards.back_only("nav:home"), parse_mode="HTML"
+            text, reply_markup=Keyboards.settings_menu(), parse_mode="HTML"
         )
         await update.callback_query.answer()
 
