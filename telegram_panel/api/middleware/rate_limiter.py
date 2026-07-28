@@ -39,7 +39,7 @@ class RateLimiter:
         if telegram_id in self._exempt:
             return True
 
-        now = asyncio.get_event_loop().time()
+        now = asyncio.get_running_loop().time()
         cutoff = now - self._window
 
         if telegram_id not in self._buckets:
@@ -69,7 +69,7 @@ class RateLimiter:
 
     async def purge_stale(self) -> int:
         """Remove buckets for inactive users. Call periodically."""
-        now = asyncio.get_event_loop().time()
+        now = asyncio.get_running_loop().time()
         cutoff = now - self._window * 2
         stale = [
             tid for tid, bucket in self._buckets.items()
