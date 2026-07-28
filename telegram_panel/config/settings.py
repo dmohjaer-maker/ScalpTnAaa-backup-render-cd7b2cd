@@ -94,9 +94,12 @@ class Settings:
         s = cls()
 
         # Telegram
-        s.telegram.bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        owner_raw = os.environ.get("TELEGRAM_OWNER_ID", "0")
-        s.telegram.owner_id = int(owner_raw) if owner_raw.isdigit() else 0
+        s.telegram.bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+        owner_raw = os.environ.get("TELEGRAM_OWNER_ID", "0").strip()
+        try:
+            s.telegram.owner_id = int(owner_raw) if owner_raw else 0
+        except (ValueError, OverflowError):
+            s.telegram.owner_id = 0
 
         admins_raw = os.environ.get("TELEGRAM_ADMIN_IDS", "")
         s.telegram.admin_ids = [
@@ -110,7 +113,7 @@ class Settings:
         )
 
         # Security
-        s.security.encryption_key = os.environ.get("PANEL_ENCRYPTION_KEY", "")
+        s.security.encryption_key = os.environ.get("PANEL_ENCRYPTION_KEY", "").strip()
         try:
             s.security.session_timeout_minutes = int(
                 os.environ.get("SESSION_TIMEOUT_MINUTES", "60")
