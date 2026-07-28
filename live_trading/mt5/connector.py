@@ -159,6 +159,51 @@ async def disconnect() -> None:
             log.warning(f"MT5 HTTP session close failed: {exc}")
     _session = None
 
+
+
+async def keepalive_mtapi() -> bool:
+    """
+    Ping the mt5rest bridge to prevent Render free-tier sleep (every ~10 min).
+    Returns True if the bridge responded, False otherwise.
+    """
+    base = MTAPI_URL.rstrip("/") if MTAPI_URL else ""
+    if not base:
+        return False
+    try:
+        sess = _get_session()
+        async with sess.get(
+            f"{base}/Ping",
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            ok = resp.status == 200
+            if ok:
+                log.debug("MTAPI keepalive ping OK")
+            else:
+                log.warning(f"MTAPI keepalive ping returned {resp.status}")
+            return ok
+    except Exception as exc:
+        log.warning(f"MTAPI keepalive ping failed: {exc}")
+        return False
+
+
+async def connect_with_retry(max_attempts: int = 3, retry_delay: float = 40.0) -> bool:
+    """
+    Connect to MT5, retrying up to max_attempts times.
+    On Render free tier the mt5rest bridge may be sleeping and need ~30s to wake.
+    """
+    for attempt in range(1, max_attempts + 1):
+        log.info(f"MT5 connect attempt {attempt}/{max_attempts} ...")
+        ok = await connect()
+        if ok:
+            return True
+        if attempt < max_attempts:
+            log.warning(
+                f"MT5 connect failed (attempt {attempt}). "
+                f"Waiting {retry_delay}s for mt5rest bridge to wake up ..."
+            )
+            await asyncio.sleep(retry_delay)
+    log.error(f"MT5 connect failed after {max_attempts} attempts.")
+    return False
 async def ensure_connected(*args, **kwargs) -> bool:
     """Check live connection status; reconnect if not connected.
     Extra positional/keyword args are accepted for backward compatibility
