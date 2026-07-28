@@ -260,8 +260,15 @@ class MT5Service:
         """Convert robot_state format into the mt5_snapshot format expected by get_account_info()."""
         account = state.get("account", {})
         raw_status = state.get("status", "stopped").upper()
-        connected = raw_status in ("RUNNING", "WAITING", "SCANNING", "HOLDING", "PAUSED")
-        conn_status = "connected" if connected else "disconnected"
+        # PAUSED is intentionally excluded: a paused robot may have lost its MT5
+        # connection and must not show "connected" in the panel.  Prefer the
+        # explicit connection_status field written by state_writer when present.
+        explicit = state.get("connection_status", "").lower()
+        if explicit in ("connected", "disconnected", "reconnecting", "failed"):
+            conn_status = explicit
+        else:
+            connected = raw_status in ("RUNNING", "WAITING", "SCANNING", "HOLDING")
+            conn_status = "connected" if connected else "disconnected"
         return {
             "account_info": {
                 "balance":          account.get("balance", 0.0),

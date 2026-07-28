@@ -47,6 +47,9 @@ _PANEL_COMMAND_MAP: dict = {
     "START":            "start",
     "RESTART_ENGINE":   "restart_engine",
     "RESTART_MT5":      "restart_mt5",
+    # "RECONNECT" is sent by the panel's account_service.reconnect(); map it
+    # to restart_mt5 so it actually triggers a reconnect in the live loop.
+    "RECONNECT":        "restart_mt5",
     "RESTART_TELEGRAM": "restart_telegram",
 }
 
@@ -156,10 +159,18 @@ def write_robot_state(
             } if decision.trade_params else None,
         }
 
-    # Derive connection/MT5 status from the trading status string.
-    # "RUNNING", "WAITING", "SCANNING", "HOLDING", "PAUSED" all mean the
-    # engine is connected to the broker; anything else is disconnected.
-    _connected = status.upper() in ("RUNNING", "WAITING", "SCANNING", "HOLDING", "PAUSED")
+    # Derive connection/MT5 status from the ACTUAL connector state.
+    # Using the robot loop-status string (RUNNING/PAUSED/WAITING) caused the
+    # panel to show "connected" even when the mt5rest bridge was unreachable
+    # (e.g. Render free-tier sleep, Guardian-paused robot, or mid-reconnect).
+    # We import lazily so state_writer stays importable in unit tests that
+    # don't initialise the connector.
+    try:
+        from live_trading.mt5.connector import is_connected as _mt5_is_connected
+        _connected = _mt5_is_connected()
+    except Exception:
+        # Fallback: derive from status string (original behaviour)
+        _connected = status.upper() in ("RUNNING", "WAITING", "SCANNING", "HOLDING")
     _conn_str = "connected" if _connected else "disconnected"
 
     # Convenience account dict (legacy "account" key kept for backward compat)
