@@ -1,7 +1,8 @@
 """
 Render free-tier web service wrapper — Telegram Control Panel.
 Runs a /health HTTP endpoint on $PORT alongside the Telegram bot.
-Ping /health every 14 min (e.g. UptimeRobot free) to keep awake.
+Self-ping keepalive task pings /health every 14 min — no external
+UptimeRobot needed to prevent Render free-tier sleep.
 """
 import asyncio
 import os
@@ -21,6 +22,10 @@ PORT = int(os.environ.get("PORT", 8081))
 # marked healthy before Render's restart policy takes over.
 _HEALTH_GRACE_SECONDS = 30
 
+# Self-ping keepalive: ping /health every 14 min so Render free-tier services
+# never spin down.  14 min < Render's 15-min inactivity threshold.
+_KEEPALIVE_INTERVAL_SECONDS = 840  # 14 minutes
+
 
 async def _health(_req: web.Request) -> web.Response:
     return web.Response(text="OK", content_type="text/plain")
@@ -39,6 +44,21 @@ async def _run_health_server() -> None:
         await asyncio.sleep(3600)
 
 
+async def _keepalive() -> None:
+    """Self-ping /health every 14 min to prevent Render free-tier sleep."""
+    await asyncio.sleep(30)  # wait for health server to fully start
+    url = f"http://127.0.0.1:{PORT}/health"
+    while True:
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    print(f"[keepalive] ping /health → {resp.status}", flush=True)
+        except Exception as exc:
+            print(f"[keepalive] ping failed: {exc}", flush=True)
+        await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
+
+
 async def _run_panel() -> None:
     from telegram_panel.main import TelegramPanel
     panel = TelegramPanel()
@@ -52,6 +72,7 @@ async def _main() -> None:
     # least _HEALTH_GRACE_SECONDS so Render records several successful checks
     # and marks the deploy healthy; its restart policy then handles the re-launch.
     health_task = asyncio.create_task(_run_health_server())
+    keepalive_task = asyncio.create_task(_keepalive())
 
     # Give the TCP server time to bind before anything else runs.
     await asyncio.sleep(1)
@@ -65,6 +86,12 @@ async def _main() -> None:
     except Exception as exc:
         print(f"[server] Unhandled panel exception: {exc}", flush=True)
         _exit_code = 1
+
+    keepalive_task.cancel()
+    try:
+        await keepalive_task
+    except asyncio.CancelledError:
+        pass
 
     if _exit_code != 0:
         # Keep health server alive so Render's health check can pass before
