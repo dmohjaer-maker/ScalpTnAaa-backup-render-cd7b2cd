@@ -28,6 +28,12 @@ PORT = int(os.environ.get("PORT", 8081))
 _BACKOFF_BASE = 10
 _BACKOFF_MAX  = 300
 
+# Self-ping keepalive: ping /health every 14 min to prevent Render free-tier
+# web services from spinning down after 15 min of inactivity.
+# Render deploys the panel as a web service (not a worker) so the 15-min
+# sleep timer applies.  14 min < 15 min threshold.
+_KEEPALIVE_INTERVAL_SECONDS = 840  # 14 minutes
+
 
 async def _health(_req: web.Request) -> web.Response:
     return web.Response(text="OK", content_type="text/plain")
@@ -46,6 +52,21 @@ async def _run_health_server() -> None:
         await asyncio.sleep(3600)
 
 
+async def _keepalive() -> None:
+    """Self-ping /health every 14 min to prevent Render free-tier sleep."""
+    await asyncio.sleep(30)  # wait for health server to start
+    import aiohttp
+    url = f"http://127.0.0.1:{PORT}/health"
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    print(f"[keepalive] ping /health -> {resp.status}", flush=True)
+        except Exception as exc:
+            print(f"[keepalive] ping failed: {exc}", flush=True)
+        await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
+
+
 async def _run_panel() -> None:
     from telegram_panel.main import TelegramPanel
     panel = TelegramPanel()
@@ -55,6 +76,7 @@ async def _run_panel() -> None:
 async def _main() -> None:
     # Health server runs in the background for debugging; never stopped.
     asyncio.create_task(_run_health_server())
+    asyncio.create_task(_keepalive())
     await asyncio.sleep(1)
     print("[server] Health server ready. Starting Telegram panel...", flush=True)
 
