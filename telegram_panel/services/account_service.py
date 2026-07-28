@@ -264,9 +264,13 @@ class AccountService:
         }
 
     async def reconnect(self, account_id: int) -> bool:
-        if self._mt5:
-            result = await self._mt5.send_trade_command(
-                "RECONNECT", {"account_id": account_id}
-            )
-            return result.get("success", False)
+        """Send RECONNECT command to the robot via Redis (or HTTP fallback).
+
+        Fixed: previously called self._mt5.send_trade_command() which does not
+        exist on MT5Service and always raised AttributeError.  The reconnect
+        command must go through the robot service so the trading engine can
+        trigger an MT5 disconnect/reconnect cycle via its command processor.
+        """
+        if self._robot:
+            return await self._robot.send_command("RECONNECT")
         return False
