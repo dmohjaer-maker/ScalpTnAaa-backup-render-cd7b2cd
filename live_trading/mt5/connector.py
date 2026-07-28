@@ -186,10 +186,10 @@ async def keepalive_mtapi() -> bool:
         return False
 
 
-async def connect_with_retry(max_attempts: int = 3, retry_delay: float = 40.0) -> bool:
+async def connect_with_retry(max_attempts: int = 5, retry_delay: float = 60.0) -> bool:
     """
     Connect to MT5, retrying up to max_attempts times.
-    On Render free tier the mt5rest bridge may be sleeping and need ~30s to wake.
+    On Render free tier the mt5rest bridge may be sleeping and need 60-90s to cold-start.
     """
     for attempt in range(1, max_attempts + 1):
         log.info(f"MT5 connect attempt {attempt}/{max_attempts} ...")
