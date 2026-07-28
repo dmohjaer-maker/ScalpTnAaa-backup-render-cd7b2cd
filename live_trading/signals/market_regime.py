@@ -61,7 +61,13 @@ def _calc_atr_values(candles: List[OHLCV], period: int = 20):
         trs.append(max(c.high - c.low, abs(c.high - p.close), abs(c.low - p.close)))
     if not trs:
         return 0.0, 0.0, 1.0
-    atr      = trs[-1]
+    # Use a 5-bar average for the "current" ATR instead of the single last TR.
+    # A single-bar TR spike (e.g. from a news wick) would otherwise instantly
+    # flip the regime to HIGH_VOLATILITY and block valid trade entries for the
+    # entire bar.  A 5-bar average still reacts quickly to real volatility
+    # expansions while filtering one-candle outliers.
+    short_window = min(5, len(trs))
+    atr      = sum(trs[-short_window:]) / short_window
     atr_mean = sum(trs[-period:]) / min(period, len(trs))
     atr_ratio = round(atr / atr_mean, 3) if atr_mean > 0 else 1.0
     return atr, atr_mean, atr_ratio
