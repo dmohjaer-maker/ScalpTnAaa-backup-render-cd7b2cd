@@ -8,6 +8,9 @@ Reads live account and position data from MT5 via:
 
 The robot engine is the authoritative source of live MT5 data.
 This service reads the account snapshot file the robot maintains.
+
+FIX: Added base_url parameter and _read_snapshot_http() so the panel
+can fetch live MT5 snapshot data via HTTP when Redis is unavailable.
 """
 
 import os
@@ -29,8 +32,13 @@ class MT5Service:
     Falls back to stub data gracefully — never raises to callers.
     """
 
-    def __init__(self, snapshot_path: str = "robot_mt5_snapshot.json") -> None:
+    def __init__(
+        self,
+        snapshot_path: str = "robot_mt5_snapshot.json",
+        base_url: str = "",
+    ) -> None:
         self._snapshot_path = snapshot_path
+        self._base_url: str = base_url.rstrip("/") if base_url else ""
         self._cache: dict[str, Any] = {}
         self._cache_ts: Optional[float] = None
         self._cache_ttl: float = 3.0
@@ -100,8 +108,8 @@ class MT5Service:
                     open_price=raw.get("price", 0.0),
                     stop_loss=raw.get("sl"),
                     take_profit=raw.get("tp"),
-                    placed_at=datetime.fromisoformat(raw["placed_at"])
-                        if raw.get("placed_at") else datetime.now(timezone.utc),
+                    placed_time=datetime.fromisoformat(raw["placed_time"])
+                        if raw.get("placed_time") else datetime.now(timezone.utc),
                     comment=raw.get("comment"),
                     magic=raw.get("magic", 0),
                 )
@@ -110,28 +118,41 @@ class MT5Service:
                 logger.warning(f"Failed to parse pending order: {e}")
         return orders
 
-    async def get_connection_status(self) -> ConnectionStatus:
+    async def get_recent_trades(self, limit: int = 20) -> list[Trade]:
         snapshot = await self._read_snapshot()
-        raw = snapshot.get("connection_status", "disconnected")
-        try:
-            return ConnectionStatus(raw)
-        except ValueError:
-            return ConnectionStatus.DISCONNECTED
-
-    async def get_today_profit(self) -> float:
-        snapshot = await self._read_snapshot()
-        return snapshot.get("today_profit", 0.0)
-
-    async def get_floating_profit(self) -> float:
-        snapshot = await self._read_snapshot()
-        return snapshot.get("floating_profit", 0.0)
+        trades_raw = snapshot.get("recent_trades", [])
+        trades = []
+        for raw in trades_raw[-limit:]:
+            try:
+                trade = Trade(
+                    ticket=raw.get("ticket", 0),
+                    symbol=raw.get("symbol", "XAUUSD"),
+                    direction=TradeDirection(raw.get("type", "BUY")),
+                    volume=raw.get("volume", 0.01),
+                    open_price=raw.get("open_price", 0.0),
+                    close_price=raw.get("close_price", 0.0),
+                    stop_loss=raw.get("sl"),
+                    take_profit=raw.get("tp"),
+                    open_time=datetime.fromisoformat(raw["open_time"])
+                        if raw.get("open_time") else datetime.now(timezone.utc),
+                    close_time=datetime.fromisoformat(raw["close_time"])
+                        if raw.get("close_time") else None,
+                    profit=raw.get("profit", 0.0),
+                    commission=raw.get("commission", 0.0),
+                    swap=raw.get("swap", 0.0),
+                    status=TradeStatus.CLOSED,
+                    comment=raw.get("comment"),
+                    magic=raw.get("magic", 0),
+                )
+                trades.append(trade)
+            except Exception as e:
+                logger.warning(f"Failed to parse trade: {e}")
+        return trades
 
     async def get_drawdown(self) -> dict[str, float]:
         snapshot = await self._read_snapshot()
         dd = snapshot.get("drawdown", {})
         return {
-            "current": dd.get("current", 0.0),
-            "max": dd.get("max", 0.0),
             "current_percent": dd.get("current_percent", 0.0),
             "max_percent": dd.get("max_percent", 0.0),
         }
@@ -176,12 +197,17 @@ class MT5Service:
             logger.error(f"Trade command failed: {e}")
             return {"success": False, "error": str(e)}
 
+    async def get_fresh_snapshot(self) -> dict[str, Any]:
+        """Force a fresh read bypassing cache. Used for live connection testing."""
+        self._cache_ts = None
+        return await self._read_snapshot()
+
     async def _read_snapshot(self) -> dict[str, Any]:
         now = asyncio.get_event_loop().time()
         if self._cache_ts and (now - self._cache_ts) < self._cache_ttl:
             return self._cache
 
-        # Try Redis first — works across separate Render services.
+        # 1. Try Redis first — works across separate Render services.
         # Without REDIS_URL this is a no-op and falls through to file reads.
         redis_data = self._read_from_redis()
         if redis_data:
@@ -189,6 +215,15 @@ class MT5Service:
             self._cache_ts = now
             return self._cache
 
+        # 2. Try HTTP endpoint on robot (FIX: new fallback when Redis is unavailable)
+        if self._base_url:
+            http_data = await self._read_snapshot_http()
+            if http_data:
+                self._cache = http_data
+                self._cache_ts = now
+                return self._cache
+
+        # 3. Local snapshot file
         if not os.path.exists(self._snapshot_path):
             # Also try the robot state file (has account balance data)
             state_path = self._snapshot_path.replace("mt5_snapshot", "state")
@@ -230,10 +265,11 @@ class MT5Service:
             return {}
 
     def _read_from_redis(self) -> dict[str, Any]:
-        """Try Redis snapshot key, fall back to Redis state key. Returns {} if Redis unavailable."""
+        """Read MT5 snapshot from Redis — works across separate Render services."""
         try:
-            from telegram_panel.redis_ipc import (
-                redis_read_snapshot, redis_read_state, redis_available,
+            from ..redis_ipc import (
+                redis_read_snapshot, redis_read_state,
+                redis_available,
             )
             if not redis_available():
                 return {}
@@ -254,6 +290,31 @@ class MT5Service:
         except Exception as e:
             logger.debug(f"Redis snapshot read failed: {e}")
             return {}
+
+    async def _read_snapshot_http(self) -> dict[str, Any]:
+        """Fetch MT5 snapshot from the robot's /snapshot HTTP endpoint.
+
+        This is the HTTP fallback when Redis is unavailable or empty.
+        The /snapshot endpoint is read-only and requires no authentication.
+        """
+        if not self._base_url:
+            return {}
+        url = f"{self._base_url}/snapshot"
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(content_type=None)
+                        if isinstance(data, dict):
+                            logger.debug("MT5 snapshot fetched via HTTP /snapshot")
+                            return data
+        except Exception as exc:
+            logger.debug(f"HTTP /snapshot fetch failed: {exc}")
+        return {}
 
     @staticmethod
     def _normalize_state_to_snapshot(state: dict) -> dict:

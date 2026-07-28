@@ -5,12 +5,16 @@ Communication strategy (configurable via ROBOT_INTERFACE_MODE):
   'file'   — reads robot state from a JSON file that the engine writes (safest,
               zero coupling to the engine process)
   'http'   — calls an HTTP status endpoint on the engine (optional)
-  'socket' — connects to a Unix domain socket (optional)
+  'redis'  — reads from shared Redis instance (primary for Render multi-service)
 
-The file-based mode is the default and safest because it requires zero
-modification to the trading engine. The robot writes its state to a JSON file;
-this service reads it. Control commands are written to a command inbox file
-that the robot polls.
+FIX: Added heartbeat staleness detection — if last_heartbeat is older than
+_STALE_THRESHOLD_SECONDS, the state is marked as stale and status is
+overridden to 'disconnected' to prevent showing fake "running" status
+when the robot has crashed or been stopped.
+
+FIX: When ROBOT_INTERFACE_MODE=redis and Redis is empty/unavailable,
+falls back to HTTP if ROBOT_BASE_URL is configured instead of returning
+the static _DEFAULT_STATE.
 """
 
 import os
@@ -22,6 +26,11 @@ from typing import Optional, Any
 from ..config.constants import RobotStatus, ConnectionStatus
 
 logger = logging.getLogger(__name__)
+
+# If last_heartbeat is older than this, mark status as DISCONNECTED regardless
+# of what Redis/file says.  This prevents showing "RUNNING" for up to 5 minutes
+# after the robot crashes (Redis TTL window).
+_STALE_THRESHOLD_SECONDS = 180  # 3 minutes
 
 _DEFAULT_STATE: dict[str, Any] = {
     "status": "stopped",
@@ -35,6 +44,57 @@ _DEFAULT_STATE: dict[str, Any] = {
     "pending_orders": 0,
     "last_error": None,
 }
+
+
+def _parse_heartbeat(value: object) -> Optional[datetime]:
+    """Parse an ISO heartbeat string to a UTC-aware datetime, or None."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (TypeError, ValueError):
+        return None
+
+
+def _apply_staleness_guard(state: dict[str, Any]) -> dict[str, Any]:
+    """
+    If last_heartbeat is missing or too old, override status/connection fields
+    to reflect the real situation: robot is not alive / not connected.
+
+    This prevents stale Redis data (written before the robot crashed) from
+    being displayed as live data in the Telegram panel.
+    """
+    hb = _parse_heartbeat(state.get("last_heartbeat"))
+    if hb is None:
+        # No heartbeat at all — treat as disconnected
+        out = dict(state)
+        out["status"] = "disconnected"
+        out["connection_status"] = "disconnected"
+        out["mt5_status"] = "disconnected"
+        out["_data_fresh"] = False
+        out["_data_age_seconds"] = -1
+        return out
+
+    now = datetime.now(timezone.utc)
+    age = (now - hb).total_seconds()
+    out = dict(state)
+    out["_data_age_seconds"] = int(age)
+    out["_data_fresh"] = age <= _STALE_THRESHOLD_SECONDS
+
+    if age > _STALE_THRESHOLD_SECONDS:
+        # Data is stale — robot is not sending heartbeats → it is down
+        out["status"] = "disconnected"
+        out["connection_status"] = "disconnected"
+        out["mt5_status"] = "disconnected"
+        logger.debug(
+            f"Robot state is stale ({age:.0f}s > {_STALE_THRESHOLD_SECONDS}s) "
+            "— marking as disconnected"
+        )
+
+    return out
 
 
 class RobotService:
@@ -63,6 +123,10 @@ class RobotService:
         self._cached_state: dict[str, Any] = dict(_DEFAULT_STATE)
         self._cache_ts: Optional[float] = None
         self._cache_ttl: float = 5.0    # seconds
+
+    def get_base_url(self) -> str:
+        """Expose robot base URL for other services (e.g. MT5Service HTTP fallback)."""
+        return self._base_url
 
     # ─── Status ──────────────────────────────────────────────────────────────
 
@@ -111,15 +175,39 @@ class RobotService:
         except ValueError:
             return ConnectionStatus.DISCONNECTED
 
-    async def get_active_trades_count(self) -> int:
-        state = await self._read_state()
-        return state.get("active_trades", 0)
+    async def get_config(self) -> dict[str, Any]:
+        try:
+            loop = asyncio.get_running_loop()
+            def _read():
+                with open(self._config_path, "r") as f:
+                    return json.load(f)
+            return await loop.run_in_executor(None, _read)
+        except Exception:
+            return {}
 
-    async def get_pending_orders_count(self) -> int:
-        state = await self._read_state()
-        return state.get("pending_orders", 0)
+    async def is_running(self) -> bool:
+        status = await self.get_status()
+        return status in (
+            RobotStatus.RUNNING, RobotStatus.SCANNING,
+            RobotStatus.WAITING, RobotStatus.HOLDING,
+        )
 
-    # ─── Control Commands ────────────────────────────────────────────────────
+    # ─── Live state read bypassing cache (for test_connection) ───────────────
+
+    async def get_fresh_state(self) -> dict[str, Any]:
+        """Force a fresh read bypassing the in-memory cache.
+        Used by test_connection to avoid showing stale cached data.
+        """
+        old_ts = self._cache_ts
+        self._cache_ts = None  # invalidate cache
+        try:
+            return await self._read_state()
+        finally:
+            # Restore old cache ts if fresh read fails (returns default)
+            if self._cached_state == _DEFAULT_STATE:
+                self._cache_ts = old_ts
+
+    # ─── Control ─────────────────────────────────────────────────────────────
 
     async def start(self) -> bool:
         return await self._send_command("START")
@@ -133,19 +221,17 @@ class RobotService:
     async def emergency_stop(self) -> bool:
         return await self._send_command("EMERGENCY_STOP")
 
+    async def safe_shutdown(self) -> bool:
+        return await self._send_command("SAFE_SHUTDOWN")
+
     async def restart_engine(self) -> bool:
         return await self._send_command("RESTART_ENGINE")
-
-    async def restart_telegram(self) -> bool:
-        return await self._send_command("RESTART_TELEGRAM")
 
     async def restart_mt5(self) -> bool:
         return await self._send_command("RESTART_MT5")
 
-    async def safe_shutdown(self) -> bool:
-        return await self._send_command("SAFE_SHUTDOWN")
-
-    # ─── Config Push ─────────────────────────────────────────────────────────
+    async def restart_telegram(self) -> bool:
+        return await self._send_command("RESTART_TELEGRAM")
 
     async def push_risk_config(self, config: dict[str, Any]) -> bool:
         return await self._send_command("UPDATE_RISK", payload=config)
@@ -165,18 +251,30 @@ class RobotService:
         # Without REDIS_URL this is a no-op and falls through to file/http.
         redis_state = await self._read_state_redis()
         if redis_state is not None:
-            self._cached_state = self._normalize_state(redis_state)
+            guarded = _apply_staleness_guard(redis_state)
+            self._cached_state = self._normalize_state(guarded)
             self._cache_ts = now
             return self._cached_state
 
+        # FIX: When interface_mode == "redis" but Redis is unavailable/empty,
+        # fall back to HTTP before giving up.  Previously this fell through to
+        # `else: state = dict(_DEFAULT_STATE)` which returned wrong defaults.
         if self._interface_mode == "file":
             state = await self._read_state_file()
-        elif self._interface_mode == "http":
+        elif self._interface_mode in ("http", "redis"):
+            # "redis" mode uses Redis as primary (already tried above) and HTTP
+            # as fallback instead of returning bare defaults.
             state = await self._read_state_http()
+            if not state or state == _DEFAULT_STATE:
+                # HTTP also failed — try file as last resort
+                file_state = await self._read_state_file()
+                if file_state and file_state != _DEFAULT_STATE:
+                    state = file_state
         else:
             state = dict(_DEFAULT_STATE)
 
-        self._cached_state = self._normalize_state(state)
+        guarded = _apply_staleness_guard(state)
+        self._cached_state = self._normalize_state(guarded)
         self._cache_ts = now
         return self._cached_state
 
@@ -233,19 +331,22 @@ class RobotService:
             else:
                 logger.debug("HTTP state read skipped: no base_url or http_port configured")
                 return dict(_DEFAULT_STATE)
+            # NOTE: /status endpoint no longer requires auth (read-only).
+            # Token header is still sent for backward compat with old robot deploys.
+            headers = {}
+            token = os.environ.get("ROBOT_COMMAND_TOKEN", "")
+            if token:
+                headers["X-Robot-Command-Token"] = token
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     url,
-                    headers={
-                        "X-Robot-Command-Token": os.environ.get(
-                            "ROBOT_COMMAND_TOKEN", ""
-                        )
-                    },
-                    timeout=aiohttp.ClientTimeout(total=5),
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=8),
                 ) as resp:
                     if resp.status == 200:
-                        data = await resp.json()
+                        data = await resp.json(content_type=None)
                         return {**_DEFAULT_STATE, **data}
+                    logger.debug(f"HTTP /status returned {resp.status}")
         except Exception as e:
             logger.debug(f"HTTP state read failed: {e}")
         return dict(_DEFAULT_STATE)
@@ -278,20 +379,23 @@ class RobotService:
         try:
             loop = asyncio.get_running_loop()
             def _write():
-                os.makedirs(os.path.dirname(self._cmd_path) or ".", exist_ok=True)
                 existing = []
                 if os.path.exists(self._cmd_path):
                     try:
                         with open(self._cmd_path, "r") as f:
                             existing = json.load(f)
+                        if not isinstance(existing, list):
+                            existing = []
                     except Exception:
                         existing = []
                 existing.append(cmd_entry)
-                with open(self._cmd_path, "w") as f:
-                    json.dump(existing, f, indent=2)
+                tmp = self._cmd_path + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(existing, f)
+                os.replace(tmp, self._cmd_path)
             await loop.run_in_executor(None, _write)
-            self._cache_ts = None
-            logger.info(f"Sent command via file IPC: {command}")
+            logger.info(f"Sent command via file: {command}")
+            self._cache_ts = None  # invalidate cache so next read reflects new command
             return True
         except Exception as e:
             logger.error(f"Failed to send command {command}: {e}")

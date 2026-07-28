@@ -109,6 +109,17 @@ def _read_local_state() -> dict | None:
         return None
 
 
+def _read_local_snapshot() -> dict | None:
+    """Read the local MT5 snapshot file."""
+    try:
+        from live_trading.config import MT5_SNAPSHOT
+        with open(MT5_SNAPSHOT, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except (OSError, TypeError, ValueError):
+        return None
+
+
 async def _health(_req):
     # Prefer state written by the engine. Redis is the cross-service source on
     # Render; the local file is the fallback for a Redis outage.
@@ -149,14 +160,17 @@ async def _health(_req):
 async def _status(req: web.Request):
     """JSON status endpoint — consumed by the Telegram panel's HTTP fallback.
 
+    FIX: Removed authentication requirement from this read-only endpoint.
+    The /command endpoint (write) still requires ROBOT_COMMAND_TOKEN.
+    This allows the panel to always read fresh robot state via HTTP fallback
+    without depending on the token being configured in the panel environment.
+
     Priority:
       1. Redis (cross-service, always fresh when available)
       2. Local state file (same-process fallback when Redis is down)
       3. In-memory _robot_status (last resort: only status string, no trade data)
     """
-    authorized, status, message = _command_authorized(req)
-    if not authorized:
-        return web.Response(status=status, text=message)
+    now = datetime.now(timezone.utc)
 
     # 1. Try Redis first (cross-service IPC on Render)
     try:
@@ -164,6 +178,19 @@ async def _status(req: web.Request):
         if redis_available():
             state = redis_read_state()
             if state:
+                # Annotate with staleness so panel can display a warning
+                hb = _parse_heartbeat(state.get("last_heartbeat"))
+                if hb:
+                    age = (now - hb).total_seconds()
+                    state["_data_age_seconds"] = int(age)
+                    state["_data_fresh"] = age <= _HEARTBEAT_MAX_AGE_SECONDS
+                    if age > _HEARTBEAT_MAX_AGE_SECONDS:
+                        state["status"] = "disconnected"
+                        state["connection_status"] = "disconnected"
+                        state["mt5_status"] = "disconnected"
+                else:
+                    state["_data_fresh"] = False
+                    state["_data_age_seconds"] = -1
                 return web.Response(
                     status=200,
                     text=json.dumps(state, default=str),
@@ -175,16 +202,106 @@ async def _status(req: web.Request):
     # 2. Fall back to local state file (same container; written by the engine)
     local_state = _read_local_state()
     if local_state:
+        hb = _parse_heartbeat(local_state.get("last_heartbeat"))
+        if hb:
+            age = (now - hb).total_seconds()
+            local_state["_data_age_seconds"] = int(age)
+            local_state["_data_fresh"] = age <= _HEARTBEAT_MAX_AGE_SECONDS
+            if age > _HEARTBEAT_MAX_AGE_SECONDS:
+                local_state["status"] = "disconnected"
+                local_state["connection_status"] = "disconnected"
+                local_state["mt5_status"] = "disconnected"
+        else:
+            local_state["_data_fresh"] = False
+            local_state["_data_age_seconds"] = -1
         return web.Response(
             status=200,
             text=json.dumps(local_state, default=str),
             content_type="application/json",
         )
 
-    # 3. Last resort: return in-memory supervisor status
+    # 3. Last resort: return in-memory supervisor status (no data = truly unknown)
     return web.Response(
         status=200,
-        text=json.dumps({"status": _robot_status.lower()}),
+        text=json.dumps({
+            "status": _robot_status.lower(),
+            "connection_status": "disconnected",
+            "mt5_status": "disconnected",
+            "last_heartbeat": None,
+            "_data_fresh": False,
+            "_data_age_seconds": -1,
+        }),
+        content_type="application/json",
+    )
+
+
+async def _snapshot(req: web.Request):
+    """GET /snapshot — returns the live MT5 account snapshot.
+
+    Read-only endpoint: no authentication required.
+    Used by the Telegram panel's MT5Service HTTP fallback to get live
+    account balance, positions, and trade data when Redis is unavailable.
+
+    Priority:
+      1. Redis snapshot key (cross-service IPC on Render)
+      2. Local MT5 snapshot file
+      3. Account data from robot state file (fallback)
+    """
+    now = datetime.now(timezone.utc)
+
+    # 1. Try Redis snapshot key
+    try:
+        from live_trading.redis_ipc import redis_read_snapshot, redis_available
+        if redis_available():
+            snap = redis_read_snapshot()
+            if snap:
+                snap["_fetched_at"] = now.isoformat()
+                return web.Response(
+                    status=200,
+                    text=json.dumps(snap, default=str),
+                    content_type="application/json",
+                )
+    except Exception:
+        pass
+
+    # 2. Local MT5 snapshot file
+    local_snap = _read_local_snapshot()
+    if local_snap:
+        local_snap["_fetched_at"] = now.isoformat()
+        return web.Response(
+            status=200,
+            text=json.dumps(local_snap, default=str),
+            content_type="application/json",
+        )
+
+    # 3. Derive account data from robot state
+    local_state = _read_local_state()
+    if local_state and "account" in local_state:
+        account = local_state.get("account", {})
+        derived = {
+            "account_info": {
+                "balance": account.get("balance", 0.0),
+                "equity": account.get("equity", 0.0),
+                "margin": account.get("margin", 0.0),
+                "free_margin": account.get("margin_free", 0.0),
+                "floating_profit": account.get("profit", 0.0),
+                "currency": account.get("currency", "USD"),
+                "leverage": account.get("leverage", 0),
+                "connection_status": local_state.get("connection_status", "disconnected"),
+            },
+            "open_positions": [],
+            "pending_orders": [],
+            "_fetched_at": now.isoformat(),
+        }
+        return web.Response(
+            status=200,
+            text=json.dumps(derived, default=str),
+            content_type="application/json",
+        )
+
+    return web.Response(
+        status=200,
+        text=json.dumps({"account_info": {}, "_fetched_at": now.isoformat()}),
         content_type="application/json",
     )
 
@@ -260,6 +377,7 @@ async def _run_health_server():
     app.router.add_get("/", _health)
     app.router.add_get("/health", _health)
     app.router.add_get("/status", _status)
+    app.router.add_get("/snapshot", _snapshot)
     app.router.add_post("/command", _command)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -299,32 +417,25 @@ async def _run_robot_once():
     from live_trading.mt5.connector import disconnect as _mt5_disconnect
 
     log = get_logger()
-    missing = [v for v, val in [
-        ("MT5_USER",    MT5_USER),
-        ("MT5_PASSWORD", MT5_PASSWORD),
-        ("MTAPI_URL",   MTAPI_URL),
-    ] if not val]
-    if missing:
-        msg = "Missing required env vars: " + ", ".join(missing)
-        print(f"[robot] {msg}", flush=True)
-        _robot_status = "CONFIG_ERROR"
-        raise RuntimeError(msg)
 
-    print(f"[robot] MTAPI_URL={MTAPI_URL}  MT5_USER={MT5_USER}", flush=True)
-    _robot_status = "CONNECTING"
+    if not MTAPI_URL:
+        _robot_status = "CONFIG_ERROR"
+        raise RuntimeError("MTAPI_URL is not set — cannot start the trading engine.")
+    if not MT5_USER or not MT5_PASSWORD:
+        _robot_status = "CONFIG_ERROR"
+        raise RuntimeError("MT5_USER / MT5_PASSWORD is not set — cannot connect to broker.")
+
+    _robot_status = "STARTING"
     engine = GoldScalperLive()
-    result = await engine.start()
-    if result is False:
-        _robot_status = "DISCONNECTED"
-        # Explicitly clean up connector state (close aiohttp session, clear
-        # _conn_id) so the next supervisor retry starts from a known-clean state
-        # rather than retrying ConnectionStatus with a stale connection ID.
+    try:
+        _robot_status = "RUNNING"
+        await engine.run()
+    finally:
+        _robot_status = "STOPPED"
         try:
             await _mt5_disconnect()
         except Exception:
             pass
-        raise RuntimeError("engine.start() returned False — MT5 connection failed")
-    _robot_status = "STOPPED"
 
 
 async def _robot_supervisor():

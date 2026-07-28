@@ -273,10 +273,45 @@ class AccountsHandler(BaseHandler):
         ok, _ = await self._auth.check_permission(update, "can_view_accounts")
         if not ok:
             return
-        await self.answer_callback(update, "Testing connection...")
+        await self.answer_callback(update, "🔍 Testing live connection...")
         result = await self._accounts.test_connection(account_id)
+        checked = result.get("checked_at", "")
+        hb = result.get("last_heartbeat", "—")
+        age = result.get("data_age_seconds", -1)
+
         if result.get("success"):
-            msg = f"✅ Connected\nBalance: {result.get('balance', 0):.2f}"
+            bal = result.get("balance", 0.0)
+            cur = result.get("currency", "USD")
+            robot_st = result.get("robot_status", "running").upper()
+            msg = (
+                f"✅ Connected\n"
+                f"Robot: {robot_st}\n"
+                f"MT5: CONNECTED\n"
+                f"Balance: {cur} {bal:,.2f}\n"
+                f"Heartbeat: {hb}\n"
+                f"Checked: {checked}"
+            )
         else:
-            msg = f"❌ Failed: {result.get('error', 'Unknown')}"
+            robot_alive = result.get("robot_alive", False)
+            robot_st = result.get("robot_status", "unknown").upper()
+            mt5_st = result.get("mt5_status", "unknown").upper()
+            err = result.get("error", "Unknown error")
+            age_str = f"{age}s ago" if age >= 0 else "never"
+            if robot_alive:
+                msg = (
+                    f"⚠️ Robot Online but MT5 Disconnected\n"
+                    f"Robot: {robot_st}\n"
+                    f"MT5: {mt5_st}\n"
+                    f"Heartbeat: {hb}\n"
+                    f"Error: {err}\n"
+                    f"Checked: {checked}"
+                )
+            else:
+                msg = (
+                    f"❌ Robot Offline\n"
+                    f"Last seen: {age_str}\n"
+                    f"Status: {robot_st}\n"
+                    f"Error: {err}\n"
+                    f"Checked: {checked}"
+                )
         await self.answer_callback(update, msg, show_alert=True)

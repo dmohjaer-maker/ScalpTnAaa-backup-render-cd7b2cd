@@ -96,9 +96,12 @@ class BotApplication:
         snapshot_path = self._settings.robot.state_path.replace(
             "state", "mt5_snapshot"
         )
-        mt5_svc = MT5Service(snapshot_path=snapshot_path)
+        mt5_svc = MT5Service(
+            snapshot_path=snapshot_path,
+            base_url=self._settings.robot.base_url,
+        )
 
-        account_svc = AccountService(account_repo, encryption, mt5_svc)
+        account_svc = AccountService(account_repo, encryption, mt5_svc, robot_svc)
         trade_svc = TradeService(mt5_svc)
         risk_svc = RiskService(settings_repo, robot_svc)
         strategy_svc = StrategyService(settings_repo, robot_svc)

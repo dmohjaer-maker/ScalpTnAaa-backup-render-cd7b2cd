@@ -67,15 +67,35 @@ class MessageFormatter:
             status_label = status.upper()
 
         last_hb = robot_state.get("last_heartbeat", "—")
+        data_age_seconds = -1
+        stale_warning = ""
         if last_hb and last_hb != "—":
             try:
-                hb_dt = datetime.fromisoformat(last_hb)
+                hb_dt = datetime.fromisoformat(str(last_hb).replace("Z", "+00:00"))
                 if hb_dt.tzinfo is None:
                     hb_dt = hb_dt.replace(tzinfo=timezone.utc)
                 elapsed = (datetime.now(timezone.utc) - hb_dt).total_seconds()
-                last_hb = f"{int(elapsed)}s ago"
+                data_age_seconds = int(elapsed)
+                if elapsed < 60:
+                    last_hb = f"{int(elapsed)}s ago"
+                elif elapsed < 3600:
+                    last_hb = f"{int(elapsed // 60)}m {int(elapsed % 60)}s ago"
+                else:
+                    last_hb = f"{int(elapsed // 3600)}h ago"
+                # FIX: Show staleness warning if data is older than 3 minutes
+                if elapsed > 180:
+                    stale_warning = (
+                        f"\n⚠️ <b>STALE DATA</b> — last seen {last_hb}. "
+                        f"Robot may be offline."
+                    )
             except Exception:
                 pass
+        else:
+            stale_warning = "\n⚠️ <b>No heartbeat received.</b> Robot may be offline."
+
+        # Use the staleness flag injected by robot_service if available
+        if not robot_state.get("_data_fresh", True) and not stale_warning:
+            stale_warning = "\n⚠️ <b>STALE DATA</b> — Robot heartbeat not recent."
 
         conn_status = robot_state.get("connection_status", "disconnected")
         conn_icon = "🟢" if conn_status == "connected" else "🔴"
@@ -110,6 +130,7 @@ class MessageFormatter:
             f"{conn_icon} <b>Broker:</b>   {conn_status.upper()}\n"
             f"{mt5_icon} <b>MT5:</b>      {mt5_status.upper()}\n"
             f"💓 <b>Heartbeat:</b> {last_hb}\n"
+            f"{stale_warning}"
             f"{acc_lines}"
             f"<code>{_DIVIDER}</code>\n"
             f"📈 <b>Open Trades:</b>   {active_trades}\n"
