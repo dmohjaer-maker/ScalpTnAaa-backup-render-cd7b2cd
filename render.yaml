@@ -60,7 +60,7 @@ services:
       - key: RISK_PERCENT
         value: "1.0"
       - key: MIN_CONFIRMATIONS
-        value: "3"
+        value: "2"
       # ── Risk Guardian circuit breakers ──────────────────────────────────────
       - key: DAILY_LOSS_LIMIT_PCT
         value: "3.0"
@@ -113,6 +113,15 @@ services:
         value: "3.11.0"
       - key: PANEL_DB_PATH
         value: "/tmp/panel.db"
+      # ── MT5 credentials — used by auto_seed to restore account after restart ─
+      - key: MT5_USER
+        sync: false
+      - key: MT5_PASSWORD
+        sync: false
+      - key: MT5_HOST
+        value: "AMarkets-Demo"
+      - key: MT5_ACCOUNT_TYPE
+        value: "demo"
       - key: LOG_LEVEL
         value: "INFO"
       # ── Robot control interface ────────────────────────────────────────────
