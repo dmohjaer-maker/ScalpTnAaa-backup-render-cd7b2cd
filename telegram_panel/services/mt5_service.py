@@ -138,9 +138,23 @@ class MT5Service:
 
     async def send_trade_command(self, command: str, params: dict[str, Any]) -> dict[str, Any]:
         """
-        Write a trade command to the MT5 command queue file.
-        The robot engine processes these on next tick.
+        Send a trade command to the robot engine.
+        Tries Redis first (works across separate Render containers), then falls
+        back to a local file for single-machine deployments.
         """
+        # ── Redis path — works cross-service on Render ──────────────────────
+        try:
+            from ..redis_ipc import redis_send_command, redis_available
+            if redis_available():
+                ok = redis_send_command(command, params)
+                if ok:
+                    logger.info(f"Trade command '{command}' sent via Redis")
+                    return {"success": True}
+                logger.warning(f"Redis send_command returned False for '{command}' — falling back to file")
+        except Exception as _e:
+            logger.warning(f"Redis send_command error ({_e}) — falling back to file")
+
+        # ── File fallback — single-machine / Redis unavailable ──────────────
         cmd_path = self._snapshot_path.replace("snapshot", "trade_commands")
         cmd = {"command": command, "params": params, "issued_at": datetime.now(timezone.utc).isoformat()}
         try:
