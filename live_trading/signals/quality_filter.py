@@ -9,7 +9,7 @@ from live_trading.signals.gold_engine import OHLCV
 from live_trading.signals.market_regime import calc_adx
 
 ALLOWED_SESSIONS = [
-    (0,  3,  "MODERATE"),
+    (0,  7,  "MODERATE"),
     (7,  12, "PRIME"),
     (12, 17, "PRIME"),
     (17, 22, "MODERATE"),
@@ -18,7 +18,7 @@ ALLOWED_SESSIONS = [
 LATE_EXTENSION_MULT = 3.5
 MOMENTUM_BARS       = 5
 STALE_BAR_COUNT     = 30
-CONF_HARD_MIN       = 70
+CONF_HARD_MIN       = 62
 
 
 @dataclass
@@ -165,7 +165,7 @@ def apply_quality_filter(
     if late:
         reasons.append("Late entry: overextended from EMA50 or stale BOS")
 
-    low_mom = adx_val < 15
+    low_mom = adx_val < 10
     if low_mom:
         reasons.append(f"Low momentum: ADX {adx_val:.1f} < 15")
 
