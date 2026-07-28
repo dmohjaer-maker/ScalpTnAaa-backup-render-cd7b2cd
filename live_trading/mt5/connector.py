@@ -227,8 +227,13 @@ async def fetch_candles(
 
             candles: List[OHLCV] = []
             for bar in data:
-                # Keep time as ISO string (matches OHLCV.time: str)
-                t = bar.get("time", "")
+                # Normalise time to a plain string regardless of what
+                # mt5rest serialises it as (ISO string, integer timestamp,
+                # or datetime).  OHLCV.time is typed str; a non-string here
+                # would crash candle.time.replace() in
+                # get_last_completed_bar_time() and also break the sort
+                # key when types are mixed across bars.
+                t = str(bar.get("time", ""))
                 candles.append(OHLCV(
                     time=t,
                     open=float(bar.get("openPrice",  0.0)),
