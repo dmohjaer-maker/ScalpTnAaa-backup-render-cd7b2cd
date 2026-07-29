@@ -94,6 +94,13 @@ services:
           type: redis
           name: goldscalper-redis
           property: connectionString
+      # ── Panel HTTP command interface — shared secret for /command endpoint ──
+      # FIX: ROBOT_COMMAND_TOKEN was missing. Without it, the /command endpoint
+      # returned 503 for all requests, making Telegram panel commands via HTTP
+      # completely non-functional as a Redis fallback.
+      # Set the same value in both the robot and panel services.
+      - key: ROBOT_COMMAND_TOKEN
+        sync: false
 
   # ─── Telegram control panel ────────────────────────────────────────────────
   # Deployed as web_service so it gets a public URL, health checks, and the
@@ -137,6 +144,17 @@ services:
         value: "redis"
       - key: ROBOT_STATE_PATH
         value: "/tmp/robot_state.json"
+      # ── Robot HTTP URL — enables HTTP command fallback when Redis is down ──
+      # FIX: ROBOT_BASE_URL was missing, so the panel had no way to send HTTP
+      # commands to the robot service even when ROBOT_COMMAND_TOKEN is set.
+      - key: ROBOT_BASE_URL
+        value: "https://goldscalper-v4-robot.onrender.com"
+      # ── Shared secret for robot /command endpoint (HTTP fallback) ──────────
+      # FIX: ROBOT_COMMAND_TOKEN was missing from panel service. The panel
+      # reads this at runtime to authenticate HTTP requests to the robot.
+      # Must match the value set in the robot service above.
+      - key: ROBOT_COMMAND_TOKEN
+        sync: false
       # ── Redis IPC — auto-wired from the goldscalper-redis service ────────────
       - key: REDIS_URL
         fromService:
