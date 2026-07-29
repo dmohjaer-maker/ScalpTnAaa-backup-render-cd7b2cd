@@ -204,6 +204,19 @@ async def connect_with_retry(max_attempts: int = 5, retry_delay: float = 60.0) -
             await asyncio.sleep(retry_delay)
     log.error(f"MT5 connect failed after {max_attempts} attempts.")
     return False
+def _invalidate_connection() -> None:
+    """Mark the current conn_id as stale so the next API call triggers a fresh ConnectEx.
+
+    Called whenever an API endpoint returns an error-shaped response that indicates
+    the conn_id is no longer recognised by the mt5rest bridge (e.g. after a bridge
+    restart or broker-side session timeout on Render free tier).
+    """
+    global _connected, _conn_id
+    log.warning("MT5 conn_id is stale — invalidating connection (will reconnect on retry)")
+    _connected = False
+    _conn_id   = ""
+
+
 async def ensure_connected(*args, **kwargs) -> bool:
     """Check live connection status; reconnect if not connected.
     Extra positional/keyword args are accepted for backward compatibility
@@ -236,118 +249,158 @@ async def ensure_connected(*args, **kwargs) -> bool:
 async def fetch_candles(
     symbol: str, timeframe: str, count: int = 300
 ) -> List[OHLCV]:
-    """Fetch OHLCV candles via GET /PriceHistoryV2 (ISO datetime range)."""
-    if not _conn_id:
-        if not await ensure_connected():
-            return []
+    """Fetch OHLCV candles via GET /PriceHistoryV2 (ISO datetime range).
 
-    tf_min = _TF_MAP.get(timeframe, 5)
-
-    # Request slightly more bars than needed to account for the current open bar
-    request_count = count + 5
-    now      = datetime.now(timezone.utc)
-    from_dt  = now - timedelta(minutes=tf_min * request_count)
-
-    from_str = from_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    to_str   = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    try:
-        sess = _get_session()
-        async with sess.get(
-            f"{_base_url}/PriceHistoryV2",
-            params={
-                "id":        _conn_id,
-                "symbol":    symbol,
-                "from":      from_str,
-                "to":        to_str,
-                "timeFrame": tf_min,
-            },
-            timeout=aiohttp.ClientTimeout(total=60),
-        ) as resp:
-            data = await resp.json(content_type=None)
-
-            if not isinstance(data, list):
-                log.error(f"fetch_candles unexpected response: {str(data)[:300]}")
+    FIX: retries once with a fresh ConnectEx on stale-conn_id errors.
+    """
+    for attempt in range(2):
+        if not _conn_id:
+            if not await ensure_connected():
                 return []
 
-            candles: List[OHLCV] = []
-            for bar in data:
-                # Normalise time to a plain string regardless of what
-                # mt5rest serialises it as (ISO string, integer timestamp,
-                # or datetime).  OHLCV.time is typed str; a non-string here
-                # would crash candle.time.replace() in
-                # get_last_completed_bar_time() and also break the sort
-                # key when types are mixed across bars.
-                t = str(bar.get("time", ""))
-                candles.append(OHLCV(
-                    time=t,
-                    open=float(bar.get("openPrice",  0.0)),
-                    high=float(bar.get("highPrice",  0.0)),
-                    low=float(bar.get("lowPrice",    0.0)),
-                    close=float(bar.get("closePrice", 0.0)),
-                    volume=float(bar.get("tickVolume", bar.get("volume", 0))),
-                ))
+        tf_min = _TF_MAP.get(timeframe, 5)
 
-            # Sort and deduplicate by timestamp before removing the open bar.
-            # The bridge can return overlapping pages with duplicate candles;
-            # feeding those into indicators shifts the entire signal window.
-            candles.sort(key=lambda candle: candle.time)
-            deduplicated: List[OHLCV] = []
-            seen_times: set[str] = set()
-            for candle in candles:
-                if candle.time in seen_times:
-                    continue
-                seen_times.add(candle.time)
-                deduplicated.append(candle)
-            candles = deduplicated
+        # Request slightly more bars than needed to account for the current open bar
+        request_count = count + 5
+        now      = datetime.now(timezone.utc)
+        from_dt  = now - timedelta(minutes=tf_min * request_count)
 
-            # Drop the last bar (may be the still-open current bar)
-            if candles:
-                candles = candles[:-1]
+        from_str = from_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        to_str   = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-            # Return only the last `count` completed bars
-            return candles[-count:] if len(candles) > count else candles
+        try:
+            sess = _get_session()
+            async with sess.get(
+                f"{_base_url}/PriceHistoryV2",
+                params={
+                    "id":        _conn_id,
+                    "symbol":    symbol,
+                    "from":      from_str,
+                    "to":        to_str,
+                    "timeFrame": tf_min,
+                },
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                data = await resp.json(content_type=None)
 
-    except Exception as exc:
-        log.error(f"fetch_candles error: {exc}")
-        return []
+                if not isinstance(data, list):
+                    # Error-shaped response — likely stale conn_id.
+                    if attempt == 0:
+                        log.warning(
+                            f"fetch_candles unexpected response (stale conn_id?) "
+                            f"— reconnecting and retrying. Response: {str(data)[:200]}"
+                        )
+                        _invalidate_connection()
+                        continue
+                    log.error(f"fetch_candles unexpected response after reconnect: {str(data)[:300]}")
+                    return []
+
+                candles: List[OHLCV] = []
+                for bar in data:
+                    # Normalise time to a plain string regardless of what
+                    # mt5rest serialises it as (ISO string, integer timestamp,
+                    # or datetime).  OHLCV.time is typed str; a non-string here
+                    # would crash candle.time.replace() in
+                    # get_last_completed_bar_time() and also break the sort
+                    # key when types are mixed across bars.
+                    t = str(bar.get("time", ""))
+                    candles.append(OHLCV(
+                        time=t,
+                        open=float(bar.get("openPrice",  0.0)),
+                        high=float(bar.get("highPrice",  0.0)),
+                        low=float(bar.get("lowPrice",    0.0)),
+                        close=float(bar.get("closePrice", 0.0)),
+                        volume=float(bar.get("tickVolume", bar.get("volume", 0))),
+                    ))
+
+                # Sort and deduplicate by timestamp before removing the open bar.
+                # The bridge can return overlapping pages with duplicate candles;
+                # feeding those into indicators shifts the entire signal window.
+                candles.sort(key=lambda candle: candle.time)
+                deduplicated: List[OHLCV] = []
+                seen_times: set[str] = set()
+                for candle in candles:
+                    if candle.time in seen_times:
+                        continue
+                    seen_times.add(candle.time)
+                    deduplicated.append(candle)
+                candles = deduplicated
+
+                # Drop the last bar (may be the still-open current bar)
+                if candles:
+                    candles = candles[:-1]
+
+                # Return only the last `count` completed bars
+                return candles[-count:] if len(candles) > count else candles
+
+        except Exception as exc:
+            if attempt == 0:
+                log.warning(f"fetch_candles error (attempt 1) — reconnecting: {exc}")
+                _invalidate_connection()
+                continue
+            log.error(f"fetch_candles error after reconnect: {exc}")
+            return []
+    return []
 
 
 async def get_account_info() -> dict:
-    if not _conn_id:
-        if not await ensure_connected():
-            log.error("get_account_info: not connected to mt5rest bridge")
+    """Fetch account balance/equity/margin from mt5rest /AccountSummary.
+
+    FIX: retries once with a fresh ConnectEx when the bridge returns an
+    error-shaped response (stale conn_id after bridge restart or broker
+    session timeout).  Previously a stale conn_id caused a silent {} return
+    which the panel interpreted as balance = $0.
+    """
+    for attempt in range(2):  # attempt 0 = normal; attempt 1 = after reconnect
+        if not _conn_id:
+            if not await ensure_connected():
+                log.error("get_account_info: not connected to mt5rest bridge")
+                return {}
+        try:
+            sess = _get_session()
+            async with sess.get(
+                f"{_base_url}/AccountSummary",
+                params={"id": _conn_id},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                data = await resp.json(content_type=None)
+                if isinstance(data, dict) and "balance" in data:
+                    return {
+                        "balance":     float(data.get("balance",     0.0)),
+                        "equity":      float(data.get("equity",      0.0)),
+                        "margin":      float(data.get("margin",      0.0)),
+                        "freeMargin":  float(data.get("freeMargin",  0.0)),
+                        "marginLevel": float(data.get("marginLevel", 0.0)),
+                        "currency":    data.get("currency", "USD"),
+                        "leverage":    int(data.get("leverage") or 0),
+                        # Identity fields — present in most mt5rest AccountSummary responses.
+                        # These allow the Telegram panel to display broker/login even when the
+                        # local SQLite DB was wiped (e.g. Render free-tier /tmp reset).
+                        "broker":      str(data.get("broker") or data.get("company") or ""),
+                        "server":      str(data.get("server") or ""),
+                        "login":       str(data.get("login") or data.get("account") or ""),
+                        "name":        str(data.get("name") or ""),
+                    }
+                # Error response — likely a stale conn_id (bridge restart / broker timeout).
+                # Invalidate the connection and retry once with a fresh ConnectEx.
+                if attempt == 0:
+                    log.warning(
+                        f"AccountSummary returned unexpected response "
+                        f"(stale conn_id?) — reconnecting and retrying. "
+                        f"Response: {str(data)[:200]}"
+                    )
+                    _invalidate_connection()
+                    continue
+                log.error(f"AccountSummary failed after reconnect: {str(data)[:200]}")
+                return {}
+        except Exception as exc:
+            if attempt == 0:
+                log.warning(f"get_account_info error (attempt 1) — reconnecting: {exc}")
+                _invalidate_connection()
+                continue
+            log.error(f"get_account_info error after reconnect: {exc}")
             return {}
-    try:
-        sess = _get_session()
-        async with sess.get(
-            f"{_base_url}/AccountSummary",
-            params={"id": _conn_id},
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            data = await resp.json(content_type=None)
-            if isinstance(data, dict) and "balance" in data:
-                return {
-                    "balance":     float(data.get("balance",     0.0)),
-                    "equity":      float(data.get("equity",      0.0)),
-                    "margin":      float(data.get("margin",      0.0)),
-                    "freeMargin":  float(data.get("freeMargin",  0.0)),
-                    "marginLevel": float(data.get("marginLevel", 0.0)),
-                    "currency":    data.get("currency", "USD"),
-                    "leverage":    int(data.get("leverage") or 0),
-                    # Identity fields — present in most mt5rest AccountSummary responses.
-                    # These allow the Telegram panel to display broker/login even when the
-                    # local SQLite DB was wiped (e.g. Render free-tier /tmp reset).
-                    "broker":      str(data.get("broker") or data.get("company") or ""),
-                    "server":      str(data.get("server") or ""),
-                    "login":       str(data.get("login") or data.get("account") or ""),
-                    "name":        str(data.get("name") or ""),
-                }
-            log.error(f"AccountSummary unexpected response: {data}")
-            return {}
-    except Exception as exc:
-        log.error(f"get_account_info error: {exc}")
-        return {}
+    return {}
 
 
 async def get_account_balance() -> float:
@@ -363,26 +416,43 @@ async def get_open_positions(symbol: str = "") -> List[dict]:
     rather than silently assuming zero open positions.  Returning [] on an
     error could cause duplicate-entry: the robot sees 0 positions and opens
     a second trade on top of an existing one.
+
+    FIX: retries once with a fresh ConnectEx on stale-conn_id errors.
     """
-    if not _conn_id:
-        if not await ensure_connected():
-            raise RuntimeError("get_open_positions: not connected to mt5rest bridge")
-    try:
-        params: dict = {"id": _conn_id}
-        if symbol:
-            params["symbol"] = symbol
-        async with _get_session().get(
-            f"{_base_url}/OpenedOrders",
-            params=params,
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            data = await resp.json(content_type=None)
-            return _parse_open_positions_response(data, resp.status)
-    except RuntimeError:
-        raise
-    except Exception as exc:
-        log.error(f"get_open_positions error: {exc}")
-        raise RuntimeError(f"get_open_positions failed: {exc}") from exc
+    for attempt in range(2):
+        if not _conn_id:
+            if not await ensure_connected():
+                raise RuntimeError("get_open_positions: not connected to mt5rest bridge")
+        try:
+            params: dict = {"id": _conn_id}
+            if symbol:
+                params["symbol"] = symbol
+            async with _get_session().get(
+                f"{_base_url}/OpenedOrders",
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                data = await resp.json(content_type=None)
+                # If the bridge returns an error dict on attempt 0, the conn_id is likely
+                # stale — invalidate and retry rather than raising immediately.
+                if attempt == 0 and isinstance(data, dict) and "stackTrace" in data:
+                    log.warning(
+                        f"OpenedOrders error (stale conn_id?) — reconnecting and retrying. "
+                        f"Response: {str(data)[:200]}"
+                    )
+                    _invalidate_connection()
+                    continue
+                return _parse_open_positions_response(data, resp.status)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            if attempt == 0:
+                log.warning(f"get_open_positions error (attempt 1) — reconnecting: {exc}")
+                _invalidate_connection()
+                continue
+            log.error(f"get_open_positions error after reconnect: {exc}")
+            raise RuntimeError(f"get_open_positions failed: {exc}") from exc
+    raise RuntimeError("get_open_positions: failed after reconnect attempt")
 
 
 def _parse_open_positions_response(data: object, status: int) -> List[dict]:
