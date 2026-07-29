@@ -1,14 +1,10 @@
 services:
   # ─── mt5rest Docker bridge ─────────────────────────────────────────────────
-  # Runs MT5 on Linux (via Wine) and exposes a REST API.
-  # The robot service calls this bridge instead of MetaAPI cloud.
   - type: web
     name: goldscalper-mtapi
     runtime: docker
     dockerfilePath: ./mtapi-bridge/Dockerfile
     plan: free
-    # BUG #1 FIX: "/" returns HTTP 301 redirect; Render health check requires
-    # HTTP 200. "/Ping" returns 200 directly from mt5rest.
     healthCheckPath: /Ping
     envVars:
       - key: MT5_HOST
@@ -21,22 +17,14 @@ services:
         sync: false
 
   # ─── Redis — cross-service IPC (robot ↔ Telegram panel) ───────────────────
-  # Required because robot and panel run as separate Render services with
-  # separate filesystems and CANNOT share JSON state files directly.
-  # Redis bridges robot state writes → panel reads, and panel commands → robot.
   - type: redis
     name: goldscalper-redis
     plan: free
-    # Render rejects connections when this list is empty.  Keep Redis
-    # reachable by the robot and Telegram panel services over TLS.
     ipAllowList:
       - cidrBlock: 0.0.0.0/0
         description: robot and panel IPC
 
   # ─── Trading robot ─────────────────────────────────────────────────────────
-  # Deployed as web_service (not worker) so it gets a public URL and health
-  # checks.  The keepalive task pings RENDER_EXTERNAL_URL/health every 14 min
-  # to prevent Render free-tier sleep (requires external URL, not localhost).
   - type: web
     name: goldscalper-v4-robot
     runtime: python
@@ -45,13 +33,10 @@ services:
     buildCommand: pip install -r live_trading/requirements.txt
     startCommand: python live_trading/server.py
     envVars:
-      # ── Keepalive — must be the external Render URL of THIS service ─────────
       - key: RENDER_EXTERNAL_URL
         value: "https://goldscalper-v4-robot.onrender.com"
-      # ── mt5rest bridge URL (set to the goldscalper-mtapi service URL) ──────
       - key: MTAPI_URL
         value: "https://goldscalper-mtapi.onrender.com"
-      # ── MT5 broker credentials ──────────────────────────────────────────────
       - key: MT5_HOST
         value: "AMarkets-Demo"
       - key: MT5_PORT
@@ -60,28 +45,26 @@ services:
         sync: false
       - key: MT5_PASSWORD
         sync: false
-      # ── Symbol & strategy ───────────────────────────────────────────────────
       - key: SYMBOL
         value: XAUUSDb
+      # FIX: TIMEFRAME and CANDLE_WINDOW are now env-configurable (fix #4).
+      - key: TIMEFRAME
+        value: "5m"
+      - key: CANDLE_WINDOW
+        value: "300"
       - key: RISK_PERCENT
         value: "1.0"
-      # FIX: MIN_CONFIRMATIONS was set to "2" — below the code default of "3".
-      # Lower confirmation thresholds produce more signals but with lower
-      # quality, increasing false-entry risk in choppy/ranging markets.
-      # Restored to "3" (code default) for safer, higher-confidence entries.
+      # FIX #3: Raised from "2" to "3" (code default) for safer entries.
       - key: MIN_CONFIRMATIONS
         value: "3"
-      # ── Risk Guardian circuit breakers ──────────────────────────────────────
       - key: DAILY_LOSS_LIMIT_PCT
         value: "3.0"
       - key: MAX_DRAWDOWN_PCT
         value: "8.0"
       - key: SLIPPAGE_POINTS
         value: "30"
-      # ── Runtime ─────────────────────────────────────────────────────────────
       - key: PYTHON_VERSION
         value: "3.11.0"
-      # ── State files ─────────────────────────────────────────────────────────
       - key: STATE_FILE
         value: "/tmp/robot_state.json"
       - key: MT5_SNAPSHOT
@@ -92,23 +75,16 @@ services:
         value: "/tmp/guardian_state.json"
       - key: LOG_FILE
         value: "/tmp/robot.log"
-      # ── Redis IPC — auto-wired from the goldscalper-redis service ────────────
       - key: REDIS_URL
         fromService:
           type: redis
           name: goldscalper-redis
           property: connectionString
-      # ── Panel HTTP command interface — shared secret for /command endpoint ──
-      # FIX: ROBOT_COMMAND_TOKEN was missing. Without it, the /command endpoint
-      # returned 503 for all requests, making Telegram panel commands via HTTP
-      # completely non-functional as a Redis fallback.
-      # Set the same value in both the robot and panel services.
+      # FIX #1: ROBOT_COMMAND_TOKEN enables HTTP command fallback from panel.
       - key: ROBOT_COMMAND_TOKEN
         sync: false
 
   # ─── Telegram control panel ────────────────────────────────────────────────
-  # Deployed as web_service so it gets a public URL, health checks, and the
-  # keepalive ping works via the external URL (not localhost).
   - type: web
     name: goldscalper-v4-panel
     runtime: python
@@ -117,7 +93,6 @@ services:
     buildCommand: pip install -r telegram_panel/requirements.txt
     startCommand: python telegram_panel/server.py
     envVars:
-      # ── Keepalive — must be the external Render URL of THIS service ─────────
       - key: RENDER_EXTERNAL_URL
         value: "https://goldscalper-v4-panel.onrender.com"
       - key: TELEGRAM_BOT_TOKEN
@@ -132,7 +107,6 @@ services:
         value: "3.11.0"
       - key: PANEL_DB_PATH
         value: "/tmp/panel.db"
-      # ── MT5 credentials — used by auto_seed to restore account after restart ─
       - key: MT5_USER
         sync: false
       - key: MT5_PASSWORD
@@ -143,23 +117,15 @@ services:
         value: "demo"
       - key: LOG_LEVEL
         value: "INFO"
-      # ── Robot control interface ────────────────────────────────────────────
       - key: ROBOT_INTERFACE_MODE
         value: "redis"
       - key: ROBOT_STATE_PATH
         value: "/tmp/robot_state.json"
-      # ── Robot HTTP URL — enables HTTP command fallback when Redis is down ──
-      # FIX: ROBOT_BASE_URL was missing, so the panel had no way to send HTTP
-      # commands to the robot service even when ROBOT_COMMAND_TOKEN is set.
+      # FIX #1: ROBOT_BASE_URL and ROBOT_COMMAND_TOKEN enable HTTP fallback.
       - key: ROBOT_BASE_URL
         value: "https://goldscalper-v4-robot.onrender.com"
-      # ── Shared secret for robot /command endpoint (HTTP fallback) ──────────
-      # FIX: ROBOT_COMMAND_TOKEN was missing from panel service. The panel
-      # reads this at runtime to authenticate HTTP requests to the robot.
-      # Must match the value set in the robot service above.
       - key: ROBOT_COMMAND_TOKEN
         sync: false
-      # ── Redis IPC — auto-wired from the goldscalper-redis service ────────────
       - key: REDIS_URL
         fromService:
           type: redis
