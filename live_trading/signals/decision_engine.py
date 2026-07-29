@@ -15,8 +15,8 @@ from live_trading.signals.quality_filter import QualityFilterResult, apply_quali
 from live_trading.signals.entry_filter import apply_entry_filter
 from live_trading.risk.capital_manager import CapitalInput, CapitalOutput, calc_trade_parameters
 
-CONF_HARD_MIN  = 62.0
-CONF_MARGINAL_RR = 1.5
+CONF_HARD_MIN  = 55.0
+CONF_MARGINAL_RR = 1.2
 
 
 @dataclass
@@ -88,13 +88,11 @@ def run_decision_engine(
     if candidate == "NEUTRAL":
         return _make_neutral(smc, wyckoff, pa, trend, ["No SMC signal"])
 
-    # Hard EMA gate
+    # Soft EMA gate — counter-trend trades are allowed but need 3 confirmations
     trend_dir = ("BUY" if trend.trend == "BULLISH" else
                  "SELL" if trend.trend == "BEARISH" else "NEUTRAL")
-    if (candidate == "BUY" and trend_dir == "SELL") or \
-       (candidate == "SELL" and trend_dir == "BUY"):
-        reason = f"EMA trend ({trend.trend}) opposes SMC ({candidate})"
-        return _make_neutral(smc, wyckoff, pa, trend, [reason], [reason])
+    _counter_trend = (candidate == "BUY" and trend_dir == "SELL") or \
+                     (candidate == "SELL" and trend_dir == "BUY")
 
     # Detect regime early — needed to set the adaptive confirmation threshold.
     # RANGE / ACCUMULATION / DISTRIBUTION / HIGH_VOLATILITY markets suppress
@@ -105,6 +103,9 @@ def run_decision_engine(
     _RANGE_REGIMES = {"RANGE", "ACCUMULATION", "DISTRIBUTION", "HIGH_VOLATILITY"}
     if regime.regime in _RANGE_REGIMES:
         effective_min_confirmations = min(2, min_confirmations)
+    elif _counter_trend:
+        # Counter-trend needs one extra confirmation to compensate for EMA opposition
+        effective_min_confirmations = min(min_confirmations + 1, 4)
     else:
         effective_min_confirmations = min_confirmations
 

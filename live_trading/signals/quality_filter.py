@@ -17,8 +17,8 @@ ALLOWED_SESSIONS = [
 
 LATE_EXTENSION_MULT = 3.5
 MOMENTUM_BARS       = 5
-STALE_BAR_COUNT     = 30
-CONF_HARD_MIN       = 62
+STALE_BAR_COUNT     = 50
+CONF_HARD_MIN       = 55
 
 
 @dataclass
@@ -165,9 +165,9 @@ def apply_quality_filter(
     if late:
         reasons.append("Late entry: overextended from EMA50 or stale BOS")
 
-    low_mom = adx_val < 10
+    low_mom = adx_val < 8
     if low_mom:
-        reasons.append(f"Low momentum: ADX {adx_val:.1f} < 15")
+        reasons.append(f"Low momentum: ADX {adx_val:.1f} < 8")
 
     weak_vol = _is_weak_volume(candles)
     if weak_vol:
