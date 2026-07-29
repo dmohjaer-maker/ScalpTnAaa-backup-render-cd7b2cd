@@ -196,6 +196,11 @@ class GoldScalperLive:
             # baselines are already active and must not be overwritten.
             if not _guardian_restored:
                 acc_info = await get_account_info()
+                # FIX: Store acc_info so that WAITING-state writes (while waiting
+                # for the first bar) include real balance/equity instead of empty
+                # dict, which caused the Telegram panel to always show USD 0.00.
+                if acc_info:
+                    self._last_acc_info = acc_info
                 balance  = float(acc_info.get("balance", 0))
                 equity   = float(acc_info.get("equity",  0))
                 if balance > 0:
@@ -207,7 +212,9 @@ class GoldScalperLive:
                     )
 
             await self._calibrate_wyckoff()
-            self._write_state("RUNNING")
+            # Write RUNNING state immediately after connect with real account data
+            # so the panel shows live balance before the first bar fires.
+            self._write_state("RUNNING", self._last_acc_info)
             await self._run_loop()
         finally:
             # Cancel the keepalive task if it is still running.  _run_loop()'s
@@ -446,6 +453,33 @@ class GoldScalperLive:
         ]
         _snap_win = min(5, len(_snap_trs))
         _snap_atr = round(sum(_snap_trs[-_snap_win:]) / _snap_win, 4) if _snap_trs else 0.0
+        # Build normalized account_info for the snapshot (snake_case keys to
+        # match what telegram_panel's mt5_service expects).
+        _snap_account_info = {
+            "balance":          float(acc_info.get("balance",  0.0)),
+            "equity":           float(acc_info.get("equity",   0.0)),
+            "margin":           float(acc_info.get("margin",   0.0)),
+            "free_margin":      float(acc_info.get("freeMargin",
+                                      acc_info.get("free_margin", 0.0))),
+            "floating_profit":  float(acc_info.get("equity", 0.0))
+                                - float(acc_info.get("balance", 0.0)),
+            "currency":         acc_info.get("currency", "USD"),
+            "leverage":         acc_info.get("leverage", 0),
+            "broker":           acc_info.get("broker", ""),
+            "server":           acc_info.get("server", ""),
+            "login":            acc_info.get("login",  ""),
+            "connection_status": "connected",
+        }
+        # today_profit: sum of realised profits from trades closed today.
+        _snap_today = __import__("datetime").date.today().isoformat()
+        _snap_today_profit = round(sum(
+            float(t.get("profit", 0.0))
+            for t in self.trade_history
+            if isinstance(t, dict) and t.get("profit") is not None
+            and str(t.get("logged_at") or t.get("bar_time") or "").startswith(
+                _snap_today
+            )
+        ), 2)
         write_mt5_snapshot(
             candle_time=last_c.time,
             price=last_c.close,
@@ -454,6 +488,16 @@ class GoldScalperLive:
             atr=_snap_atr,
             smc_signal=decision.smc.smc_signal,
             trend=decision.trend.trend,
+            # FIX: Full account data so the panel shows real balance, not USD 0.00
+            account_info=_snap_account_info,
+            open_positions=pos_dicts,
+            recent_trades=self.trade_history[-20:],
+            today_profit=_snap_today_profit,
+            floating_profit=_snap_account_info["floating_profit"],
+            drawdown={
+                "current_percent": float(gs.drawdown_pct),
+                "max_percent":     float(gs.max_drawdown_pct),
+            },
         )
 
         # 7. Gate: max positions

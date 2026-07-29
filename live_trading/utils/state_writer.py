@@ -265,23 +265,39 @@ def write_robot_state(
 # ── Write robot_mt5_snapshot.json ─────────────────────────────────────────────
 
 def write_mt5_snapshot(
-    candle_time: str,
-    price:       float,
-    regime:      str,
-    adx:         float,
-    atr:         float,
-    smc_signal:  str,
-    trend:       str,
+    candle_time:     str,
+    price:           float,
+    regime:          str,
+    adx:             float,
+    atr:             float,
+    smc_signal:      str,
+    trend:           str,
+    # FIX: Full account snapshot added so the Redis snapshot key contains real
+    # account data.  The panel's MT5Service reads this key first; without these
+    # fields it always got empty account_info → balance USD 0.00.
+    account_info:    Optional[dict] = None,
+    open_positions:  Optional[list] = None,
+    recent_trades:   Optional[list] = None,
+    today_profit:    float = 0.0,
+    floating_profit: float = 0.0,
+    drawdown:        Optional[dict] = None,
 ) -> None:
     snap = {
-        "timestamp":   _now_iso(),
-        "candle_time": candle_time,
-        "price":       price,
-        "regime":      regime,
-        "adx":         round(adx, 1),
-        "atr":         round(atr, 4),
-        "smc_signal":  smc_signal,
-        "trend":       trend,
+        "timestamp":       _now_iso(),
+        "candle_time":     candle_time,
+        "price":           price,
+        "regime":          regime,
+        "adx":             round(adx, 1),
+        "atr":             round(atr, 4),
+        "smc_signal":      smc_signal,
+        "trend":           trend,
+        # Account fields — populated on every bar so panel always has live data
+        "account_info":    account_info or {},
+        "open_positions":  open_positions if open_positions is not None else [],
+        "recent_trades":   recent_trades if recent_trades is not None else [],
+        "today_profit":    round(today_profit, 2),
+        "floating_profit": round(floating_profit, 4),
+        "drawdown":        drawdown or {},
     }
     _safe_write(SNAPSHOT_FILE, snap)
 

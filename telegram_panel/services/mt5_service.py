@@ -358,6 +358,20 @@ class MT5Service:
         if "today_profit" in state:
             today_profit = float(state["today_profit"])
 
+        # FIX: Extract drawdown from guardian state so get_drawdown() returns
+        # real values instead of always returning zeros.  The guardian sub-dict
+        # is written by live_loop._guardian_extra() and lives at state["guardian"].
+        guardian = state.get("guardian", {})
+        drawdown = {
+            "current_percent": float(
+                guardian.get("drawdown_pct", 0.0)
+            ),
+            "max_percent": float(
+                guardian.get("max_drawdown_pct",
+                             guardian.get("daily_loss_limit_pct", 0.0))
+            ),
+        }
+
         return {
             "account_info": {
                 "balance":          balance,
@@ -375,6 +389,7 @@ class MT5Service:
             "connection_status": conn_status,
             "today_profit":    today_profit,
             "floating_profit": floating_profit,
+            "drawdown":        drawdown,
         }
 
     @staticmethod

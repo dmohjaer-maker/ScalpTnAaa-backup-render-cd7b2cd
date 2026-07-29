@@ -50,9 +50,11 @@ _robot_status = "STARTING"
 _UNHEALTHY_STATUSES = {"CONFIG_ERROR", "ERROR"}
 _HEARTBEAT_MAX_AGE_SECONDS = 180
 
-# Self-ping keepalive: ping /health every 14 minutes so Render free-tier
-# services never spin down.  14 min < Render's 15-min inactivity threshold.
-_KEEPALIVE_INTERVAL_SECONDS = 840  # 14 minutes
+# Self-ping keepalive: ping /health every 10 minutes so Render free-tier
+# services never spin down.  10 min < Render's 15-min inactivity threshold.
+# Also pings the mt5rest Docker bridge (goldscalper-mtapi) so it stays alive
+# even during robot crash/restart cycles when the live loop keepalive is paused.
+_KEEPALIVE_INTERVAL_SECONDS = 600  # 10 minutes
 
 
 def _parse_heartbeat(value: object) -> datetime | None:
@@ -239,70 +241,93 @@ async def _status(req: web.Request):
     )
 
 
+def _build_snapshot_from_state(state: dict, signal_snap: dict | None = None) -> dict:
+    """Build a full /snapshot response from robot state, optionally merging signal data.
+
+    The robot state (goldscalper:state Redis key / robot_state.json file) is the
+    authoritative source for live account data.  The MT5 snapshot key only has
+    per-bar signal metrics (price, regime, adx, atr).  This helper merges both
+    so the Telegram panel always gets real account + signal data in one response.
+    """
+    account_info = state.get("account_info", {})
+    guardian = state.get("guardian", {})
+    pos = state.get("open_position")
+    result: dict = {
+        "account_info":     account_info,
+        "connection_status": state.get("connection_status", "disconnected"),
+        "today_profit":     float(state.get("today_profit", 0.0)),
+        "floating_profit":  float(account_info.get("floating_profit", 0.0)),
+        "open_positions":   [pos] if pos else [],
+        "pending_orders":   [],
+        "recent_trades":    state.get("recent_trades", []),
+        "drawdown": {
+            "current_percent": float(guardian.get("drawdown_pct", 0.0)),
+            "max_percent":     float(
+                guardian.get("max_drawdown_pct",
+                             guardian.get("daily_loss_limit_pct", 0.0))
+            ),
+        },
+    }
+    # Merge per-bar signal fields from the snapshot key when available
+    if signal_snap:
+        for k in ("price", "regime", "adx", "atr", "smc_signal", "trend",
+                  "candle_time", "timestamp"):
+            if k in signal_snap:
+                result[k] = signal_snap[k]
+    return result
+
+
 async def _snapshot(req: web.Request):
     """GET /snapshot — returns the live MT5 account snapshot.
+
+    FIX: Previous implementation returned the Redis snapshot key first, but that
+    key only contains per-bar signal data (price/regime/adx/atr) — no account
+    balance.  The account data lives in the robot state key.  This endpoint now
+    builds the response from robot state (authoritative) and merges signal data.
 
     Read-only endpoint: no authentication required.
     Used by the Telegram panel's MT5Service HTTP fallback to get live
     account balance, positions, and trade data when Redis is unavailable.
 
     Priority:
-      1. Redis snapshot key (cross-service IPC on Render)
-      2. Local MT5 snapshot file
-      3. Account data from robot state file (fallback)
+      1. Redis robot state (cross-service IPC on Render) — has account_info
+      2. Local robot state file — same data, local filesystem fallback
+      3. Empty response (robot not yet started)
     """
     now = datetime.now(timezone.utc)
 
-    # 1. Try Redis snapshot key
+    # 1. Redis: prefer state (has account data) and merge signal snapshot
     try:
-        from live_trading.redis_ipc import redis_read_snapshot, redis_available
+        from live_trading.redis_ipc import (
+            redis_read_snapshot, redis_read_state, redis_available,
+        )
         if redis_available():
-            snap = redis_read_snapshot()
-            if snap:
-                snap["_fetched_at"] = now.isoformat()
+            state = redis_read_state()
+            if state and "account_info" in state:
+                signal_snap = redis_read_snapshot()
+                result = _build_snapshot_from_state(state, signal_snap)
+                result["_fetched_at"] = now.isoformat()
                 return web.Response(
                     status=200,
-                    text=json.dumps(snap, default=str),
+                    text=json.dumps(result, default=str),
                     content_type="application/json",
                 )
     except Exception:
         pass
 
-    # 2. Local MT5 snapshot file
-    local_snap = _read_local_snapshot()
-    if local_snap:
-        local_snap["_fetched_at"] = now.isoformat()
-        return web.Response(
-            status=200,
-            text=json.dumps(local_snap, default=str),
-            content_type="application/json",
-        )
-
-    # 3. Derive account data from robot state
+    # 2. Local robot state file + local signal snapshot file
     local_state = _read_local_state()
-    if local_state and "account" in local_state:
-        account = local_state.get("account", {})
-        derived = {
-            "account_info": {
-                "balance": account.get("balance", 0.0),
-                "equity": account.get("equity", 0.0),
-                "margin": account.get("margin", 0.0),
-                "free_margin": account.get("margin_free", 0.0),
-                "floating_profit": account.get("profit", 0.0),
-                "currency": account.get("currency", "USD"),
-                "leverage": account.get("leverage", 0),
-                "connection_status": local_state.get("connection_status", "disconnected"),
-            },
-            "open_positions": [],
-            "pending_orders": [],
-            "_fetched_at": now.isoformat(),
-        }
+    if local_state and "account_info" in local_state:
+        local_snap = _read_local_snapshot()
+        result = _build_snapshot_from_state(local_state, local_snap)
+        result["_fetched_at"] = now.isoformat()
         return web.Response(
             status=200,
-            text=json.dumps(derived, default=str),
+            text=json.dumps(result, default=str),
             content_type="application/json",
         )
 
+    # 3. Robot not yet connected — return empty account shell so panel doesn't crash
     return web.Response(
         status=200,
         text=json.dumps({"account_info": {}, "_fetched_at": now.isoformat()}),
@@ -393,12 +418,18 @@ async def _run_health_server():
 
 
 async def _keepalive():
-    """External-ping /health every 14 min to prevent Render free-tier sleep.
+    """External-ping /health and mtapi /Ping every 10 min to prevent Render free-tier sleep.
 
     Render spins down free-tier web services after 15 minutes of inactivity.
     The inactivity timer is reset only by EXTERNAL HTTP requests routed through
     Render's edge — localhost / 127.0.0.1 requests bypass the edge entirely and
     do NOT reset the timer.
+
+    FIX: Also pings the mt5rest Docker bridge (goldscalper-mtapi) so it stays
+    alive even during robot crash/restart cycles when the live-loop's own
+    keepalive task is not running.  Without this the bridge goes to sleep during
+    the supervisor's backoff window, causing 60-90s wakeup delays on every retry
+    and a continuous Connection Lost / Connection Restored loop in the panel.
 
     We read RENDER_EXTERNAL_URL (set in render.yaml) for the external URL.
     Fallback: localhost (only effective when running locally, not on Render).
@@ -406,18 +437,37 @@ async def _keepalive():
     await asyncio.sleep(30)
     import aiohttp
     external_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
-    if external_url:
-        url = f"{external_url}/health"
-    else:
-        url = f"http://127.0.0.1:{PORT}/health"
-    print(f"[keepalive] will ping {url} every {_KEEPALIVE_INTERVAL_SECONDS}s", flush=True)
+    mtapi_url    = os.environ.get("MTAPI_URL", "").rstrip("/")
+
+    own_url = f"{external_url}/health" if external_url else f"http://127.0.0.1:{PORT}/health"
+    print(
+        f"[keepalive] robot={own_url}  mtapi={mtapi_url or '(not set)'}  "
+        f"interval={_KEEPALIVE_INTERVAL_SECONDS}s",
+        flush=True,
+    )
     while True:
+        # 1. Ping own /health to keep robot service alive
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    print(f"[keepalive] ping /health → {resp.status}", flush=True)
+                async with session.get(
+                    own_url, timeout=aiohttp.ClientTimeout(total=15)
+                ) as resp:
+                    print(f"[keepalive] robot /health → {resp.status}", flush=True)
         except Exception as exc:
-            print(f"[keepalive] ping failed: {exc}", flush=True)
+            print(f"[keepalive] robot /health failed: {exc}", flush=True)
+
+        # 2. Ping mtapi /Ping to keep the mt5rest Docker bridge alive
+        if mtapi_url:
+            ping_url = f"{mtapi_url}/Ping"
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        ping_url, timeout=aiohttp.ClientTimeout(total=30)
+                    ) as resp:
+                        print(f"[keepalive] mtapi /Ping → {resp.status}", flush=True)
+            except Exception as exc:
+                print(f"[keepalive] mtapi /Ping failed: {exc}", flush=True)
+
         await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
 
 
