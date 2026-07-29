@@ -65,8 +65,12 @@ services:
         value: XAUUSDb
       - key: RISK_PERCENT
         value: "1.0"
+      # FIX: MIN_CONFIRMATIONS was set to "2" — below the code default of "3".
+      # Lower confirmation thresholds produce more signals but with lower
+      # quality, increasing false-entry risk in choppy/ranging markets.
+      # Restored to "3" (code default) for safer, higher-confidence entries.
       - key: MIN_CONFIRMATIONS
-        value: "2"
+        value: "3"
       # ── Risk Guardian circuit breakers ──────────────────────────────────────
       - key: DAILY_LOSS_LIMIT_PCT
         value: "3.0"
