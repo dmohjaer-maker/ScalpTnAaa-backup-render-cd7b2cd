@@ -24,8 +24,12 @@ MT5_PASSWORD  = os.getenv("MT5_PASSWORD", "")
 
 # ── Symbol & Timeframe ───────────────────────────────────────────────────────
 SYMBOL        = os.getenv("SYMBOL",    "XAUUSDb")
-TIMEFRAME     = "5m"          # mt5rest period value
-CANDLE_WINDOW = 300           # bars sent to signal engine
+
+# FIX: TIMEFRAME and CANDLE_WINDOW were hardcoded and could not be changed
+# without modifying source code.  Both are now env-configurable.
+# Defaults preserve existing behaviour: 5m timeframe, 300 bars.
+TIMEFRAME     = os.getenv("TIMEFRAME",     "5m")    # mt5rest period value (1m, 5m, 15m, 1h …)
+CANDLE_WINDOW = int(os.getenv("CANDLE_WINDOW", "300"))  # bars sent to signal engine
 
 # ── Risk & Trade Rules ───────────────────────────────────────────────────────
 RISK_PERCENT            = float(os.getenv("RISK_PERCENT",     "1.0"))
