@@ -31,7 +31,13 @@ CANDLE_WINDOW = 300           # bars sent to signal engine
 RISK_PERCENT            = float(os.getenv("RISK_PERCENT",     "1.0"))
 MIN_CONFIRMATIONS       = int(os.getenv("MIN_CONFIRMATIONS",  "3"))
 MAX_OPEN_TRADES         = 1
-USE_ATR_HIGH_VOL_FILTER = False
+
+# FIX: USE_ATR_HIGH_VOL_FILTER was hardcoded to False and could not be
+# enabled without modifying source code.  It is now env-configurable via
+# USE_ATR_HIGH_VOL_FILTER=true in the Render service environment.
+# Default is "false" (preserves existing behaviour — no behaviour change
+# unless the operator explicitly sets USE_ATR_HIGH_VOL_FILTER=true).
+USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() == "true"
 
 # ── Order Settings ───────────────────────────────────────────────────────────
 COMMENT = "GSPv4"
