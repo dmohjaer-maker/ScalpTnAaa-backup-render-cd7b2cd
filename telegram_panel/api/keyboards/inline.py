@@ -172,7 +172,7 @@ class Keyboards:
             [InlineKeyboardButton("💰 Real", callback_data="accounts:type:real")],
             [InlineKeyboardButton("🎓 Demo", callback_data="accounts:type:demo")],
             [InlineKeyboardButton("🏆 Prop Firm", callback_data="accounts:type:prop_firm")],
-            [InlineKeyboardButton(f"{ICONS['arrow_back']} Cancel", callback_data="accounts:list")],
+            [InlineKeyboardButton(f"{ICONS['arrow_back']} Cancel", callback_data="accounts:cancel_add")],
         ])
 
     # ─── Trading ────────────────────────────────────────────────────────────

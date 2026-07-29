@@ -27,6 +27,7 @@ from .handlers.system import SystemHandler
 from .middleware.auth import AuthMiddleware
 from .middleware.rate_limiter import RateLimiter
 from .formatters.messages import MessageFormatter
+from .keyboards.inline import Keyboards
 
 logger = logging.getLogger(__name__)
 
@@ -269,27 +270,26 @@ class Router:
                     await self._trading.close_bulk(update, context, close_type)
 
                 elif action == "partial_close" and param:
-                      await self._trading.handle_partial_close(update, context, int(param))
-                  elif action == "partial_exec" and param:
-                      pct = float(parts[3]) if len(parts) > 3 else 50.0
-                      await self._trading.execute_partial_close(update, context, int(param), pct)
-                  elif action == "move_sl" and param:
-                      await self._trading.handle_move_sl(update, context, int(param))
-                  elif action == "sl_exec" and param:
-                      pts = float(parts[3]) if len(parts) > 3 else 0.0
-                      await self._trading.execute_move_sl(update, context, int(param), pts)
-                  elif action == "move_tp" and param:
-                      await self._trading.handle_move_tp(update, context, int(param))
-                  elif action == "tp_exec" and param:
-                      pts = float(parts[3]) if len(parts) > 3 else 0.0
-                      await self._trading.execute_move_tp(update, context, int(param), pts)
-                  elif action == "trail" and param:
-                      await self._trading.handle_trail(update, context, int(param))
-                  elif action == "trail_exec" and param:
-                      pts = float(parts[3]) if len(parts) > 3 else 50.0
-                      await self._trading.execute_trail(update, context, int(param), pts)
+                    await self._trading.handle_partial_close(update, context, int(param))
+                elif action == "partial_exec" and param:
+                    pct = float(parts[3]) if len(parts) > 3 else 50.0
+                    await self._trading.execute_partial_close(update, context, int(param), pct)
+                elif action == "move_sl" and param:
+                    await self._trading.handle_move_sl(update, context, int(param))
+                elif action == "sl_exec" and param:
+                    pts = float(parts[3]) if len(parts) > 3 else 0.0
+                    await self._trading.execute_move_sl(update, context, int(param), pts)
+                elif action == "move_tp" and param:
+                    await self._trading.handle_move_tp(update, context, int(param))
+                elif action == "tp_exec" and param:
+                    pts = float(parts[3]) if len(parts) > 3 else 0.0
+                    await self._trading.execute_move_tp(update, context, int(param), pts)
+                elif action == "trail" and param:
+                    await self._trading.handle_trail(update, context, int(param))
+                elif action == "trail_exec" and param:
+                    pts = float(parts[3]) if len(parts) > 3 else 50.0
+                    await self._trading.execute_trail(update, context, int(param), pts)
 
-                # ── Risk ────────────────────────────────────────────────────
             elif section == "risk":
                 action = parts[1] if len(parts) > 1 else ""
                 param = parts[2] if len(parts) > 2 else ""

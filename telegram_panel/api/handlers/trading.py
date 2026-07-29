@@ -172,223 +172,223 @@ class TradingHandler(BaseHandler):
             update, context, text, Keyboards.back_only("trading:menu")
         )
 
-      # ── Partial Close ─────────────────────────────────────────────────────────
+    # ── Partial Close ─────────────────────────────────────────────────────────
 
-      async def handle_partial_close(
-          self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int
-      ) -> None:
-          ok, _ = await self._auth.check_permission(update, "can_manage_trades")
-          if not ok:
-              return
-          from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-          positions = await self._trades.get_positions()
-          pos = next((p for p in positions if p.ticket == ticket), None)
-          if not pos:
-              await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
-              return
-          lots = pos.volume
-          kb = InlineKeyboardMarkup([
-              [
-                  InlineKeyboardButton(f"25%  ({round(lots*0.25,2):.2f}L)", callback_data=f"trading:partial_exec:{ticket}:25"),
-                  InlineKeyboardButton(f"50%  ({round(lots*0.50,2):.2f}L)", callback_data=f"trading:partial_exec:{ticket}:50"),
-              ],
-              [InlineKeyboardButton(f"75%  ({round(lots*0.75,2):.2f}L)", callback_data=f"trading:partial_exec:{ticket}:75")],
-              [InlineKeyboardButton("← Back", callback_data=f"trading:position_detail:{ticket}")],
-          ])
-          await self.edit_or_reply(
-              update, context,
-              f"📦 <b>PARTIAL CLOSE — #{ticket}</b>\n\nPosition: <b>{lots:.2f} lots</b>\nSelect how much to close:",
-              kb,
-          )
+    async def handle_partial_close(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int
+    ) -> None:
+        ok, _ = await self._auth.check_permission(update, "can_manage_trades")
+        if not ok:
+            return
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        positions = await self._trades.get_positions()
+        pos = next((p for p in positions if p.ticket == ticket), None)
+        if not pos:
+            await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
+            return
+        lots = pos.volume
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(f"25%  ({round(lots*0.25,2):.2f}L)", callback_data=f"trading:partial_exec:{ticket}:25"),
+                InlineKeyboardButton(f"50%  ({round(lots*0.50,2):.2f}L)", callback_data=f"trading:partial_exec:{ticket}:50"),
+            ],
+            [InlineKeyboardButton(f"75%  ({round(lots*0.75,2):.2f}L)", callback_data=f"trading:partial_exec:{ticket}:75")],
+            [InlineKeyboardButton("← Back", callback_data=f"trading:position_detail:{ticket}")],
+        ])
+        await self.edit_or_reply(
+            update, context,
+            f"📦 <b>PARTIAL CLOSE — #{ticket}</b>\n\nPosition: <b>{lots:.2f} lots</b>\nSelect how much to close:",
+            kb,
+        )
 
-      async def execute_partial_close(
-          self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int, pct: float
-      ) -> None:
-          ok, user = await self._auth.check_permission(update, "can_manage_trades")
-          if not ok:
-              return
-          positions = await self._trades.get_positions()
-          pos = next((p for p in positions if p.ticket == ticket), None)
-          if not pos:
-              await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
-              return
-          lots = round(pos.volume * (pct / 100.0), 2)
-          if lots < 0.01:
-              lots = 0.01
-          result = await self._trades.partial_close(ticket, lots)
-          success = result.get("success", False)
-          await self._auth.record_action(
-              user, "TRADE_PARTIAL_CLOSE",
-              f"Partial close #{ticket} {pct:.0f}% ({lots:.2f}L)", success=success,
-          )
-          await self.answer_callback(
-              update, "✅ Partial close sent" if success else "❌ Command failed", show_alert=True
-          )
-          await self.show_positions(update, context)
+    async def execute_partial_close(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int, pct: float
+    ) -> None:
+        ok, user = await self._auth.check_permission(update, "can_manage_trades")
+        if not ok:
+            return
+        positions = await self._trades.get_positions()
+        pos = next((p for p in positions if p.ticket == ticket), None)
+        if not pos:
+            await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
+            return
+        lots = round(pos.volume * (pct / 100.0), 2)
+        if lots < 0.01:
+            lots = 0.01
+        result = await self._trades.partial_close(ticket, lots)
+        success = result.get("success", False)
+        await self._auth.record_action(
+            user, "TRADE_PARTIAL_CLOSE",
+            f"Partial close #{ticket} {pct:.0f}% ({lots:.2f}L)", success=success,
+        )
+        await self.answer_callback(
+            update, "✅ Partial close sent" if success else "❌ Command failed", show_alert=True
+        )
+        await self.show_positions(update, context)
 
-      # ── Move Stop Loss ────────────────────────────────────────────────────────
+    # ── Move Stop Loss ────────────────────────────────────────────────────────
 
-      async def handle_move_sl(
-          self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int
-      ) -> None:
-          ok, _ = await self._auth.check_permission(update, "can_manage_trades")
-          if not ok:
-              return
-          from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-          positions = await self._trades.get_positions()
-          pos = next((p for p in positions if p.ticket == ticket), None)
-          if not pos:
-              await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
-              return
-          sl_text = f"{pos.stop_loss:.2f}" if pos.stop_loss else "None"
-          kb = InlineKeyboardMarkup([
-              [
-                  InlineKeyboardButton("−50 pts", callback_data=f"trading:sl_exec:{ticket}:-50"),
-                  InlineKeyboardButton("−20 pts", callback_data=f"trading:sl_exec:{ticket}:-20"),
-                  InlineKeyboardButton("−10 pts", callback_data=f"trading:sl_exec:{ticket}:-10"),
-              ],
-              [
-                  InlineKeyboardButton("+10 pts", callback_data=f"trading:sl_exec:{ticket}:10"),
-                  InlineKeyboardButton("+20 pts", callback_data=f"trading:sl_exec:{ticket}:20"),
-                  InlineKeyboardButton("+50 pts", callback_data=f"trading:sl_exec:{ticket}:50"),
-              ],
-              [InlineKeyboardButton("← Back", callback_data=f"trading:position_detail:{ticket}")],
-          ])
-          await self.edit_or_reply(
-              update, context,
-              f"🛑 <b>MOVE STOP LOSS — #{ticket}</b>\n\nCurrent SL: <b>{sl_text}</b>\n1 pt = $0.01 (XAUUSD):",
-              kb,
-          )
+    async def handle_move_sl(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int
+    ) -> None:
+        ok, _ = await self._auth.check_permission(update, "can_manage_trades")
+        if not ok:
+            return
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        positions = await self._trades.get_positions()
+        pos = next((p for p in positions if p.ticket == ticket), None)
+        if not pos:
+            await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
+            return
+        sl_text = f"{pos.stop_loss:.2f}" if pos.stop_loss else "None"
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("−50 pts", callback_data=f"trading:sl_exec:{ticket}:-50"),
+                InlineKeyboardButton("−20 pts", callback_data=f"trading:sl_exec:{ticket}:-20"),
+                InlineKeyboardButton("−10 pts", callback_data=f"trading:sl_exec:{ticket}:-10"),
+            ],
+            [
+                InlineKeyboardButton("+10 pts", callback_data=f"trading:sl_exec:{ticket}:10"),
+                InlineKeyboardButton("+20 pts", callback_data=f"trading:sl_exec:{ticket}:20"),
+                InlineKeyboardButton("+50 pts", callback_data=f"trading:sl_exec:{ticket}:50"),
+            ],
+            [InlineKeyboardButton("← Back", callback_data=f"trading:position_detail:{ticket}")],
+        ])
+        await self.edit_or_reply(
+            update, context,
+            f"🛑 <b>MOVE STOP LOSS — #{ticket}</b>\n\nCurrent SL: <b>{sl_text}</b>\n1 pt = $0.01 (XAUUSD):",
+            kb,
+        )
 
-      async def execute_move_sl(
-          self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int, pts: float
-      ) -> None:
-          ok, user = await self._auth.check_permission(update, "can_manage_trades")
-          if not ok:
-              return
-          positions = await self._trades.get_positions()
-          pos = next((p for p in positions if p.ticket == ticket), None)
-          if not pos:
-              await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
-              return
-          if not pos.stop_loss:
-              await self.answer_callback(update, "⚠️ No SL set on this position", show_alert=True)
-              return
-          new_sl = round(pos.stop_loss + pts * 0.01, 2)
-          result = await self._trades.modify_sl(ticket, new_sl)
-          success = result.get("success", False)
-          await self._auth.record_action(
-              user, "TRADE_MODIFY_SL",
-              f"Move SL #{ticket} {pts:+.0f}pts → {new_sl:.2f}", success=success,
-          )
-          await self.answer_callback(
-              update, f"✅ SL → {new_sl:.2f}" if success else "❌ Command failed", show_alert=True
-          )
-          await self.show_position_detail(update, context, ticket)
+    async def execute_move_sl(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int, pts: float
+    ) -> None:
+        ok, user = await self._auth.check_permission(update, "can_manage_trades")
+        if not ok:
+            return
+        positions = await self._trades.get_positions()
+        pos = next((p for p in positions if p.ticket == ticket), None)
+        if not pos:
+            await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
+            return
+        if not pos.stop_loss:
+            await self.answer_callback(update, "⚠️ No SL set on this position", show_alert=True)
+            return
+        new_sl = round(pos.stop_loss + pts * 0.01, 2)
+        result = await self._trades.modify_sl(ticket, new_sl)
+        success = result.get("success", False)
+        await self._auth.record_action(
+            user, "TRADE_MODIFY_SL",
+            f"Move SL #{ticket} {pts:+.0f}pts → {new_sl:.2f}", success=success,
+        )
+        await self.answer_callback(
+            update, f"✅ SL → {new_sl:.2f}" if success else "❌ Command failed", show_alert=True
+        )
+        await self.show_position_detail(update, context, ticket)
 
-      # ── Move Take Profit ──────────────────────────────────────────────────────
+    # ── Move Take Profit ──────────────────────────────────────────────────────
 
-      async def handle_move_tp(
-          self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int
-      ) -> None:
-          ok, _ = await self._auth.check_permission(update, "can_manage_trades")
-          if not ok:
-              return
-          from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-          positions = await self._trades.get_positions()
-          pos = next((p for p in positions if p.ticket == ticket), None)
-          if not pos:
-              await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
-              return
-          tp_text = f"{pos.take_profit:.2f}" if pos.take_profit else "None"
-          kb = InlineKeyboardMarkup([
-              [
-                  InlineKeyboardButton("−50 pts", callback_data=f"trading:tp_exec:{ticket}:-50"),
-                  InlineKeyboardButton("−20 pts", callback_data=f"trading:tp_exec:{ticket}:-20"),
-                  InlineKeyboardButton("−10 pts", callback_data=f"trading:tp_exec:{ticket}:-10"),
-              ],
-              [
-                  InlineKeyboardButton("+10 pts", callback_data=f"trading:tp_exec:{ticket}:10"),
-                  InlineKeyboardButton("+20 pts", callback_data=f"trading:tp_exec:{ticket}:20"),
-                  InlineKeyboardButton("+50 pts", callback_data=f"trading:tp_exec:{ticket}:50"),
-              ],
-              [InlineKeyboardButton("← Back", callback_data=f"trading:position_detail:{ticket}")],
-          ])
-          await self.edit_or_reply(
-              update, context,
-              f"🎯 <b>MOVE TAKE PROFIT — #{ticket}</b>\n\nCurrent TP: <b>{tp_text}</b>\n1 pt = $0.01 (XAUUSD):",
-              kb,
-          )
+    async def handle_move_tp(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int
+    ) -> None:
+        ok, _ = await self._auth.check_permission(update, "can_manage_trades")
+        if not ok:
+            return
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        positions = await self._trades.get_positions()
+        pos = next((p for p in positions if p.ticket == ticket), None)
+        if not pos:
+            await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
+            return
+        tp_text = f"{pos.take_profit:.2f}" if pos.take_profit else "None"
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("−50 pts", callback_data=f"trading:tp_exec:{ticket}:-50"),
+                InlineKeyboardButton("−20 pts", callback_data=f"trading:tp_exec:{ticket}:-20"),
+                InlineKeyboardButton("−10 pts", callback_data=f"trading:tp_exec:{ticket}:-10"),
+            ],
+            [
+                InlineKeyboardButton("+10 pts", callback_data=f"trading:tp_exec:{ticket}:10"),
+                InlineKeyboardButton("+20 pts", callback_data=f"trading:tp_exec:{ticket}:20"),
+                InlineKeyboardButton("+50 pts", callback_data=f"trading:tp_exec:{ticket}:50"),
+            ],
+            [InlineKeyboardButton("← Back", callback_data=f"trading:position_detail:{ticket}")],
+        ])
+        await self.edit_or_reply(
+            update, context,
+            f"🎯 <b>MOVE TAKE PROFIT — #{ticket}</b>\n\nCurrent TP: <b>{tp_text}</b>\n1 pt = $0.01 (XAUUSD):",
+            kb,
+        )
 
-      async def execute_move_tp(
-          self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int, pts: float
-      ) -> None:
-          ok, user = await self._auth.check_permission(update, "can_manage_trades")
-          if not ok:
-              return
-          positions = await self._trades.get_positions()
-          pos = next((p for p in positions if p.ticket == ticket), None)
-          if not pos:
-              await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
-              return
-          if not pos.take_profit:
-              await self.answer_callback(update, "⚠️ No TP set on this position", show_alert=True)
-              return
-          new_tp = round(pos.take_profit + pts * 0.01, 2)
-          result = await self._trades.modify_tp(ticket, new_tp)
-          success = result.get("success", False)
-          await self._auth.record_action(
-              user, "TRADE_MODIFY_TP",
-              f"Move TP #{ticket} {pts:+.0f}pts → {new_tp:.2f}", success=success,
-          )
-          await self.answer_callback(
-              update, f"✅ TP → {new_tp:.2f}" if success else "❌ Command failed", show_alert=True
-          )
-          await self.show_position_detail(update, context, ticket)
+    async def execute_move_tp(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int, pts: float
+    ) -> None:
+        ok, user = await self._auth.check_permission(update, "can_manage_trades")
+        if not ok:
+            return
+        positions = await self._trades.get_positions()
+        pos = next((p for p in positions if p.ticket == ticket), None)
+        if not pos:
+            await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
+            return
+        if not pos.take_profit:
+            await self.answer_callback(update, "⚠️ No TP set on this position", show_alert=True)
+            return
+        new_tp = round(pos.take_profit + pts * 0.01, 2)
+        result = await self._trades.modify_tp(ticket, new_tp)
+        success = result.get("success", False)
+        await self._auth.record_action(
+            user, "TRADE_MODIFY_TP",
+            f"Move TP #{ticket} {pts:+.0f}pts → {new_tp:.2f}", success=success,
+        )
+        await self.answer_callback(
+            update, f"✅ TP → {new_tp:.2f}" if success else "❌ Command failed", show_alert=True
+        )
+        await self.show_position_detail(update, context, ticket)
 
-      # ── Trailing Stop ─────────────────────────────────────────────────────────
+    # ── Trailing Stop ─────────────────────────────────────────────────────────
 
-      async def handle_trail(
-          self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int
-      ) -> None:
-          ok, _ = await self._auth.check_permission(update, "can_manage_trades")
-          if not ok:
-              return
-          from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-          kb = InlineKeyboardMarkup([
-              [
-                  InlineKeyboardButton("30 pts",  callback_data=f"trading:trail_exec:{ticket}:30"),
-                  InlineKeyboardButton("50 pts",  callback_data=f"trading:trail_exec:{ticket}:50"),
-                  InlineKeyboardButton("80 pts",  callback_data=f"trading:trail_exec:{ticket}:80"),
-              ],
-              [
-                  InlineKeyboardButton("100 pts", callback_data=f"trading:trail_exec:{ticket}:100"),
-                  InlineKeyboardButton("150 pts", callback_data=f"trading:trail_exec:{ticket}:150"),
-              ],
-              [InlineKeyboardButton("← Back", callback_data=f"trading:position_detail:{ticket}")],
-          ])
-          await self.edit_or_reply(
-              update, context,
-              f"📐 <b>TRAILING STOP — #{ticket}</b>\n\nSelect trailing distance (1 pt = $0.01):",
-              kb,
-          )
+    async def handle_trail(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int
+    ) -> None:
+        ok, _ = await self._auth.check_permission(update, "can_manage_trades")
+        if not ok:
+            return
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("30 pts",  callback_data=f"trading:trail_exec:{ticket}:30"),
+                InlineKeyboardButton("50 pts",  callback_data=f"trading:trail_exec:{ticket}:50"),
+                InlineKeyboardButton("80 pts",  callback_data=f"trading:trail_exec:{ticket}:80"),
+            ],
+            [
+                InlineKeyboardButton("100 pts", callback_data=f"trading:trail_exec:{ticket}:100"),
+                InlineKeyboardButton("150 pts", callback_data=f"trading:trail_exec:{ticket}:150"),
+            ],
+            [InlineKeyboardButton("← Back", callback_data=f"trading:position_detail:{ticket}")],
+        ])
+        await self.edit_or_reply(
+            update, context,
+            f"📐 <b>TRAILING STOP — #{ticket}</b>\n\nSelect trailing distance (1 pt = $0.01):",
+            kb,
+        )
 
-      async def execute_trail(
-          self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int, pts: float
-      ) -> None:
-          ok, user = await self._auth.check_permission(update, "can_manage_trades")
-          if not ok:
-              return
-          result = await self._trades.set_trailing(ticket, pts)
-          success = result.get("success", False)
-          await self._auth.record_action(
-              user, "TRADE_SET_TRAIL",
-              f"Trailing stop #{ticket} distance={pts:.0f}pts", success=success,
-          )
-          await self.answer_callback(
-              update,
-              f"✅ Trailing stop set ({pts:.0f} pts)" if success else "❌ Command failed",
-              show_alert=True,
-          )
-          await self.show_position_detail(update, context, ticket)
+    async def execute_trail(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, ticket: int, pts: float
+    ) -> None:
+        ok, user = await self._auth.check_permission(update, "can_manage_trades")
+        if not ok:
+            return
+        result = await self._trades.set_trailing(ticket, pts)
+        success = result.get("success", False)
+        await self._auth.record_action(
+            user, "TRADE_SET_TRAIL",
+            f"Trailing stop #{ticket} distance={pts:.0f}pts", success=success,
+        )
+        await self.answer_callback(
+            update,
+            f"✅ Trailing stop set ({pts:.0f} pts)" if success else "❌ Command failed",
+            show_alert=True,
+        )
+        await self.show_position_detail(update, context, ticket)
     
