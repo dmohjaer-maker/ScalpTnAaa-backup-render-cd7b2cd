@@ -118,93 +118,110 @@ class GoldScalperLive:
         self._keepalive_task = asyncio.create_task(
             self._keepalive_loop(), name="mtapi_keepalive"
         )
-
-        # ── Guardian state restore (VB-02) ───────────────────────────────────
-        # Redis is the cross-service persistent copy on Render; the local file
-        # remains a fallback for local/single-process deployments. If Guardian
-        # was halted before restart it must remain halted, and healthy baselines
-        # must also be restored so a restart cannot reset the risk window.
-        # State older than 26 hours is considered stale and is discarded.
-        _guardian_restored = False
+        # Belt-and-suspenders: if any step below raises before _run_loop() is
+        # entered, _run_loop()'s own finally block never executes, leaving the
+        # keepalive task orphaned.  This outer try/finally guarantees cleanup
+        # on every exit path from start() after the task is created.
         try:
-            _gs_data = None
+            # ── Guardian state restore (VB-02) ───────────────────────────────────
+            # Redis is the cross-service persistent copy on Render; the local file
+            # remains a fallback for local/single-process deployments. If Guardian
+            # was halted before restart it must remain halted, and healthy baselines
+            # must also be restored so a restart cannot reset the risk window.
+            # State older than 26 hours is considered stale and is discarded.
+            _guardian_restored = False
             try:
-                from live_trading.redis_ipc import (
-                    redis_read_guardian_state,
-                    redis_available,
-                )
-                if redis_available():
-                    _gs_data = redis_read_guardian_state()
-            except Exception as _redis_gs_exc:
-                log.warning(
-                    f"Could not read Guardian state from Redis — "
-                    f"falling back to disk: {_redis_gs_exc}"
-                )
+                _gs_data = None
+                try:
+                    from live_trading.redis_ipc import (
+                        redis_read_guardian_state,
+                        redis_available,
+                    )
+                    if redis_available():
+                        _gs_data = redis_read_guardian_state()
+                except Exception as _redis_gs_exc:
+                    log.warning(
+                        f"Could not read Guardian state from Redis — "
+                        f"falling back to disk: {_redis_gs_exc}"
+                    )
 
-            if _gs_data is None and os.path.exists(GUARDIAN_STATE_FILE):
-                with open(GUARDIAN_STATE_FILE, "r", encoding="utf-8") as _gsf:
-                    _gs_data = json.load(_gsf)
+                if _gs_data is None and os.path.exists(GUARDIAN_STATE_FILE):
+                    with open(GUARDIAN_STATE_FILE, "r", encoding="utf-8") as _gsf:
+                        _gs_data = json.load(_gsf)
 
-            if _gs_data:
-                _written_at_str = _gs_data.get("written_at")
-                _state_fresh = False
-                if _written_at_str:
-                    try:
-                        _written_at = datetime.fromisoformat(_written_at_str)
-                        if _written_at.tzinfo is None:
-                            _written_at = _written_at.replace(tzinfo=timezone.utc)
-                        _age_hours = (
-                            (datetime.now(timezone.utc) - _written_at).total_seconds()
-                            / 3600
-                        )
-                        if _age_hours <= 26:
-                            _state_fresh = True
-                        else:
-                            log.warning(
-                                f"Guardian state on disk is stale "
-                                f"({_age_hours:.1f}h old, limit=26h) — cold start"
+                if _gs_data:
+                    _written_at_str = _gs_data.get("written_at")
+                    _state_fresh = False
+                    if _written_at_str:
+                        try:
+                            _written_at = datetime.fromisoformat(_written_at_str)
+                            if _written_at.tzinfo is None:
+                                _written_at = _written_at.replace(tzinfo=timezone.utc)
+                            _age_hours = (
+                                (datetime.now(timezone.utc) - _written_at).total_seconds()
+                                / 3600
                             )
-                    except Exception as _ts_exc:
-                        log.warning(
-                            f"Could not parse Guardian state timestamp — cold start: {_ts_exc}"
-                        )
-                if _state_fresh:
-                    self.guardian.restore_state(_gs_data)
-                    if _gs_data.get("halted"):
-                        self.paused = True
-                        log.critical(
-                            "🛡️  Guardian HALT restored — trading PAUSED.  "
-                            "Use /reset_guardian in Telegram to resume."
-                        )
-                    else:
-                        log.info(
-                            "🛡️  Guardian baseline restored — "
-                            "risk window continues across restart."
-                        )
-                    _guardian_restored = True
-        except Exception as _gs_exc:
-            log.warning(
-                f"Could not read Guardian state file — cold start: {_gs_exc}"
-            )
-
-        # Initialise Guardian with live account data (must be after connect).
-        # Skipped when a halted state was restored from disk — the restored
-        # baselines are already active and must not be overwritten.
-        if not _guardian_restored:
-            acc_info = await get_account_info()
-            balance  = float(acc_info.get("balance", 0))
-            equity   = float(acc_info.get("equity",  0))
-            if balance > 0:
-                self.guardian.initialize(balance, equity)
-            else:
+                            if _age_hours <= 26:
+                                _state_fresh = True
+                            else:
+                                log.warning(
+                                    f"Guardian state on disk is stale "
+                                    f"({_age_hours:.1f}h old, limit=26h) — cold start"
+                                )
+                        except Exception as _ts_exc:
+                            log.warning(
+                                f"Could not parse Guardian state timestamp — cold start: {_ts_exc}"
+                            )
+                    if _state_fresh:
+                        self.guardian.restore_state(_gs_data)
+                        if _gs_data.get("halted"):
+                            self.paused = True
+                            log.critical(
+                                "🛡️  Guardian HALT restored — trading PAUSED.  "
+                                "Use /reset_guardian in Telegram to resume."
+                            )
+                        else:
+                            log.info(
+                                "🛡️  Guardian baseline restored — "
+                                "risk window continues across restart."
+                            )
+                        _guardian_restored = True
+            except Exception as _gs_exc:
                 log.warning(
-                    "Could not fetch balance for Guardian initialization — "
-                    "Guardian will block trades until account data is available"
+                    f"Could not read Guardian state file — cold start: {_gs_exc}"
                 )
 
-        await self._calibrate_wyckoff()
-        self._write_state("RUNNING")
-        await self._run_loop()
+            # Initialise Guardian with live account data (must be after connect).
+            # Skipped when a halted state was restored from disk — the restored
+            # baselines are already active and must not be overwritten.
+            if not _guardian_restored:
+                acc_info = await get_account_info()
+                balance  = float(acc_info.get("balance", 0))
+                equity   = float(acc_info.get("equity",  0))
+                if balance > 0:
+                    self.guardian.initialize(balance, equity)
+                else:
+                    log.warning(
+                        "Could not fetch balance for Guardian initialization — "
+                        "Guardian will block trades until account data is available"
+                    )
+
+            await self._calibrate_wyckoff()
+            self._write_state("RUNNING")
+            await self._run_loop()
+        finally:
+            # Cancel the keepalive task if it is still running.  _run_loop()'s
+            # own finally already handles the normal exit path; this block only
+            # fires when start() exits before _run_loop() is called (e.g. an
+            # unexpected exception in _calibrate_wyckoff or get_account_info).
+            # Cancelling an already-done task is a safe no-op.
+            if self._keepalive_task and not self._keepalive_task.done():
+                self._keepalive_task.cancel()
+                try:
+                    await self._keepalive_task
+                except asyncio.CancelledError:
+                    pass
+                log.debug("MTAPI keepalive task cancelled in start() finally.")
 
     # ── Wyckoff calibration ───────────────────────────────────────────────────
 
