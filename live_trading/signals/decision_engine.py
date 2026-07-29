@@ -14,8 +14,8 @@ from live_trading.signals.confidence_engine import ConfidenceResult, ConfidenceC
 from live_trading.signals.quality_filter import QualityFilterResult, apply_quality_filter, get_session_quality
 from live_trading.signals.entry_filter import apply_entry_filter
 from live_trading.risk.capital_manager import CapitalInput, CapitalOutput, calc_trade_parameters
+from live_trading.config import CONF_HARD_MIN
 
-CONF_HARD_MIN  = 45.0
 CONF_MARGINAL_RR = 1.0
 
 
