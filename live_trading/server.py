@@ -393,20 +393,28 @@ async def _run_health_server():
 
 
 async def _keepalive():
-    """Self-ping /health every 14 min to prevent Render free-tier sleep.
+    """External-ping /health every 14 min to prevent Render free-tier sleep.
 
-    Render spins down free-tier services after 15 minutes of inactivity.
-    Pinging our own health endpoint keeps the service awake without relying
-    on an external UptimeRobot or cron job.
+    Render spins down free-tier web services after 15 minutes of inactivity.
+    The inactivity timer is reset only by EXTERNAL HTTP requests routed through
+    Render's edge — localhost / 127.0.0.1 requests bypass the edge entirely and
+    do NOT reset the timer.
+
+    We read RENDER_EXTERNAL_URL (set in render.yaml) for the external URL.
+    Fallback: localhost (only effective when running locally, not on Render).
     """
-    # Wait for health server to fully start before first ping.
     await asyncio.sleep(30)
     import aiohttp
-    url = f"http://127.0.0.1:{PORT}/health"
+    external_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if external_url:
+        url = f"{external_url}/health"
+    else:
+        url = f"http://127.0.0.1:{PORT}/health"
+    print(f"[keepalive] will ping {url} every {_KEEPALIVE_INTERVAL_SECONDS}s", flush=True)
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     print(f"[keepalive] ping /health → {resp.status}", flush=True)
         except Exception as exc:
             print(f"[keepalive] ping failed: {exc}", flush=True)

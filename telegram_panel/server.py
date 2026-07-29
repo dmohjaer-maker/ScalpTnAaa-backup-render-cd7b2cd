@@ -1,12 +1,12 @@
 """
-Render worker service wrapper — Telegram Control Panel.
+Render web-service wrapper — Telegram Control Panel.
 Runs the Telegram bot with a supervisor loop for auto-restart on crash.
-Runs a /health HTTP endpoint on \$PORT for manual debugging via curl.
+Runs a /health HTTP endpoint on $PORT for Render health checks and keepalive.
 
-type: worker — workers NEVER sleep on Render's free tier.
-    Telegram bots use long-polling (outbound requests to Telegram) and receive
-    no inbound HTTP traffic, so 'type: web' would cause the service to spin down
-    after 15 min of inactivity.  Workers run 24/7 for free.
+Deployed as type: web so the service gets a public URL and health checks.
+The keepalive task pings RENDER_EXTERNAL_URL/health every 14 min via the
+external URL (not localhost) to reset Render's inactivity timer and prevent
+free-tier sleep.
 """
 import asyncio
 import os
@@ -53,14 +53,27 @@ async def _run_health_server() -> None:
 
 
 async def _keepalive() -> None:
-    """Self-ping /health every 14 min to prevent Render free-tier sleep."""
+    """External-ping /health every 14 min to prevent Render free-tier sleep.
+
+    Render's inactivity timer is reset only by EXTERNAL HTTP requests routed
+    through Render's edge — localhost/127.0.0.1 requests bypass the edge and
+    do NOT reset the timer.
+
+    We read RENDER_EXTERNAL_URL (set in render.yaml) for the external URL.
+    Fallback: localhost (only effective when running locally, not on Render).
+    """
     await asyncio.sleep(30)  # wait for health server to start
     import aiohttp
-    url = f"http://127.0.0.1:{PORT}/health"
+    external_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if external_url:
+        url = f"{external_url}/health"
+    else:
+        url = f"http://127.0.0.1:{PORT}/health"
+    print(f"[keepalive] will ping {url} every {_KEEPALIVE_INTERVAL_SECONDS}s", flush=True)
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     print(f"[keepalive] ping /health -> {resp.status}", flush=True)
         except Exception as exc:
             print(f"[keepalive] ping failed: {exc}", flush=True)

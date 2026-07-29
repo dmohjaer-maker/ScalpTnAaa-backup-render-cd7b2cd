@@ -34,16 +34,20 @@ services:
         description: robot and panel IPC
 
   # ─── Trading robot ─────────────────────────────────────────────────────────
-  # type: worker — background workers NEVER sleep on Render's free tier.
-  # Web services sleep after 15 min of inactivity; workers run 24/7 for free.
-  # The robot has no public HTTP URL but uses Redis for all IPC with the panel.
-  - type: worker
+  # Deployed as web_service (not worker) so it gets a public URL and health
+  # checks.  The keepalive task pings RENDER_EXTERNAL_URL/health every 14 min
+  # to prevent Render free-tier sleep (requires external URL, not localhost).
+  - type: web
     name: goldscalper-v4-robot
     runtime: python
     plan: free
+    healthCheckPath: /health
     buildCommand: pip install -r live_trading/requirements.txt
     startCommand: python live_trading/server.py
     envVars:
+      # ── Keepalive — must be the external Render URL of THIS service ─────────
+      - key: RENDER_EXTERNAL_URL
+        value: "https://goldscalper-v4-robot.onrender.com"
       # ── mt5rest bridge URL (set to the goldscalper-mtapi service URL) ──────
       - key: MTAPI_URL
         value: "https://goldscalper-mtapi.onrender.com"
@@ -92,14 +96,19 @@ services:
           property: connectionString
 
   # ─── Telegram control panel ────────────────────────────────────────────────
-  - type: worker
+  # Deployed as web_service so it gets a public URL, health checks, and the
+  # keepalive ping works via the external URL (not localhost).
+  - type: web
     name: goldscalper-v4-panel
     runtime: python
     plan: free
-    # type: worker — NEVER sleeps on Render free tier (Telegram long-polling = no inbound HTTP)
+    healthCheckPath: /health
     buildCommand: pip install -r telegram_panel/requirements.txt
     startCommand: python telegram_panel/server.py
     envVars:
+      # ── Keepalive — must be the external Render URL of THIS service ─────────
+      - key: RENDER_EXTERNAL_URL
+        value: "https://goldscalper-v4-panel.onrender.com"
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_OWNER_ID
@@ -124,7 +133,6 @@ services:
       - key: LOG_LEVEL
         value: "INFO"
       # ── Robot control interface ────────────────────────────────────────────
-      # Robot is now a worker (no public URL). All commands go through Redis.
       - key: ROBOT_INTERFACE_MODE
         value: "redis"
       - key: ROBOT_STATE_PATH
