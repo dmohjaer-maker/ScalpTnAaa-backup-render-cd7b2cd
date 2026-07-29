@@ -39,11 +39,15 @@ _BACKOFF_BASE = 30
 _BACKOFF_MAX  = 300
 _backoff      = _BACKOFF_BASE
 _robot_status = "STARTING"
-# CONFIG_ERROR and DISCONNECTED are genuinely unhealthy (operator action needed).
-# RETRY_IN_* is intentionally excluded: the process is alive and retrying as
-# designed.  Returning 503 during retry would cause Render's health monitor to
-# restart the service before the backoff completes, defeating the backoff logic.
-_UNHEALTHY_STATUSES = {"CONFIG_ERROR", "DISCONNECTED", "ERROR", "STOPPED"}
+# Only truly fatal states (config errors, unhandled crashes) return 503.
+# DISCONNECTED is intentionally excluded: the robot is alive and actively
+# trying to reconnect to the MT5 bridge.  Returning 503 for DISCONNECTED
+# caused Render's health monitor to restart the service on every temporary
+# MT5 connection loss, creating an infinite restart loop that prevented the
+# robot from ever completing its reconnect backoff.
+# RETRY_IN_* is also excluded for the same reason.
+# STOPPED is excluded: the supervisor will restart the engine automatically.
+_UNHEALTHY_STATUSES = {"CONFIG_ERROR", "ERROR"}
 _HEARTBEAT_MAX_AGE_SECONDS = 180
 
 # Self-ping keepalive: ping /health every 14 minutes so Render free-tier
