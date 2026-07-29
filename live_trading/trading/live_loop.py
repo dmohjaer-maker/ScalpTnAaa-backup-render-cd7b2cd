@@ -82,6 +82,9 @@ class GoldScalperLive:
         # Exponential backoff state
         self._reconnect_attempts: int = 0
 
+        # Handle for the MTAPI keepalive background task (cancelled on stop)
+        self._keepalive_task: Optional[asyncio.Task] = None
+
     # ── Entry point ───────────────────────────────────────────────────────────
 
     async def start(self) -> bool:
@@ -109,7 +112,12 @@ class GoldScalperLive:
             return False  # non-False return signals failure to main.py for sys.exit(1)
 
         # ── MTAPI keepalive task — prevents Render free-tier sleep ─────────────
-        asyncio.create_task(self._keepalive_loop(), name="mtapi_keepalive")
+        # Store the handle so we can cancel it when the engine stops; without
+        # this, the task becomes orphaned on every supervisor-driven restart and
+        # multiple background pings accumulate across restarts.
+        self._keepalive_task = asyncio.create_task(
+            self._keepalive_loop(), name="mtapi_keepalive"
+        )
 
         # ── Guardian state restore (VB-02) ───────────────────────────────────
         # Redis is the cross-service persistent copy on Render; the local file
@@ -284,6 +292,17 @@ class GoldScalperLive:
             # server.py catch the exception, apply the configured backoff, and
             # restart the engine without Render having to restart the container.
         finally:
+            # Cancel the MTAPI keepalive background task so it does not remain
+            # orphaned when the supervisor restarts the engine inside the same
+            # asyncio event loop.  Multiple orphaned tasks would fire redundant
+            # pings every 10 min and accumulate across restarts indefinitely.
+            if self._keepalive_task and not self._keepalive_task.done():
+                self._keepalive_task.cancel()
+                try:
+                    await self._keepalive_task
+                except asyncio.CancelledError:
+                    pass
+                log.debug("MTAPI keepalive task cancelled.")
             await disconnect()
             self._write_state("STOPPED")
             log.info("Engine stopped.")
