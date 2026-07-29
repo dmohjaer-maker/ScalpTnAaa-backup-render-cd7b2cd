@@ -84,13 +84,23 @@ class AccountService:
         if account and self._mt5:
             try:
                 info = await self._mt5.get_account_info(account)
-                account.balance = info.get("balance", account.balance)
-                account.equity = info.get("equity", account.equity)
-                account.margin = info.get("margin", account.margin)
-                account.free_margin = info.get("free_margin", account.free_margin)
-                account.margin_level = info.get("margin_level", account.margin_level)
-                account.floating_profit = info.get("floating_profit", account.floating_profit)
+                account.balance          = info.get("balance",          account.balance)
+                account.equity           = info.get("equity",           account.equity)
+                account.margin           = info.get("margin",           account.margin)
+                account.free_margin      = info.get("free_margin",      account.free_margin)
+                account.margin_level     = info.get("margin_level",     account.margin_level)
+                account.floating_profit  = info.get("floating_profit",  account.floating_profit)
                 account.leverage         = info.get("leverage",         account.leverage)
+                # Update identity fields from live MT5 state when DB values are blank.
+                # This fixes the case where auto_seed used truncated/placeholder names.
+                if info.get("broker"):
+                    account.broker = info["broker"]
+                if info.get("login"):
+                    account.login = info["login"]
+                if info.get("server"):
+                    account.server = info["server"]
+                if info.get("currency"):
+                    account.currency = info["currency"]
                 raw_status = info.get("connection_status", "disconnected")
                 try:
                     account.connection_status = ConnectionStatus(raw_status)

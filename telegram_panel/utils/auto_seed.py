@@ -56,7 +56,13 @@ def _encrypt(password: str) -> str:
 def run(db_path: str | None = None) -> None:
     """
     Seed one account from MT5_USER / MT5_PASSWORD / MT5_HOST env vars.
-    No-op if any required var is missing OR if accounts already exist.
+
+    Behaviour:
+    - If no accounts exist → INSERT a new account (cold-start / after /tmp wipe).
+    - If the seeded login already exists → UPDATE its server/password/type in case
+      env vars changed between deployments (e.g. switched from demo to real).
+    - If OTHER accounts exist but not this login → INSERT alongside them.
+    - No-op if any required env var is missing.
     """
     db_path   = db_path or os.environ.get("PANEL_DB_PATH", "/tmp/panel.db")
     login     = os.environ.get("MT5_USER",         "").strip()
@@ -78,16 +84,35 @@ def run(db_path: str | None = None) -> None:
         conn.executescript(_ACCOUNTS_DDL)
         conn.commit()
 
-        count = conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
-        if count > 0:
-            logger.info(f"auto_seed: {count} account(s) already exist — no seed needed")
-            conn.close()
-            return
-
-        # Derive a short broker label from the server string
+        # Derive a short broker label from the server string (e.g. "AMarkets-Demo" → "AMarkets")
         broker_label = server.split("-")[0] if "-" in server else server
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        encrypted_pw = _encrypt(password)
 
+        # Check if this exact login already exists
+        existing = conn.execute(
+            "SELECT id FROM accounts WHERE login = ?", (login,)
+        ).fetchone()
+
+        if existing:
+            # UPDATE — refresh server/password/type so stale data from old deployments is fixed.
+            # We do NOT touch broker name here because the live MT5 state will update it once
+            # the robot connects (account_service.get_active_account enriches from MT5 info).
+            conn.execute(
+                """
+                UPDATE accounts
+                   SET server = ?, password_encrypted = ?, account_type = ?,
+                       is_active = 1, is_enabled = 1, updated_at = ?
+                 WHERE login = ?
+                """,
+                (server, encrypted_pw, acct_type, now, login),
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"auto_seed: ✅ Updated existing account  login={login}  server={server}")
+            return
+
+        # INSERT new account
         conn.execute(
             """
             INSERT INTO accounts
@@ -101,11 +126,14 @@ def run(db_path: str | None = None) -> None:
                 broker_label,
                 server,
                 login,
-                _encrypt(password),
+                encrypted_pw,
                 now,
                 now,
             ),
         )
+        # Make this account the active one
+        conn.execute("UPDATE accounts SET is_active = 0")
+        conn.execute("UPDATE accounts SET is_active = 1 WHERE login = ?", (login,))
         conn.commit()
         conn.close()
         logger.info(

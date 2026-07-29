@@ -4,11 +4,66 @@ Dashboard Handler — main home screen and robot control.
 
 import asyncio
 import logging
+from typing import Optional
 from telegram import Update
 from telegram.ext import ContextTypes
 from .base import BaseHandler
 from ..keyboards.inline import Keyboards
 from ..formatters.messages import MessageFormatter
+from ...models.account import Account
+from ...config.constants import AccountType, ConnectionStatus
+
+
+def _account_from_robot_state(robot_state: dict) -> Optional[Account]:
+    """Synthesize a transient Account from robot_state when no DB account exists.
+
+    This is a display-only fallback so the dashboard account block is never
+    blank just because panel.db was wiped on a Render restart.  The object is
+    NOT persisted — it is only passed to the formatter.
+    """
+    # Prefer the richer account_info dict (written by state_writer after our fix)
+    info = robot_state.get("account_info") or robot_state.get("account") or {}
+    if not info:
+        return None
+
+    balance = float(info.get("balance", 0.0))
+    equity  = float(info.get("equity",  0.0))
+    if balance == 0.0 and equity == 0.0:
+        return None  # robot hasn't connected to MT5 yet
+
+    broker = str(info.get("broker") or "")
+    server = str(info.get("server") or "")
+    login  = str(info.get("login")  or info.get("name") or "")
+    currency = str(info.get("currency", "USD"))
+    leverage = int(info.get("leverage") or 100)
+
+    raw_conn = info.get("connection_status", robot_state.get("connection_status", "disconnected"))
+    try:
+        conn_status = ConnectionStatus(str(raw_conn).lower())
+    except ValueError:
+        conn_status = ConnectionStatus.DISCONNECTED
+
+    try:
+        acct_type = AccountType("demo")
+    except ValueError:
+        acct_type = AccountType.DEMO
+
+    return Account(
+        id=None,
+        name=f"{broker} – {login}" if broker and login else (broker or login or "MT5 Account"),
+        account_type=acct_type,
+        broker=broker or "—",
+        server=server or "—",
+        login=login or "—",
+        balance=balance,
+        equity=equity,
+        margin=float(info.get("margin", 0.0)),
+        free_margin=float(info.get("free_margin", info.get("freeMargin", 0.0))),
+        floating_profit=float(info.get("floating_profit", equity - balance)),
+        currency=currency,
+        leverage=leverage,
+        connection_status=conn_status,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +133,13 @@ class DashboardHandler(BaseHandler):
 
         active_count = robot_state.get("active_trades", 0)
         pending_count = robot_state.get("pending_orders", 0)
+
+        # ── Synthesize account from robot_state when DB account is missing ────
+        # This handles the case where /tmp/panel.db was wiped on Render restart
+        # and auto_seed didn't recreate it (e.g. MT5_USER env not set in panel).
+        # The robot writes full account_info to its state; we use that as fallback.
+        if account is None:
+            account = _account_from_robot_state(robot_state)
 
         text = self._fmt.dashboard(
             robot_state=robot_state,
