@@ -9,6 +9,7 @@ from live_trading.signals.wyckoff_engine import WyckoffResult
 from live_trading.signals.price_action_engine import PriceActionResult
 from live_trading.signals.trend_engine import TrendResult
 from live_trading.signals.market_regime import RegimeResult
+from live_trading.config import CONF_HARD_MIN
 
 
 @dataclass
@@ -167,18 +168,17 @@ def _calc_volatility_score(regime: RegimeResult, session: str):
     return _cap(pts, 5), reasons
 
 
-_CONF_HARD_MIN = 45.0  # must match CONF_HARD_MIN in decision_engine.py
-
-
 def _assign_grade(confidence: float, min_conf: float) -> Literal["PRIME","HIGH","MARGINAL","REJECTED"]:
     # PRIME    — ≥ 90 %: exceptional confidence, well above any regime threshold.
     # HIGH     — ≥ regime min_conf but < 90: trade is allowed, solid setup.
-    # MARGINAL — ≥ hard floor (70) but < regime threshold: trade may still be
+    # MARGINAL — ≥ hard floor but < regime threshold: trade may still be
     #            allowed by the marginal R:R check in decision_engine.
     # REJECTED — below the hard floor; trade will never be allowed.
-    if confidence >= 90:             return "PRIME"
-    if confidence >= min_conf:       return "HIGH"
-    if confidence >= _CONF_HARD_MIN: return "MARGINAL"
+    # CONF_HARD_MIN is imported from live_trading.config so the CONF_HARD_MIN
+    # env var is honoured here as well as in decision_engine.py.
+    if confidence >= 90:           return "PRIME"
+    if confidence >= min_conf:     return "HIGH"
+    if confidence >= CONF_HARD_MIN: return "MARGINAL"
     return "REJECTED"
 
 
