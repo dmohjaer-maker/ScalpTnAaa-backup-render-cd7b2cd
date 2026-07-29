@@ -7,6 +7,7 @@ from typing import List, Literal, Optional
 from datetime import datetime, timezone
 from live_trading.signals.gold_engine import OHLCV
 from live_trading.signals.market_regime import calc_adx
+from live_trading.config import CONF_HARD_MIN
 
 ALLOWED_SESSIONS = [
     (0,  7,  "MODERATE"),
@@ -18,7 +19,6 @@ ALLOWED_SESSIONS = [
 LATE_EXTENSION_MULT = 5.0
 MOMENTUM_BARS       = 5
 STALE_BAR_COUNT     = 80
-CONF_HARD_MIN       = 45
 
 
 @dataclass
