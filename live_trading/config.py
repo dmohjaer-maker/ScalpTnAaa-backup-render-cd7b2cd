@@ -34,7 +34,7 @@ CANDLE_WINDOW = int(os.getenv("CANDLE_WINDOW", "300"))  # bars sent to signal en
 # ── Risk & Trade Rules ───────────────────────────────────────────────────────
 RISK_PERCENT            = float(os.getenv("RISK_PERCENT",     "1.0"))
 MIN_CONFIRMATIONS       = int(os.getenv("MIN_CONFIRMATIONS",  "2"))
-CONF_HARD_MIN           = float(os.getenv("CONF_HARD_MIN",      "55.0"))
+CONF_HARD_MIN           = float(os.getenv("CONF_HARD_MIN",      "45.0"))
 MAX_OPEN_TRADES         = 1
 
 # FIX: USE_ATR_HIGH_VOL_FILTER was hardcoded to False and could not be

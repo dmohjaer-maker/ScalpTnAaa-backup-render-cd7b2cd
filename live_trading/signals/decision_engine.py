@@ -15,8 +15,8 @@ from live_trading.signals.quality_filter import QualityFilterResult, apply_quali
 from live_trading.signals.entry_filter import apply_entry_filter
 from live_trading.risk.capital_manager import CapitalInput, CapitalOutput, calc_trade_parameters
 
-CONF_HARD_MIN  = 55.0
-CONF_MARGINAL_RR = 1.2
+CONF_HARD_MIN  = 45.0
+CONF_MARGINAL_RR = 1.0
 
 
 @dataclass

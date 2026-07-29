@@ -167,7 +167,7 @@ def _calc_volatility_score(regime: RegimeResult, session: str):
     return _cap(pts, 5), reasons
 
 
-_CONF_HARD_MIN = 55.0  # must match CONF_HARD_MIN in decision_engine.py
+_CONF_HARD_MIN = 45.0  # must match CONF_HARD_MIN in decision_engine.py
 
 
 def _assign_grade(confidence: float, min_conf: float) -> Literal["PRIME","HIGH","MARGINAL","REJECTED"]:

@@ -15,10 +15,10 @@ ALLOWED_SESSIONS = [
     (17, 22, "MODERATE"),
 ]
 
-LATE_EXTENSION_MULT = 3.5
+LATE_EXTENSION_MULT = 5.0
 MOMENTUM_BARS       = 5
-STALE_BAR_COUNT     = 50
-CONF_HARD_MIN       = 55
+STALE_BAR_COUNT     = 80
+CONF_HARD_MIN       = 45
 
 
 @dataclass
@@ -72,9 +72,9 @@ def _is_volatility_compressed(candles: List[OHLCV], lookback: int = 20, threshol
 
 
 def _is_severe_range(candles: List[OHLCV], adx: float) -> bool:
-    if adx >= 22:
+    if adx >= 14:
         return False
-    if not _is_volatility_compressed(candles, 20, 0.65):
+    if not _is_volatility_compressed(candles, 20, 0.50):
         return False
     sl = candles[-15:]
     highest = max(c.high for c in sl)
@@ -118,7 +118,7 @@ def _is_weak_volume(candles: List[OHLCV]) -> bool:
         return False
     avg_vol  = sum(c.volume for c in candles[-21:-1]) / 20
     curr_vol = candles[-1].volume
-    return avg_vol > 0 and curr_vol < avg_vol * 0.40
+    return avg_vol > 0 and curr_vol < avg_vol * 0.20
 
 
 def apply_quality_filter(
@@ -165,9 +165,9 @@ def apply_quality_filter(
     if late:
         reasons.append("Late entry: overextended from EMA50 or stale BOS")
 
-    low_mom = adx_val < 8
+    low_mom = adx_val < 5
     if low_mom:
-        reasons.append(f"Low momentum: ADX {adx_val:.1f} < 8")
+        reasons.append(f"Low momentum: ADX {adx_val:.1f} < 5")
 
     weak_vol = _is_weak_volume(candles)
     if weak_vol:
