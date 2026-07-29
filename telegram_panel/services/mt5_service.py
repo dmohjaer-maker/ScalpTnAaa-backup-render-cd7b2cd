@@ -189,7 +189,7 @@ class MT5Service:
         cmd_path = self._snapshot_path.replace("snapshot", "trade_commands")
         cmd = {"command": command, "params": params, "issued_at": datetime.now(timezone.utc).isoformat()}
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             def _write():
                 existing = []
                 if os.path.exists(cmd_path):
@@ -213,7 +213,7 @@ class MT5Service:
         return await self._read_snapshot()
 
     async def _read_snapshot(self) -> dict[str, Any]:
-        now = asyncio.get_event_loop().time()
+        now = asyncio.get_running_loop().time()
         if self._cache_ts and (now - self._cache_ts) < self._cache_ttl:
             return self._cache
 
@@ -330,6 +330,9 @@ class MT5Service:
     def _normalize_state_to_snapshot(state: dict) -> dict:
         """Convert robot_state format into the mt5_snapshot format expected by get_account_info()."""
         account = state.get("account", {})
+        # Prefer the richer account_info dict written by state_writer when present.
+        account_info_raw = state.get("account_info", {})
+
         raw_status = state.get("status", "stopped").upper()
         # PAUSED is intentionally excluded: a paused robot may have lost its MT5
         # connection and must not show "connected" in the panel.  Prefer the
@@ -340,18 +343,64 @@ class MT5Service:
         else:
             connected = raw_status in ("RUNNING", "WAITING", "SCANNING", "HOLDING")
             conn_status = "connected" if connected else "disconnected"
+
+        # floating_profit = equity − balance (unrealised open position P&L)
+        balance = account_info_raw.get("balance", account.get("balance", 0.0))
+        equity  = account_info_raw.get("equity",  account.get("equity",  0.0))
+        floating_profit = account_info_raw.get("floating_profit", account.get("profit", equity - balance))
+
+        # today_profit: sum of realised profits from closed trades logged today.
+        # Using "profit" (equity-balance) for today_profit was wrong — it showed
+        # unrealised floating P&L, not the day's realised result.
+        today_profit = MT5Service._compute_today_profit(state)
+
+        # Prefer today_profit if already computed and stored in state (newer robot)
+        if "today_profit" in state:
+            today_profit = float(state["today_profit"])
+
         return {
             "account_info": {
-                "balance":          account.get("balance", 0.0),
-                "equity":           account.get("equity",  0.0),
-                "margin":           account.get("margin",  0.0),
-                "free_margin":      account.get("margin_free", 0.0),
-                "floating_profit":  account.get("profit",  0.0),
-                "currency":         account.get("currency", "USD"),
-                "leverage":         account.get("leverage", 0),
+                "balance":          balance,
+                "equity":           equity,
+                "margin":           account_info_raw.get("margin", account.get("margin", 0.0)),
+                "free_margin":      account_info_raw.get("free_margin", account.get("margin_free", 0.0)),
+                "floating_profit":  floating_profit,
+                "currency":         account_info_raw.get("currency", account.get("currency", "USD")),
+                "leverage":         account_info_raw.get("leverage", account.get("leverage", 0)),
+                "broker":           account_info_raw.get("broker", account.get("broker", "")),
+                "server":           account_info_raw.get("server", account.get("server", "")),
+                "login":            account_info_raw.get("login", account.get("login", "")),
                 "connection_status": conn_status,
             },
             "connection_status": conn_status,
-            "today_profit":      account.get("profit", 0.0),
-            "floating_profit":   account.get("profit", 0.0),
+            "today_profit":    today_profit,
+            "floating_profit": floating_profit,
         }
+
+    @staticmethod
+    def _compute_today_profit(state: dict) -> float:
+        """Compute today's realised profit from recent_trades logged in the robot state.
+
+        The robot logs trades with a 'logged_at' (or 'bar_time') timestamp and
+        a 'profit' field when a position is closed.  We sum today's closed-trade
+        profits.  Trades that are still open or were opened (not closed) have no
+        'profit' key and are correctly excluded.
+        """
+        from datetime import date
+        today = date.today().isoformat()
+        total = 0.0
+        for trade in state.get("recent_trades", []):
+            if not isinstance(trade, dict):
+                continue
+            profit = trade.get("profit")
+            if profit is None:
+                continue  # open-trade entry, no realised profit yet
+            # Use logged_at or bar_time to filter to today
+            ts = trade.get("logged_at") or trade.get("bar_time") or ""
+            if ts and not str(ts).startswith(today):
+                continue
+            try:
+                total += float(profit)
+            except (TypeError, ValueError):
+                pass
+        return round(total, 2)

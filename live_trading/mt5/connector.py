@@ -335,6 +335,13 @@ async def get_account_info() -> dict:
                     "marginLevel": float(data.get("marginLevel", 0.0)),
                     "currency":    data.get("currency", "USD"),
                     "leverage":    int(data.get("leverage") or 0),
+                    # Identity fields — present in most mt5rest AccountSummary responses.
+                    # These allow the Telegram panel to display broker/login even when the
+                    # local SQLite DB was wiped (e.g. Render free-tier /tmp reset).
+                    "broker":      str(data.get("broker") or data.get("company") or ""),
+                    "server":      str(data.get("server") or ""),
+                    "login":       str(data.get("login") or data.get("account") or ""),
+                    "name":        str(data.get("name") or ""),
                 }
             log.error(f"AccountSummary unexpected response: {data}")
             return {}

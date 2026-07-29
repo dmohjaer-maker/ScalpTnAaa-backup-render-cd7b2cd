@@ -239,6 +239,10 @@ class RobotService:
     async def push_strategy_config(self, config: dict[str, Any]) -> bool:
         return await self._send_command("UPDATE_STRATEGY", payload=config)
 
+    async def send_command(self, command: str, payload: Optional[dict] = None) -> bool:
+        """Public wrapper for _send_command — used by account_service and external callers."""
+        return await self._send_command(command, payload)
+
     # ─── Private ─────────────────────────────────────────────────────────────
 
     async def _read_state(self) -> dict[str, Any]:

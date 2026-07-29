@@ -188,7 +188,31 @@ def write_robot_state(
         "margin_free": account_info.get("freeMargin", account_info.get("free_margin", 0)),
         "currency":    account_info.get("currency", "USD"),
         "leverage":    account_info.get("leverage", 0),
+        # Identity fields from mt5rest AccountSummary (if available).
+        # These survive even when the panel SQLite DB is wiped (e.g. /tmp reset on Render).
+        "broker":      account_info.get("broker", ""),
+        "server":      account_info.get("server", ""),
+        "login":       account_info.get("login", ""),
+        "name":        account_info.get("name", ""),
     }
+
+    # today_profit: sum of realised profits from trades closed today.
+    # Floating P&L (equity-balance) is NOT today's profit; they measure different things.
+    _today = __import__("datetime").date.today().isoformat()
+    _today_profit = 0.0
+    for _t in trade_history:
+        if not isinstance(_t, dict):
+            continue
+        _p = _t.get("profit")
+        if _p is None:
+            continue  # open-trade entry logged at entry time, no realised profit yet
+        _ts = str(_t.get("logged_at") or _t.get("bar_time") or "")
+        if _ts and not _ts.startswith(_today):
+            continue
+        try:
+            _today_profit += float(_p)
+        except (TypeError, ValueError):
+            pass
 
     state = {
         "status":           status,
@@ -216,8 +240,17 @@ def write_robot_state(
             "floating_profit":  _account_dict["profit"],
             "currency":         _account_dict["currency"],
             "leverage":         _account_dict["leverage"],
+            # Identity fields written by connector.get_account_info()
+            # so the panel can show broker/login even after a /tmp DB wipe.
+            "broker":           _account_dict.get("broker", ""),
+            "server":           _account_dict.get("server", ""),
+            "login":            _account_dict.get("login", ""),
+            "name":             _account_dict.get("name", ""),
             "connection_status": _conn_str,
         },
+        # today_profit: day's realised P&L from trades closed today.
+        # NOT the floating P&L (equity-balance) which is a common confusion.
+        "today_profit":     round(_today_profit, 2),
         "open_position":    pos_data,
         "last_decision":    dec_data,
         "recent_trades":    trade_history[-MAX_TRADE_HISTORY:],
