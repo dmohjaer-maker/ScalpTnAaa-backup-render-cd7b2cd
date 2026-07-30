@@ -713,6 +713,10 @@ class GoldScalperLive:
                     "action":      "CLOSED_BY_TELEGRAM",
                     "profit":      d.get("profit"),
                 })
+                # ROOT-CAUSE FIX: persist trade history immediately after each
+                # close so the Telegram panel shows it without waiting for the
+                # next bar's write_mt5_snapshot() call.
+                self._write_state("RUNNING", self._last_acc_info)
 
     # ── Trade history persistence (survives restarts) ─────────────────────────
 
