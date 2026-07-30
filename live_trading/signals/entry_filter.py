@@ -5,7 +5,7 @@ Ported from entryFilter.ts
 from dataclasses import dataclass
 from typing import Literal
 
-MIN_CONFIRMATIONS = 3
+MIN_CONFIRMATIONS = 1
 
 
 @dataclass
