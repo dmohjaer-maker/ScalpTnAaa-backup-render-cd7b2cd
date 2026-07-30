@@ -720,6 +720,50 @@ class GoldScalperLive:
         if cmds.get("restart_telegram"):
             log.info("ℹ️  RESTART_TELEGRAM received — handled by panel service")
             clear_command("restart_telegram")
+        # "update_risk" — sent by Telegram panel risk settings.
+        # Payload keys (all optional): risk_percent, daily_loss_limit_pct,
+        # max_drawdown_pct, slippage_points.  Each value updates the live
+        # config and the Guardian thresholds without a restart.
+        if cmds.get("update_risk"):
+            payload = cmds["update_risk"]
+            if isinstance(payload, dict):
+                import live_trading.config as _live_cfg
+                _g = globals()
+                try:
+                    if "risk_percent" in payload:
+                        v = float(payload["risk_percent"])
+                        _live_cfg.RISK_PERCENT = v; _g["RISK_PERCENT"] = v
+                    if "daily_loss_limit_pct" in payload:
+                        v = float(payload["daily_loss_limit_pct"])
+                        _live_cfg.DAILY_LOSS_LIMIT_PCT = v; _g["DAILY_LOSS_LIMIT_PCT"] = v
+                        self.guardian._daily_loss_limit_pct = v
+                    if "max_drawdown_pct" in payload:
+                        v = float(payload["max_drawdown_pct"])
+                        _live_cfg.MAX_DRAWDOWN_PCT = v; _g["MAX_DRAWDOWN_PCT"] = v
+                        self.guardian._max_drawdown_pct = v
+                    if "slippage_points" in payload:
+                        v = int(float(payload["slippage_points"]))
+                        _live_cfg.SLIPPAGE_POINTS = v; _g["SLIPPAGE_POINTS"] = v
+                    log.info(f"🔧 Risk config updated via Telegram: {payload}")
+                except Exception as _upd_err:
+                    log.warning(f"update_risk payload error: {_upd_err}")
+            clear_command("update_risk")
+
+        # "update_strategy" — sent by Telegram panel strategy settings.
+        # Payload keys (all optional): min_confirmations (int).
+        if cmds.get("update_strategy"):
+            payload = cmds["update_strategy"]
+            if isinstance(payload, dict):
+                import live_trading.config as _live_cfg
+                _g = globals()
+                try:
+                    if "min_confirmations" in payload:
+                        v = int(float(payload["min_confirmations"]))
+                        _live_cfg.MIN_CONFIRMATIONS = v; _g["MIN_CONFIRMATIONS"] = v
+                    log.info(f"🔧 Strategy config updated via Telegram: {payload}")
+                except Exception as _upd_err:
+                    log.warning(f"update_strategy payload error: {_upd_err}")
+            clear_command("update_strategy")
 
     async def _close_all_positions(self) -> None:
         try:
@@ -822,3 +866,4 @@ class GoldScalperLive:
             ),
             extra = merged_extra or None,
         )
+
