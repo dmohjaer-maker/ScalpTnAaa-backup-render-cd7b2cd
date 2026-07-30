@@ -391,4 +391,41 @@ class TradingHandler(BaseHandler):
             show_alert=True,
         )
         await self.show_position_detail(update, context, ticket)
+
+    # ── Trade History ─────────────────────────────────────────────────────────
+
+    async def show_trade_history(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, limit: int = 20
+    ) -> None:
+        """
+        Display recent closed trades via /history or trading:history callback.
+        ROOT-CAUSE FIX: no handler existed to show completed trade history.
+        """
+        if not await self._rate_check(update):
+            return
+        ok, _ = await self._auth.check_permission(update, "can_view_trades")
+        if not ok:
+            return
+        from ..formatters.messages import MessageFormatter
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        try:
+            trades = await self._trades.get_recent_trades(limit)
+        except Exception as exc:
+            await self.edit_or_reply(
+                update, context,
+                MessageFormatter.error(f"Could not fetch trade history: {exc}"),
+                InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data="nav:trading")]]),
+            )
+            return
+        text = MessageFormatter.trade_history(trades)
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔄 Refresh",  callback_data="trading:history"),
+                InlineKeyboardButton("📋 Last 50",  callback_data="trading:history:50"),
+            ],
+            [InlineKeyboardButton("← Back", callback_data="nav:trading")],
+        ])
+        await self.edit_or_reply(update, context, text, kb)
+        if update.callback_query:
+            await update.callback_query.answer()
     
