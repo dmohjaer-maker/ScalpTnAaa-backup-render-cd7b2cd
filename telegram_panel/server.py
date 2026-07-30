@@ -93,9 +93,14 @@ async def _run_panel() -> None:
 
 
 async def _main() -> None:
-    # Health server runs in the background for debugging; never stopped.
-    asyncio.create_task(_run_health_server())
-    asyncio.create_task(_keepalive())
+    # Health server and keepalive run in the background; task references are
+    # stored so CPython's reference counter cannot garbage-collect them while
+    # _main() is executing.  Unreferenced tasks can disappear silently in
+    # Python ≥ 3.12 (PEP 667 enforcement became stricter).
+    _health_task = asyncio.create_task(_run_health_server())
+    _keepalive_task = asyncio.create_task(_keepalive())
+    # Keep strong references alive for the lifetime of _main().
+    _background_tasks = {_health_task, _keepalive_task}
     await asyncio.sleep(1)
     print("[server] Health server ready. Starting Telegram panel...", flush=True)
 
