@@ -544,14 +544,26 @@ async def _main():
     await asyncio.sleep(1)
     keepalive  = asyncio.create_task(_keepalive())
     supervisor = asyncio.create_task(_robot_supervisor())
+    # Keep strong references so CPython cannot GC background tasks.
+    _background_tasks = {health, keepalive, supervisor}
+
+    # asyncio.gather() with return_exceptions=True collects each task result
+    # (or exception) instead of cancelling remaining tasks when one raises.
+    # This prevents a transient keepalive failure from killing the health
+    # server and supervisor, which would leave Render with no health endpoint
+    # and no trading loop — the worst possible outcome for a silent failure.
     try:
-        await asyncio.gather(health, keepalive, supervisor)
+        results = await asyncio.gather(health, keepalive, supervisor, return_exceptions=True)
+        for task_name, res in zip(("health", "keepalive", "supervisor"), results):
+            if isinstance(res, BaseException):
+                print(f"[server] task '{task_name}' exited with error: {res}", flush=True)
+                traceback.print_exception(type(res), res, res.__traceback__)
     except Exception:
         traceback.print_exc()
-        # Never exit — keep alive even if both tasks somehow die.
-        print("[server] gather() raised — entering keep-alive loop", flush=True)
-        while True:
-            await asyncio.sleep(60)
+    # Never exit — keep the process alive even if all tasks somehow die.
+    print("[server] all tasks finished — entering keep-alive loop", flush=True)
+    while True:
+        await asyncio.sleep(60)
 
 
 if __name__ == "__main__":
