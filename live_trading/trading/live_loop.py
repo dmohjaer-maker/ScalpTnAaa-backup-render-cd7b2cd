@@ -61,6 +61,12 @@ log = get_logger()
 _RECONNECT_MAX_DELAY = 300   # seconds — hard cap regardless of attempt count
 _RECONNECT_BASE      = RECONNECT_DELAY  # first-failure delay (from config, default 30s)
 
+# How often (seconds) to refresh account info between M5 candles.
+# Without this, _last_acc_info is only updated inside _on_new_bar() — once
+# every 5 minutes.  Refreshing every 30 s keeps balance/equity current even
+# when no new candle has fired (deposits, withdrawals, positions closed elsewhere).
+_ACC_REFRESH_INTERVAL = 30.0
+
 
 class GoldScalperLive:
     def __init__(self):
@@ -78,6 +84,7 @@ class GoldScalperLive:
         )
         self._last_guardian_status: Optional[GuardianStatus] = None
         self._last_acc_info: Optional[dict] = None  # cache for WAITING state writes
+        self._last_acc_refresh_ts: float = 0.0        # monotonic time of last between-bar refresh
 
         # Exponential backoff state
         self._reconnect_attempts: int = 0
@@ -318,6 +325,22 @@ class GoldScalperLive:
                              f"at {new_bar.isoformat()} ───")
                     await self._on_new_bar(new_bar)
                 else:
+                    # Refresh account info every _ACC_REFRESH_INTERVAL seconds
+                    # so the panel shows current balance/equity between candles.
+                    now_ts = asyncio.get_event_loop().time()
+                    if now_ts - self._last_acc_refresh_ts >= _ACC_REFRESH_INTERVAL:
+                        try:
+                            fresh = await get_account_info()
+                            if fresh and "balance" in fresh and "equity" in fresh:
+                                self._last_acc_info = fresh
+                                self._last_acc_refresh_ts = now_ts
+                                log.debug(
+                                    f"Between-bar acc refresh: "
+                                    f"balance={fresh['balance']:.2f}  "
+                                    f"equity={fresh['equity']:.2f}"
+                                )
+                        except Exception as _acc_err:
+                            log.debug(f"Between-bar acc refresh skipped: {_acc_err}")
                     self._write_state("WAITING", self._last_acc_info)
 
                 await asyncio.sleep(BAR_CHECK_INTERVAL)
