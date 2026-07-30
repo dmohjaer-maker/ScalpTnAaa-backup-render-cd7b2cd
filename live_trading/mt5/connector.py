@@ -77,7 +77,7 @@ async def connect(*args, **kwargs) -> bool:
     Connect to MT5 via the mt5rest HTTP bridge using GET /ConnectEx.
     Returns the connection UUID which is stored in _conn_id.
     """
-    global _connected, _base_url, _conn_id
+    global _connected, _base_url, _conn_id, _last_connect_time
 
     base     = MTAPI_URL.rstrip("/") if MTAPI_URL else ""
     host     = MT5_HOST
@@ -545,3 +545,4 @@ def get_conn_id() -> Optional[str]:
 
 def is_connected() -> bool:
     return _connected
+
