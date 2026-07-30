@@ -269,8 +269,10 @@ def redis_send_command(command: str, payload: Optional[dict] = None) -> bool:
         )
         raw = r.get(_COMMANDS_KEY)
         cmds = json.loads(raw) if raw else {}
-        cmds[engine_key] = True
-        r.set(_COMMANDS_KEY, json.dumps(cmds), ex=_CMD_TTL)
+        # Store payload alongside the flag so UPDATE_RISK / UPDATE_STRATEGY
+        # can carry their config dict to the robot.
+        cmds[engine_key] = payload if payload is not None else True
+        r.set(_COMMANDS_KEY, json.dumps(cmds, default=str), ex=_CMD_TTL)
         logger.info("Redis sent command: %s -> %s", command, engine_key)
         return True
     except Exception as exc:
@@ -315,3 +317,4 @@ def redis_update_snapshot_trades(trades: list) -> bool:
         logger.warning("Redis update_snapshot_trades: %s", exc)
         _reset_client()
         return False
+
