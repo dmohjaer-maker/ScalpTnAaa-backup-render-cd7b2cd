@@ -62,7 +62,9 @@ async def _main() -> None:
         sys.exit(1)
 
     log.info(f"MT5 broker : {MT5_HOST}")
-    log.info(f"MT5 user   : {MT5_USER}")
+    # Mask account number: show only first 3 chars to avoid leaking credentials in logs.
+    _masked_user = (MT5_USER[:3] + "***") if len(MT5_USER) > 3 else "***"
+    log.info(f"MT5 user   : {_masked_user}")
     log.info(f"mt5rest URL: {MTAPI_URL}")
 
     engine = GoldScalperLive()
