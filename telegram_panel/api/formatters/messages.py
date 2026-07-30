@@ -407,6 +407,57 @@ class MessageFormatter:
             f"<i>{datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}</i>"
         )
 
+    # ─── Trade History ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def trade_history(trades: list) -> str:
+        """Format recent closed trades for Telegram display."""
+        _D = "─" * 32
+        if not trades:
+            return (
+                "📋 <b>TRADE HISTORY</b>\n"
+                f"<code>{_D}</code>\n\n"
+                "No completed trades found.\n\n"
+                "<i>Trades appear here once the robot closes a position.</i>"
+            )
+        lines = [f"📋 <b>TRADE HISTORY</b> (last {len(trades)})", f"<code>{_D}</code>"]
+        total_pnl = 0.0
+        wins = 0
+        for t in reversed(trades):
+            try:
+                direction = getattr(t, "direction", None)
+                dir_str   = direction.value if direction else "?"
+                pnl       = float(getattr(t, "profit", 0) or 0)
+                total_pnl += pnl
+                if pnl >= 0:
+                    wins += 1
+                icon     = "🟢" if pnl >= 0 else "🔴"
+                ticket   = getattr(t, "ticket", 0)
+                symbol   = getattr(t, "symbol", "XAUUSD")
+                volume   = getattr(t, "volume", 0)
+                open_px  = float(getattr(t, "open_price",  0) or 0)
+                close_px = float(getattr(t, "close_price", 0) or 0)
+                open_t   = getattr(t, "open_time", None)
+                close_t  = getattr(t, "close_time", None)
+                open_s   = open_t.strftime("%m/%d %H:%M")  if open_t  else "—"
+                close_s  = close_t.strftime("%m/%d %H:%M") if close_t else "—"
+                lines.append(
+                    f"\n{icon} <b>{dir_str} #{ticket}</b>  {symbol}\n"
+                    f"  📦 {volume}L  |  {open_s} → {close_s}\n"
+                    f"  📈 {open_px:.2f} → {close_px:.2f}\n"
+                    f"  💵 P&L: <b>{pnl:+.2f}</b>"
+                )
+            except Exception:
+                continue
+        n = len(trades)
+        winrate = int(wins / n * 100) if n else 0
+        lines.append(
+            f"\n<code>{_D}</code>\n"
+            f"📊 Total: <b>{total_pnl:+.2f}</b>  |  "
+            f"Win-rate: <b>{winrate}%</b> ({wins}/{n})"
+        )
+        return "\n".join(lines)
+
     # ─── Helpers ─────────────────────────────────────────────────────────────
 
     @staticmethod
