@@ -14,53 +14,56 @@
 #   MT5_PORT      — broker port (default: 443)
 #   MT5_USER      — MT5 account login number
 #   MT5_PASSWORD  — MT5 account password
-
-# ── Stage 1: obtain socat from a clean, current Ubuntu image ──────────────────
-# We intentionally avoid running apt-get inside the mt5rest base image because
-# it is a 2022 Wine image whose apt repository lists may be stale or broken.
-# Instead we build socat in a known-good ubuntu:22.04 stage and copy only the
-# binary + its shared library into the final image.  Both images are
-# glibc/amd64 so the binary is ABI-compatible.
 #
-# NOTE: Render resolves both stages with rootDir=mtapi-bridge / dockerContext=.
-# so every COPY path below is relative to the mtapi-bridge/ directory.
-FROM ubuntu:22.04 AS socat-source
+# Build context: rootDir=mtapi-bridge, dockerContext=. → context IS mtapi-bridge/
+# All COPY paths below are relative to the mtapi-bridge/ directory.
+
+# ── Stage 1: build socat in a compatible Ubuntu 20.04 image ──────────────────
+# ubuntu:20.04 ships OpenSSL 1.1 — the same version present in the mt5rest
+# Wine image — so socat's libssl.so.1.1 dependency is already satisfied in
+# the final image and does NOT need to be copied.
+# Only libwrap.so.0 is missing from the mt5rest base; all other socat
+# runtime libraries (libc, libssl, libcrypto, libnsl, libutil, libpthread,
+# libdl) are already present (verified via docker inspect).
+FROM ubuntu:20.04 AS socat-source
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq \
-    && apt-get install -y --no-install-recommends socat libwrap0 \
+    && apt-get install -y --no-install-recommends socat \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Stage 2: final mt5rest image with Render PORT proxy ───────────────────────
 FROM timurila/mt5rest:26.07.22-06.37
 
-# Copy socat binary and its TCP-wrappers library from the builder stage.
+# Copy socat binary and its one missing runtime dependency (libwrap.so.0).
+# Paths are from ubuntu:20.04 where libs live under /lib, not /usr/lib.
 COPY --from=socat-source /usr/bin/socat                              /usr/local/bin/socat
-COPY --from=socat-source /usr/lib/x86_64-linux-gnu/libwrap.so.0     /usr/lib/x86_64-linux-gnu/libwrap.so.0
+COPY --from=socat-source /lib/x86_64-linux-gnu/libwrap.so.0         /lib/x86_64-linux-gnu/libwrap.so.0
 
 # ── Render PORT proxy entrypoint ──────────────────────────────────────────────
 # ROOT CAUSE FIX: mt5rest always listens on port 80, but Render's reverse-proxy
 # routes all external HTTPS traffic — including the /Ping health check — to the
 # container on $PORT (typically 10000+ on the free tier).  Without this fix,
 # Render marks goldscalper-mtapi unhealthy on every health check, restarts it
-# in a continuous loop, and the trading robot can never establish an MT5
+# in a continuous loop, and the trading robot can never establish a stable MT5
 # connection via ConnectEx.  No trades can be placed.
 #
 # render-entrypoint.sh starts  socat $PORT → 80  in the background, then
-# exec-s the original container command so mt5rest starts exactly as before.
-# When PORT=80 (local / Docker Compose), the proxy step is a no-op.
+# exec-s the original container command.
 #
-# Build-context note: Render sets rootDir=mtapi-bridge and dockerContext=.
-# so this COPY path is relative to the mtapi-bridge/ directory — no prefix needed.
+# CRITICAL: docker inspect shows the base image uses
+#   ENTRYPOINT ["dotnet", "mt5rest.dll"]  CMD: null
+# Overriding ENTRYPOINT without setting CMD leaves $@ empty — the container
+# crashes immediately on exec "".  We restore the original startup command
+# via CMD so it is passed as positional args to our wrapper script.
 COPY render-entrypoint.sh /render-entrypoint.sh
 RUN chmod +x /render-entrypoint.sh
 
-# Override ENTRYPOINT with the thin wrapper; the original CMD is forwarded
-# verbatim via exec "$@" so mt5rest starts exactly as the base image intends.
 ENTRYPOINT ["/render-entrypoint.sh"]
+CMD ["dotnet", "mt5rest.dll"]
 
 EXPOSE 80
 
 # Internal health check: verifies /Ping on mt5rest's fixed port 80.
-# Render's external health check reaches the service through the socat proxy
-# on $PORT.
+# Render's external health check reaches the service through the socat proxy.
 HEALTHCHECK --interval=60s --timeout=30s --start-period=120s --retries=3 \
     CMD wget -qO- http://localhost:80/Ping || exit 1
