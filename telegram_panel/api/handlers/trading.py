@@ -181,7 +181,7 @@ class TradingHandler(BaseHandler):
         if not ok:
             return
         from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-        positions = await self._trades.get_positions()
+        positions = await self._trades.get_open_positions()
         pos = next((p for p in positions if p.ticket == ticket), None)
         if not pos:
             await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
@@ -207,7 +207,7 @@ class TradingHandler(BaseHandler):
         ok, user = await self._auth.check_permission(update, "can_manage_trades")
         if not ok:
             return
-        positions = await self._trades.get_positions()
+        positions = await self._trades.get_open_positions()
         pos = next((p for p in positions if p.ticket == ticket), None)
         if not pos:
             await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
@@ -235,7 +235,7 @@ class TradingHandler(BaseHandler):
         if not ok:
             return
         from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-        positions = await self._trades.get_positions()
+        positions = await self._trades.get_open_positions()
         pos = next((p for p in positions if p.ticket == ticket), None)
         if not pos:
             await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
@@ -266,7 +266,7 @@ class TradingHandler(BaseHandler):
         ok, user = await self._auth.check_permission(update, "can_manage_trades")
         if not ok:
             return
-        positions = await self._trades.get_positions()
+        positions = await self._trades.get_open_positions()
         pos = next((p for p in positions if p.ticket == ticket), None)
         if not pos:
             await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
@@ -295,7 +295,7 @@ class TradingHandler(BaseHandler):
         if not ok:
             return
         from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-        positions = await self._trades.get_positions()
+        positions = await self._trades.get_open_positions()
         pos = next((p for p in positions if p.ticket == ticket), None)
         if not pos:
             await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
@@ -326,7 +326,7 @@ class TradingHandler(BaseHandler):
         ok, user = await self._auth.check_permission(update, "can_manage_trades")
         if not ok:
             return
-        positions = await self._trades.get_positions()
+        positions = await self._trades.get_open_positions()
         pos = next((p for p in positions if p.ticket == ticket), None)
         if not pos:
             await self.answer_callback(update, "⚠️ Position not found", show_alert=True)
@@ -401,9 +401,7 @@ class TradingHandler(BaseHandler):
         Display recent closed trades via /history or trading:history callback.
         ROOT-CAUSE FIX: no handler existed to show completed trade history.
         """
-        if not await self._rate_check(update):
-            return
-        ok, _ = await self._auth.check_permission(update, "can_view_trades")
+        ok, _ = await self._auth.check_permission(update, "can_view_dashboard")
         if not ok:
             return
         from ..formatters.messages import MessageFormatter

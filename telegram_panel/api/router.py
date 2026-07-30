@@ -173,7 +173,8 @@ class Router:
         if not data:
             return
 
-        logger.debug(f"Callback: {data}")
+        user_id = update.effective_user.id if update.effective_user else "?"
+        logger.info(f"[BTN] user={user_id} data={data!r}")
         parts = data.split(":")
 
         try:
@@ -209,15 +210,6 @@ class Router:
                         parse_mode="HTML",
                     )
                     await update.callback_query.answer()
-
-            # ── Trade History ────────────────────────────────────────────
-            elif section == "trading":
-                action = parts[1] if len(parts) > 1 else "list"
-                if action == "history":
-                    limit = int(parts[2]) if len(parts) > 2 else 20
-                    await self._trading.show_trade_history(update, context, limit)
-                else:
-                    await self._trading.show_trading(update, context)
 
             # ── Dashboard / Robot Control ────────────────────────────────
             elif section == "dashboard":
@@ -268,7 +260,8 @@ class Router:
                 elif action == "pending":
                     await self._trading.show_pending(update, context)
                 elif action == "history":
-                    await self._reports.show_reports_menu(update, context)
+                    limit = int(param) if param else 20
+                    await self._trading.show_trade_history(update, context, limit)
                 elif action == "close_confirm" and param:
                     await self._trading.close_position_confirm(update, context, int(param))
                 elif action == "close_confirmed" and param:
@@ -432,11 +425,16 @@ class Router:
                 logger.debug(f"Unhandled callback: {data}")
                 await update.callback_query.answer()
 
+        else:
+            logger.info(f"[BTN OK] user={user_id} data={data!r}")
         except (ValueError, IndexError) as e:
-            logger.warning(f"Malformed callback data '{data}': {e}")
+            logger.warning(f"[BTN ERR] user={user_id} data={data!r} malformed: {e}")
             await update.callback_query.answer("Invalid action", show_alert=True)
         except Exception as e:
-            logger.error(f"Unhandled error in callback '{data}': {e}", exc_info=True)
+            logger.error(
+                f"[BTN EXCEPTION] user={user_id} data={data!r} error={e}",
+                exc_info=True,
+            )
             await update.callback_query.answer("An error occurred", show_alert=True)
 
     # ─── Conversation Entry Points ───────────────────────────────────────────
