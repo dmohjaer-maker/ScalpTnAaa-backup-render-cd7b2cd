@@ -105,8 +105,8 @@ CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 
 # ── Risk & Trade Rules ───────────────────────────────────────────────────────
 RISK_PERCENT      = _float("RISK_PERCENT",      1.0, lo=0.01, hi=10.0)
-MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   2,   lo=1,    hi=10)
-CONF_HARD_MIN     = _float("CONF_HARD_MIN",      45.0, lo=0.0, hi=100.0)
+MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   1,   lo=1,    hi=10)
+CONF_HARD_MIN     = _float("CONF_HARD_MIN",      20.0, lo=0.0, hi=100.0)
 MAX_OPEN_TRADES   = 1
 
 USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() == "true"
