@@ -50,7 +50,11 @@ def _encrypt(password: str) -> str:
         except Exception as exc:
             logger.warning(f"auto_seed: Fernet encrypt failed ({exc}) — using base64 fallback")
     import base64
-    return base64.b64encode(password.encode()).decode()
+    # EncryptionService.decrypt() looks for the "b64:" prefix to recognise
+    # legacy base64-obfuscated values.  Without the prefix the decryption path
+    # falls through to Fernet (which fails with no key), returning None and
+    # leaving the panel unable to read the broker password.
+    return "b64:" + base64.b64encode(password.encode()).decode()
 
 
 def run(db_path: str | None = None) -> None:
