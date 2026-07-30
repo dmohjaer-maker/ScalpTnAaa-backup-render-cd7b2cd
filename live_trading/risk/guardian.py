@@ -73,9 +73,14 @@ class RiskGuardian:
             # pause the robot
     """
 
-    def __init__(self, daily_loss_limit_pct: float, max_drawdown_pct: float) -> None:
+    def __init__(self, daily_loss_limit_pct: float, max_drawdown_pct: float,
+                 account_login: str = "", account_server: str = "") -> None:
         self._daily_loss_limit_pct = daily_loss_limit_pct
         self._max_drawdown_pct     = max_drawdown_pct
+
+        # Account identity — used to reject stale state from a different account
+        self._account_login:        str             = str(account_login)
+        self._account_server:       str             = str(account_server)
 
         self._initialized:          bool            = False
         self._halted:               bool            = False
@@ -196,22 +201,62 @@ class RiskGuardian:
         self._halt_log_count = 0
         self._save_state()
 
-    def restore_state(self, data: dict) -> None:
+    def set_account_identity(self, login: str, server: str) -> None:
+        """Set account identity used to validate persisted state on restore."""
+        self._account_login  = str(login)
+        self._account_server = str(server)
+
+    def restore_state(self, data: dict) -> bool:
         """
         Restore Guardian state from a previously saved state dict.
 
-        Called by live_loop.start() before guardian.initialize() when a persisted
-        guardian_state.json is found on disk.  Sets _initialized=True so the
-        Guardian is immediately active without requiring a fresh initialize() call.
+        Returns True when state was accepted and restored, False when the state
+        was rejected (mismatched account identity or invalid baselines).  The
+        caller MUST call initialize() when this returns False.
 
-        Does NOT call _save_state() — it is a read-only restore.
+        ROOT-CAUSE FIX: The global Redis guardian key is shared across restarts
+        and could carry a halted state that belongs to a different account or a
+        previous session with stale baselines.  We now validate:
+          1. Account identity (login + server) — reject foreign-account state.
+          2. Positive baselines — reject zero/negative equity_peak / balances,
+             which would cause immediate false drawdown violations.
         """
+        # ── 1. Account identity check ─────────────────────────────────────────
+        if self._account_login or self._account_server:
+            saved_login  = str(data.get("account_login",  ""))
+            saved_server = str(data.get("account_server", ""))
+            if saved_login and saved_server:
+                if (saved_login != self._account_login or
+                        saved_server != self._account_server):
+                    log.warning(
+                        "🛡️  Guardian state belongs to a different account "
+                        f"({saved_server}/{saved_login} vs "
+                        f"{self._account_server}/{self._account_login}) — "
+                        "discarding stale state, cold start"
+                    )
+                    return False
+
+        # ── 2. Baseline sanity check ──────────────────────────────────────────
+        equity_peak          = float(data.get("equity_peak",          0.0))
+        session_open_balance = float(data.get("session_open_balance", 0.0))
+        day_open_balance     = float(data.get("day_open_balance",     0.0))
+
+        if equity_peak <= 0 or day_open_balance <= 0 or session_open_balance <= 0:
+            log.warning(
+                "🛡️  Guardian state has zero/negative baselines "
+                f"(equity_peak={equity_peak}, day_open={day_open_balance}, "
+                f"session_open={session_open_balance}) — "
+                "discarding invalid state, cold start"
+            )
+            return False
+
+        # ── 3. Accept and restore ─────────────────────────────────────────────
         self._halted               = bool(data.get("halted", False))
         self._halt_reason          = str(data.get("halt_reason", ""))
         self._triggered_at         = data.get("triggered_at")          # str or None
-        self._equity_peak          = float(data.get("equity_peak", 0.0))
-        self._session_open_balance = float(data.get("session_open_balance", 0.0))
-        self._day_open_balance     = float(data.get("day_open_balance", 0.0))
+        self._equity_peak          = equity_peak
+        self._session_open_balance = session_open_balance
+        self._day_open_balance     = day_open_balance
 
         last_day_str = data.get("last_day")
         if last_day_str:
@@ -220,20 +265,21 @@ class RiskGuardian:
             except Exception:
                 self._last_day = None
 
-        # Mark as initialized — baselines are restored from disk
+        # Mark as initialized — baselines are restored from persisted state
         self._initialized = True
 
         log.info(
-            "🛡️  Guardian state RESTORED from disk — "
+            "🛡️  Guardian state RESTORED — "
             f"halted={self._halted}  "
             f"equity_peak={self._equity_peak:.2f}  "
             f"day_open_balance={self._day_open_balance:.2f}"
         )
         if self._halted:
             log.critical(
-                "🛡️  Guardian is HALTED (restored from disk): "
+                "🛡️  Guardian is HALTED (restored): "
                 f"{self._halt_reason}  |  triggered_at={self._triggered_at}"
             )
+        return True
 
     @property
     def is_halted(self) -> bool:
@@ -292,6 +338,9 @@ class RiskGuardian:
             "day_open_balance":     self._day_open_balance,
             "last_day":             self._last_day.isoformat() if self._last_day else None,
             "written_at":           datetime.now(timezone.utc).isoformat(),
+            # Account identity — lets restore_state() reject foreign-account state
+            "account_login":        self._account_login,
+            "account_server":       self._account_server,
         }
 
         try:
