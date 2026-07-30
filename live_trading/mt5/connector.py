@@ -23,6 +23,7 @@ mt5rest endpoints used:
 """
 
 import asyncio
+import time as _time
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -43,6 +44,13 @@ _session:    Optional[aiohttp.ClientSession] = None
 _connected:  bool = False
 _base_url:   str  = ""
 _conn_id:    str  = ""   # UUID returned by ConnectEx; passed to every call
+_last_connect_time: float = 0.0   # monotonic timestamp of last successful connect()
+
+# After a fresh ConnectEx the mt5rest bridge may take a few seconds to report
+# isConnected=true on ConnectionStatus.  During this window ensure_connected()
+# would wrongly declare DISCONNECTED and trigger an immediate reconnect loop.
+# The grace period suppresses that false failure.
+_CONNECT_GRACE_PERIOD: float = 45.0   # seconds
 
 # ── Timeframe map  (label → mt5rest integer minutes) ─────────────────────────
 _TF_MAP = {
@@ -118,6 +126,7 @@ async def connect(*args, **kwargs) -> bool:
 
             _conn_id   = conn_id
             _connected = True
+            _last_connect_time = _time.monotonic()
             log.info(f"MT5 connected – broker: {host}  user: {user}  conn_id: {conn_id}")
             return True
 
@@ -223,6 +232,14 @@ async def ensure_connected(*args, **kwargs) -> bool:
     with callers that pass MetaAPI-style token/account/timeout arguments.
     """
     global _connected
+
+    # Grace period: right after a fresh ConnectEx the mt5rest bridge takes a
+    # few seconds to report isConnected=true on ConnectionStatus.  Trusting the
+    # module flag during this window prevents a false DISCONNECTED that would
+    # otherwise trigger an immediate reconnect loop on every startup.
+    if (_conn_id and _connected
+            and _time.monotonic() - _last_connect_time < _CONNECT_GRACE_PERIOD):
+        return True
 
     if _conn_id and _base_url:
         try:
