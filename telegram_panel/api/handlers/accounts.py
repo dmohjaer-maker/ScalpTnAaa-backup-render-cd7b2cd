@@ -272,6 +272,20 @@ class AccountsHandler(BaseHandler):
         await self.answer_callback(update, "✅ Done" if success else "❌ Failed")
         await self.show_account_detail(update, context, account_id)
 
+    async def reconnect_account(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, account_id: int
+    ) -> None:
+        """Send RECONNECT command via the account service → robot."""
+        ok, _ = await self._auth.check_permission(update, "can_manage_accounts")
+        if not ok:
+            return
+        result = await self._accounts.reconnect(account_id)
+        await self.answer_callback(
+            update,
+            "✅ Reconnect command sent" if result else "❌ Failed to send reconnect",
+            show_alert=True,
+        )
+
     async def test_connection(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE, account_id: int
     ) -> None:

@@ -241,8 +241,7 @@ class Router:
                 elif action == "delete_confirmed" and param:
                     await self._accounts.delete_account_confirmed(update, context, int(param))
                 elif action == "reconnect" and param:
-                    ok = await self._get_account_service().reconnect(int(param))
-                    await update.callback_query.answer("✅ Reconnect sent" if ok else "❌ Failed", show_alert=True)
+                    await self._accounts.reconnect_account(update, context, int(param))
                 elif action == "test" and param:
                     await self._accounts.test_connection(update, context, int(param))
 
@@ -333,7 +332,7 @@ class Router:
                 elif action == "monthly":
                     await self._reports.show_monthly(update, context)
                 elif action == "history":
-                    await self._reports.show_reports_menu(update, context)
+                    await self._trading.show_trade_history(update, context, 20)
                 elif action == "export" and param:
                     await self._reports.export_csv(update, context, param)
 
@@ -425,8 +424,6 @@ class Router:
                 logger.debug(f"Unhandled callback: {data}")
                 await update.callback_query.answer()
 
-        else:
-            logger.info(f"[BTN OK] user={user_id} data={data!r}")
         except (ValueError, IndexError) as e:
             logger.warning(f"[BTN ERR] user={user_id} data={data!r} malformed: {e}")
             await update.callback_query.answer("Invalid action", show_alert=True)
@@ -436,6 +433,8 @@ class Router:
                 exc_info=True,
             )
             await update.callback_query.answer("An error occurred", show_alert=True)
+        else:
+            logger.info(f"[BTN OK] user={user_id} data={data!r}")
 
     # ─── Conversation Entry Points ───────────────────────────────────────────
 
