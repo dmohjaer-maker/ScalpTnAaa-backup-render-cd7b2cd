@@ -28,8 +28,15 @@ def _account_from_robot_state(robot_state: dict) -> Optional[Account]:
 
     balance = float(info.get("balance", 0.0))
     equity  = float(info.get("equity",  0.0))
-    if balance == 0.0 and equity == 0.0:
-        return None  # robot hasn't connected to MT5 yet
+    # Only skip if we have no identifying info at all.
+    # Previously we returned None whenever balance=0 — this caused the entire
+    # account block to vanish while the robot was starting up or reconnecting,
+    # even though broker/server/login were already available from the state.
+    broker_check = str(info.get("broker") or "").strip()
+    server_check = str(info.get("server") or "").strip()
+    login_check  = str(info.get("login")  or info.get("name") or "").strip()
+    if balance == 0.0 and equity == 0.0 and not broker_check and not server_check and not login_check:
+        return None  # truly no data yet
 
     broker = str(info.get("broker") or "")
     server = str(info.get("server") or "")
