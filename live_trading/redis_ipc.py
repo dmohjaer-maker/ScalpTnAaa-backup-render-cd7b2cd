@@ -287,3 +287,31 @@ def _reset_client() -> None:
     _client = None
     _last_failure_time = time.monotonic()
     _last_ping_time = 0.0
+
+
+def redis_update_snapshot_trades(trades: list) -> bool:
+    """
+    Merge updated recent_trades into the live snapshot Redis key.
+
+    Called by write_robot_state() after every trade so the panel's
+    MT5Service._read_snapshot() (which reads goldscalper:snapshot, NOT
+    goldscalper:state) always gets up-to-date trade history without
+    waiting for the next bar when write_mt5_snapshot() would normally run.
+
+    ROOT-CAUSE FIX: trade history was only visible after the next M5 bar
+    because write_robot_state() updated goldscalper:state but the panel
+    reads goldscalper:snapshot for recent_trades.
+    """
+    r = _get_client()
+    if r is None:
+        return False
+    try:
+        raw = r.get(_SNAPSHOT_KEY)
+        snap = json.loads(raw) if raw else {}
+        snap["recent_trades"] = trades
+        r.set(_SNAPSHOT_KEY, json.dumps(snap, default=str), ex=_STATE_TTL)
+        return True
+    except Exception as exc:
+        logger.warning("Redis update_snapshot_trades: %s", exc)
+        _reset_client()
+        return False
