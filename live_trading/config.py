@@ -11,37 +11,104 @@ Required:
     MT5_PASSWORD  – MT5 account password
 """
 import os
+import sys
+
+# ── Bounded env-var helpers ───────────────────────────────────────────────────
+
+def _int(name: str, default: int, lo: int | None = None, hi: int | None = None) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        val = int(raw)
+    except ValueError:
+        print(
+            f"ERROR: {name}={raw!r} is not a valid integer. "
+            f"Fix it in the Render dashboard and redeploy.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if lo is not None and val < lo:
+        print(
+            f"ERROR: {name}={val} is below the minimum allowed value ({lo}). "
+            f"Fix it in the Render dashboard and redeploy.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if hi is not None and val > hi:
+        print(
+            f"ERROR: {name}={val} is above the maximum allowed value ({hi}). "
+            f"Fix it in the Render dashboard and redeploy.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return val
+
+
+def _float(name: str, default: float, lo: float | None = None, hi: float | None = None) -> float:
+    raw = os.getenv(name, str(default))
+    try:
+        val = float(raw)
+    except ValueError:
+        print(
+            f"ERROR: {name}={raw!r} is not a valid number. "
+            f"Fix it in the Render dashboard and redeploy.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if lo is not None and val < lo:
+        print(
+            f"ERROR: {name}={val} is below the minimum allowed value ({lo}). "
+            f"Fix it in the Render dashboard and redeploy.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if hi is not None and val > hi:
+        print(
+            f"ERROR: {name}={val} is above the maximum allowed value ({hi}). "
+            f"Fix it in the Render dashboard and redeploy.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return val
+
+
+# ── Valid timeframe labels ────────────────────────────────────────────────────
+_VALID_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h", "4h", "1d",
+                     "M1", "M5", "M15", "M30", "H1", "H4", "D1"}
+
+
+def _timeframe(name: str, default: str) -> str:
+    val = os.getenv(name, default)
+    if val not in _VALID_TIMEFRAMES:
+        print(
+            f"ERROR: {name}={val!r} is not a recognised timeframe. "
+            f"Valid values: {', '.join(sorted(_VALID_TIMEFRAMES))}. "
+            f"Fix it in the Render dashboard and redeploy.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return val
+
 
 # ── MT5 bridge URL ────────────────────────────────────────────────────────────
-# The mt5rest Docker service on Render.  Required.
 MTAPI_URL     = os.getenv("MTAPI_URL",     "")
 
 # ── MT5 Broker Credentials ───────────────────────────────────────────────────
 MT5_HOST      = os.getenv("MT5_HOST",     "AMarkets-Demo")
-MT5_PORT      = int(os.getenv("MT5_PORT", "443"))
+MT5_PORT      = _int("MT5_PORT", 443, lo=1, hi=65535)
 MT5_USER      = os.getenv("MT5_USER",     "")
 MT5_PASSWORD  = os.getenv("MT5_PASSWORD", "")
 
 # ── Symbol & Timeframe ───────────────────────────────────────────────────────
-SYMBOL        = os.getenv("SYMBOL",    "XAUUSDb")
-
-# FIX: TIMEFRAME and CANDLE_WINDOW were hardcoded and could not be changed
-# without modifying source code.  Both are now env-configurable.
-# Defaults preserve existing behaviour: 5m timeframe, 300 bars.
-TIMEFRAME     = os.getenv("TIMEFRAME",     "5m")    # mt5rest period value (1m, 5m, 15m, 1h …)
-CANDLE_WINDOW = int(os.getenv("CANDLE_WINDOW", "300"))  # bars sent to signal engine
+SYMBOL        = os.getenv("SYMBOL", "XAUUSDb")
+TIMEFRAME     = _timeframe("TIMEFRAME", "5m")
+CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 
 # ── Risk & Trade Rules ───────────────────────────────────────────────────────
-RISK_PERCENT            = float(os.getenv("RISK_PERCENT",     "1.0"))
-MIN_CONFIRMATIONS       = int(os.getenv("MIN_CONFIRMATIONS",  "2"))
-CONF_HARD_MIN           = float(os.getenv("CONF_HARD_MIN",      "45.0"))
-MAX_OPEN_TRADES         = 1
+RISK_PERCENT      = _float("RISK_PERCENT",      1.0, lo=0.01, hi=10.0)
+MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   2,   lo=1,    hi=10)
+CONF_HARD_MIN     = _float("CONF_HARD_MIN",      45.0, lo=0.0, hi=100.0)
+MAX_OPEN_TRADES   = 1
 
-# FIX: USE_ATR_HIGH_VOL_FILTER was hardcoded to False and could not be
-# enabled without modifying source code.  It is now env-configurable via
-# USE_ATR_HIGH_VOL_FILTER=true in the Render service environment.
-# Default is "false" (preserves existing behaviour — no behaviour change
-# unless the operator explicitly sets USE_ATR_HIGH_VOL_FILTER=true).
 USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() == "true"
 
 # ── Order Settings ───────────────────────────────────────────────────────────
@@ -59,10 +126,11 @@ COMMANDS_FILE       = os.getenv("COMMANDS_FILE",        "robot_commands.json")
 GUARDIAN_STATE_FILE = os.getenv("GUARDIAN_STATE_FILE",  "guardian_state.json")
 LOG_FILE            = os.getenv("LOG_FILE",             "live_trading/robot.log")
 
-# ── Risk Guardian – Circuit Breakers ────────────────────────────────────────
-DAILY_LOSS_LIMIT_PCT = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "3.0"))
-MAX_DRAWDOWN_PCT     = float(os.getenv("MAX_DRAWDOWN_PCT",      "8.0"))
-SLIPPAGE_POINTS      = int(os.getenv("SLIPPAGE_POINTS",         "30"))
+# ── Risk Guardian – Circuit Breakers ─────────────────────────────────────────
+# lo=0.1 prevents accidentally disabling protection with 0 or negative values.
+DAILY_LOSS_LIMIT_PCT = _float("DAILY_LOSS_LIMIT_PCT", 3.0,  lo=0.1, hi=50.0)
+MAX_DRAWDOWN_PCT     = _float("MAX_DRAWDOWN_PCT",      8.0,  lo=0.1, hi=50.0)
+SLIPPAGE_POINTS      = _int("SLIPPAGE_POINTS",         30,   lo=1,   hi=500)
 
 # ── Wyckoff Calibration ──────────────────────────────────────────────────────
 WYCKOFF_MAX_RANGE_PCT = 0.01163
