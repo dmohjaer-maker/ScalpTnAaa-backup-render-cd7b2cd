@@ -14,11 +14,12 @@ ALLOWED_SESSIONS = [
     (7,  12, "PRIME"),
     (12, 17, "PRIME"),
     (17, 22, "MODERATE"),
+    (22, 24, "MODERATE"),
 ]
 
-LATE_EXTENSION_MULT = 5.0
+LATE_EXTENSION_MULT = 10.0
 MOMENTUM_BARS       = 5
-STALE_BAR_COUNT     = 80
+STALE_BAR_COUNT     = 300
 
 
 @dataclass
@@ -118,7 +119,7 @@ def _is_weak_volume(candles: List[OHLCV]) -> bool:
         return False
     avg_vol  = sum(c.volume for c in candles[-21:-1]) / 20
     curr_vol = candles[-1].volume
-    return avg_vol > 0 and curr_vol < avg_vol * 0.20
+    return avg_vol > 0 and curr_vol < avg_vol * 0.05
 
 
 def apply_quality_filter(
@@ -165,7 +166,7 @@ def apply_quality_filter(
     if late:
         reasons.append("Late entry: overextended from EMA50 or stale BOS")
 
-    low_mom = adx_val < 5
+    low_mom = adx_val < 2
     if low_mom:
         reasons.append(f"Low momentum: ADX {adx_val:.1f} < 5")
 
