@@ -240,8 +240,10 @@ def redis_send_command(command: str, payload: Optional[dict] = None) -> bool:
         )
         raw = r.get(_COMMANDS_KEY)
         cmds = json.loads(raw) if raw else {}
-        cmds[engine_key] = True
-        r.set(_COMMANDS_KEY, json.dumps(cmds), ex=_CMD_TTL)
+        # Store payload alongside the flag so UPDATE_RISK / UPDATE_STRATEGY
+        # can carry their config dict to the robot.
+        cmds[engine_key] = payload if payload is not None else True
+        r.set(_COMMANDS_KEY, json.dumps(cmds, default=str), ex=_CMD_TTL)
         logger.info("Redis sent command: %s -> %s", command, engine_key)
         return True
     except Exception as exc:
@@ -296,3 +298,4 @@ def _reset_client() -> None:
     _client = None
     _last_failure_time = time.monotonic()
     _last_ping_time = 0.0
+
