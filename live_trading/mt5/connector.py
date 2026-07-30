@@ -102,7 +102,7 @@ async def connect(*args, **kwargs) -> bool:
             timeout=aiohttp.ClientTimeout(total=SYNC_TIMEOUT),
         ) as resp:
             raw = await resp.text()
-            log.debug(f"ConnectEx response ({resp.status}): {raw[:200]}")
+            log.debug(f"ConnectEx response ({resp.status}): [response received]")
 
             if resp.status != 200:
                 log.error(f"ConnectEx failed (status={resp.status}): {raw[:300]}")
