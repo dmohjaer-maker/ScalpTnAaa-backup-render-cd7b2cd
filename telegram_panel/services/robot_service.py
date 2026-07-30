@@ -123,9 +123,9 @@ class RobotService:
         self._cached_state: dict[str, Any] = dict(_DEFAULT_STATE)
         self._cache_ts: Optional[float] = None
         self._cache_ttl: float = 5.0    # seconds
-          # Persistent aiohttp session reused across all HTTP calls.
-          # Created lazily on first use; closed explicitly on shutdown.
-          self._http_session: "Optional[Any]" = None
+        # Persistent aiohttp session reused across all HTTP calls.
+        # Created lazily on first use; closed explicitly on shutdown.
+        self._http_session: "Optional[Any]" = None
 
     def get_base_url(self) -> str:
         """Expose robot base URL for other services (e.g. MT5Service HTTP fallback)."""
