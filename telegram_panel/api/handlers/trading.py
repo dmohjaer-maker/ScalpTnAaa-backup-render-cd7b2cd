@@ -104,6 +104,7 @@ class TradingHandler(BaseHandler):
         await self.answer_callback(
             update, "✅ Break even set" if success else "❌ Failed", show_alert=True
         )
+        await self.show_position_detail(update, context, ticket)
 
     async def close_all_confirm(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE, close_type: str = "all"
