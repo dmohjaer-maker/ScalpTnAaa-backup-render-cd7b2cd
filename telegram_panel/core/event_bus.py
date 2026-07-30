@@ -68,6 +68,15 @@ class EventBus:
         while self._running:
             try:
                 event = await asyncio.wait_for(self._queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+            # task_done() is in a finally block so it is ALWAYS called after a
+            # successful get(), even when the event is malformed or a handler
+            # raises unexpectedly.  Without this, queue.join() would block
+            # indefinitely and the unfinished-task counter would be wrong.
+            try:
                 event_type = event["type"]
                 handlers = self._subscribers.get(event_type, [])
                 if handlers:
@@ -83,13 +92,13 @@ class EventBus:
                                 f"Event handler '{handler_name}' raised for "
                                 f"event '{event_type}': {result!r}"
                             )
-                self._queue.task_done()
-            except asyncio.TimeoutError:
-                continue
             except asyncio.CancelledError:
+                self._queue.task_done()
                 break
             except Exception as e:
                 logger.error(f"Event bus worker error: {e}")
+            finally:
+                self._queue.task_done()
 
 
 # Well-known event type constants
