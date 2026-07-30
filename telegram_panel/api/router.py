@@ -73,6 +73,7 @@ class Router:
         app.add_handler(CommandHandler("dashboard", self._cmd_dashboard))
         app.add_handler(CommandHandler("status", self._cmd_dashboard))
         app.add_handler(CommandHandler("help", self._cmd_help))
+        app.add_handler(CommandHandler("history", self._cmd_history))
 
         # Add account conversation
         add_account_conv = ConversationHandler(
@@ -130,6 +131,12 @@ class Router:
             return
         await self._dashboard.show_dashboard(update, context)
 
+    async def _cmd_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show recent trade history via /history command."""
+        if not await self._rate_check(update):
+            return
+        await self._trading.show_trade_history(update, context)
+
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._rate_check(update):
             return
@@ -143,6 +150,7 @@ class Router:
             "/dashboard — Dashboard view\n"
             "/menu — Main menu\n"
             "/status — Quick status\n"
+            "/history — Recent closed trades\n"
             "/help — This message\n\n"
             f"Your role: <b>{user.role_icon} {user.role.value}</b>"
         )
@@ -201,6 +209,15 @@ class Router:
                         parse_mode="HTML",
                     )
                     await update.callback_query.answer()
+
+            # ── Trade History ────────────────────────────────────────────
+            elif section == "trading":
+                action = parts[1] if len(parts) > 1 else "list"
+                if action == "history":
+                    limit = int(parts[2]) if len(parts) > 2 else 20
+                    await self._trading.show_trade_history(update, context, limit)
+                else:
+                    await self._trading.show_trading(update, context)
 
             # ── Dashboard / Robot Control ────────────────────────────────
             elif section == "dashboard":
