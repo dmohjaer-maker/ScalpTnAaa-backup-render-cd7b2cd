@@ -265,6 +265,22 @@ class RiskGuardian:
             except Exception:
                 self._last_day = None
 
+        # Restore risk limits if they were saved (UPDATE_RISK via panel persists these).
+        # Fall back to the current constructor values (from env vars) if absent,
+        # so cold-start and old Redis entries without these fields still work.
+        saved_daily_limit = data.get("daily_loss_limit_pct")
+        if saved_daily_limit is not None:
+            try:
+                self._daily_loss_limit_pct = float(saved_daily_limit)
+            except (TypeError, ValueError):
+                pass
+        saved_drawdown = data.get("max_drawdown_pct")
+        if saved_drawdown is not None:
+            try:
+                self._max_drawdown_pct = float(saved_drawdown)
+            except (TypeError, ValueError):
+                pass
+
         # Mark as initialized — baselines are restored from persisted state
         self._initialized = True
 
@@ -341,6 +357,10 @@ class RiskGuardian:
             # Account identity — lets restore_state() reject foreign-account state
             "account_login":        self._account_login,
             "account_server":       self._account_server,
+            # Risk limits — persisted so panel-side UPDATE_RISK changes
+            # survive a service restart without re-sending the command.
+            "daily_loss_limit_pct": self._daily_loss_limit_pct,
+            "max_drawdown_pct":     self._max_drawdown_pct,
         }
 
         try:
@@ -381,3 +401,4 @@ class RiskGuardian:
             max_drawdown_pct     = self._max_drawdown_pct,
             triggered_at         = self._triggered_at,
         )
+
