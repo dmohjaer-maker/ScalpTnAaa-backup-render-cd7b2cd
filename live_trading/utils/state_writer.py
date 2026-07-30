@@ -260,6 +260,15 @@ def write_robot_state(
         state.update(extra)
 
     _safe_write(STATE_FILE, state)
+    # ROOT-CAUSE FIX: sync recent_trades to snapshot key so the panel's
+    # MT5Service (which reads goldscalper:snapshot) always has the latest
+    # trade history without waiting for the next bar.
+    if trade_history:
+        try:
+            from live_trading.redis_ipc import redis_update_snapshot_trades
+            redis_update_snapshot_trades(trade_history[-20:])
+        except Exception as _sync_exc:
+            log.debug(f"Snapshot trade sync skipped: {_sync_exc}")
 
 
 # ── Write robot_mt5_snapshot.json ─────────────────────────────────────────────
