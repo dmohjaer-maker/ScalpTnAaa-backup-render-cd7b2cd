@@ -16,7 +16,7 @@ from live_trading.signals.entry_filter import apply_entry_filter
 from live_trading.risk.capital_manager import CapitalInput, CapitalOutput, calc_trade_parameters
 from live_trading.config import CONF_HARD_MIN
 
-CONF_MARGINAL_RR = 1.0
+CONF_MARGINAL_RR = 0.5
 
 
 @dataclass
@@ -75,7 +75,7 @@ def run_decision_engine(
     candles:        List[OHLCV],
     account_balance: float,
     risk_percent:   float = 1.0,
-    min_confirmations: int = 3,
+    min_confirmations: int = 1,
     use_atr_high_vol: bool = False,
 ) -> DecisionResult:
 
@@ -102,10 +102,10 @@ def run_decision_engine(
 
     _RANGE_REGIMES = {"RANGE", "ACCUMULATION", "DISTRIBUTION", "HIGH_VOLATILITY"}
     if regime.regime in _RANGE_REGIMES:
-        effective_min_confirmations = min(2, min_confirmations)
+        effective_min_confirmations = min(1, min_confirmations)
     elif _counter_trend:
         # Counter-trend needs one extra confirmation to compensate for EMA opposition
-        effective_min_confirmations = min(min_confirmations + 1, 4)
+        effective_min_confirmations = min_confirmations
     else:
         effective_min_confirmations = min_confirmations
 
