@@ -135,9 +135,10 @@ def run(db_path: str | None = None) -> None:
                 now,
             ),
         )
-        # Make this account the active one
-        conn.execute("UPDATE accounts SET is_active = 0")
-        conn.execute("UPDATE accounts SET is_active = 1 WHERE login = ?", (login,))
+        # The INSERT above already sets is_active=1 for this account.
+        # Do NOT run "UPDATE accounts SET is_active = 0" here — that would
+        # deactivate every account that already exists (e.g. ones the user
+        # added manually via the Telegram panel during the same session).
         conn.commit()
         conn.close()
         logger.info(
