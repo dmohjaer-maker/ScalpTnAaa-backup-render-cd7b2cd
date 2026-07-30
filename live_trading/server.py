@@ -496,7 +496,15 @@ async def _run_robot_once():
     engine = GoldScalperLive()
     try:
         _robot_status = "RUNNING"
-        await engine.start()
+        ok = await engine.start()
+        # engine.start() returns False when MT5 connection or startup fails.
+        # Without this check a False return is treated as a clean exit,
+        # bypassing supervisor backoff and leaving _robot_status as RUNNING.
+        if not ok:
+            raise RuntimeError(
+                "GoldScalperLive.start() returned False — "
+                "MT5 connection or engine startup failed."
+            )
     finally:
         _robot_status = "STOPPED"
         try:
