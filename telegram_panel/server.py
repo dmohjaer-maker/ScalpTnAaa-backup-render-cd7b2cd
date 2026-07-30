@@ -70,14 +70,20 @@ async def _keepalive() -> None:
     else:
         url = f"http://127.0.0.1:{PORT}/health"
     print(f"[keepalive] will ping {url} every {_KEEPALIVE_INTERVAL_SECONDS}s", flush=True)
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
+    # Reuse a single persistent session — creating a new ClientSession on every
+    # iteration wastes connection-pool resources and produces ResourceWarning
+    # noise in aiohttp >= 3.9.
+    session = aiohttp.ClientSession()
+    try:
+        while True:
+            try:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     print(f"[keepalive] ping /health -> {resp.status}", flush=True)
-        except Exception as exc:
-            print(f"[keepalive] ping failed: {exc}", flush=True)
-        await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
+            except Exception as exc:
+                print(f"[keepalive] ping failed: {exc}", flush=True)
+            await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
+    finally:
+        await session.close()
 
 
 async def _run_panel() -> None:

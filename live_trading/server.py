@@ -445,30 +445,35 @@ async def _keepalive():
         f"interval={_KEEPALIVE_INTERVAL_SECONDS}s",
         flush=True,
     )
-    while True:
-        # 1. Ping own /health to keep robot service alive
-        try:
-            async with aiohttp.ClientSession() as session:
+    # Reuse a single persistent session for the lifetime of the keepalive task.
+    # Creating a new ClientSession on every iteration wastes connection-pool
+    # resources and produces ResourceWarning noise in aiohttp ≥ 3.9.
+    session = aiohttp.ClientSession()
+    try:
+        while True:
+            # 1. Ping own /health to keep robot service alive
+            try:
                 async with session.get(
                     own_url, timeout=aiohttp.ClientTimeout(total=15)
                 ) as resp:
                     print(f"[keepalive] robot /health → {resp.status}", flush=True)
-        except Exception as exc:
-            print(f"[keepalive] robot /health failed: {exc}", flush=True)
+            except Exception as exc:
+                print(f"[keepalive] robot /health failed: {exc}", flush=True)
 
-        # 2. Ping mtapi /Ping to keep the mt5rest Docker bridge alive
-        if mtapi_url:
-            ping_url = f"{mtapi_url}/Ping"
-            try:
-                async with aiohttp.ClientSession() as session:
+            # 2. Ping mtapi /Ping to keep the mt5rest Docker bridge alive
+            if mtapi_url:
+                ping_url = f"{mtapi_url}/Ping"
+                try:
                     async with session.get(
                         ping_url, timeout=aiohttp.ClientTimeout(total=30)
                     ) as resp:
                         print(f"[keepalive] mtapi /Ping → {resp.status}", flush=True)
-            except Exception as exc:
-                print(f"[keepalive] mtapi /Ping failed: {exc}", flush=True)
+                except Exception as exc:
+                    print(f"[keepalive] mtapi /Ping failed: {exc}", flush=True)
 
-        await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
+            await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
+    finally:
+        await session.close()
 
 
 async def _run_robot_once():
