@@ -13,8 +13,16 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-# Minimal DDL — kept in sync with storage/database.py
-_ACCOUNTS_DDL = """
+# Import the authoritative schema DDL from database.py so that schema changes
+# there are automatically reflected here.  Using a local copy caused silent
+# drift: a new NOT NULL column added to database.py would leave auto_seed
+# creating an incomplete table, crashing the panel on startup.
+try:
+    from telegram_panel.storage.database import _SCHEMA_SQL as _ACCOUNTS_DDL
+except ImportError:
+    # Fallback for environments where the package path is not available —
+    # only the accounts table is strictly required for auto_seed to function.
+    _ACCOUNTS_DDL = """
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
