@@ -123,10 +123,26 @@ class RobotService:
         self._cached_state: dict[str, Any] = dict(_DEFAULT_STATE)
         self._cache_ts: Optional[float] = None
         self._cache_ttl: float = 5.0    # seconds
+          # Persistent aiohttp session reused across all HTTP calls.
+          # Created lazily on first use; closed explicitly on shutdown.
+          self._http_session: "Optional[Any]" = None
 
     def get_base_url(self) -> str:
         """Expose robot base URL for other services (e.g. MT5Service HTTP fallback)."""
         return self._base_url
+
+    async def close(self) -> None:
+        """Close the persistent HTTP session. Call on panel shutdown."""
+        if self._http_session is not None and not self._http_session.closed:
+            await self._http_session.close()
+            self._http_session = None
+
+    def _get_http_session(self) -> "Any":
+        """Return a shared aiohttp.ClientSession, creating it if needed."""
+        import aiohttp
+        if self._http_session is None or self._http_session.closed:
+            self._http_session = aiohttp.ClientSession()
+        return self._http_session
 
     # ─── Status ──────────────────────────────────────────────────────────────
 
@@ -341,8 +357,8 @@ class RobotService:
             token = os.environ.get("ROBOT_COMMAND_TOKEN", "")
             if token:
                 headers["X-Robot-Command-Token"] = token
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
+            session = self._get_http_session()
+            async with session.get(
                     url,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=8),
@@ -433,8 +449,8 @@ class RobotService:
         try:
             import aiohttp
             body = {"command": command, "payload": payload or {}}
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
+            session = self._get_http_session()
+            async with session.post(
                     url,
                     json=body,
                     headers={"X-Robot-Command-Token": command_token},
