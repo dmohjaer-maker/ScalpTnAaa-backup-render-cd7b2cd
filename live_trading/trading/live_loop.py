@@ -129,6 +129,17 @@ class GoldScalperLive:
             # was halted before restart it must remain halted, and healthy baselines
             # must also be restored so a restart cannot reset the risk window.
             # State older than 26 hours is considered stale and is discarded.
+            # ROOT-CAUSE FIX: Fetch live account info FIRST so we can:
+            #   a) supply account identity to the Guardian before restore_state(),
+            #      which lets it reject stale state from a different account; and
+            #   b) always call initialize() when restore_state() is rejected.
+            acc_info = await get_account_info()
+            if acc_info:
+                self._last_acc_info = acc_info
+                _live_login  = str(acc_info.get("login",  ""))
+                _live_server = str(acc_info.get("server", ""))
+                self.guardian.set_account_identity(_live_login, _live_server)
+
             _guardian_restored = False
             try:
                 _gs_data = None
@@ -173,43 +184,49 @@ class GoldScalperLive:
                                 f"Could not parse Guardian state timestamp — cold start: {_ts_exc}"
                             )
                     if _state_fresh:
-                        self.guardian.restore_state(_gs_data)
-                        if _gs_data.get("halted"):
-                            self.paused = True
-                            log.critical(
-                                "🛡️  Guardian HALT restored — trading PAUSED.  "
-                                "Use /reset_guardian in Telegram to resume."
-                            )
-                        else:
-                            log.info(
-                                "🛡️  Guardian baseline restored — "
-                                "risk window continues across restart."
-                            )
-                        _guardian_restored = True
+                        _restored = self.guardian.restore_state(_gs_data)
+                        if _restored:
+                            if _gs_data.get("halted"):
+                                self.paused = True
+                                log.critical(
+                                    "🛡️  Guardian HALT restored — trading PAUSED.  "
+                                    "Use /reset_guardian in Telegram to resume."
+                                )
+                            else:
+                                log.info(
+                                    "🛡️  Guardian baseline restored — "
+                                    "risk window continues across restart."
+                                )
+                            _guardian_restored = True
+                        # else: restore_state() rejected state → fall through to initialize()
             except Exception as _gs_exc:
                 log.warning(
                     f"Could not read Guardian state file — cold start: {_gs_exc}"
                 )
 
-            # Initialise Guardian with live account data (must be after connect).
-            # Skipped when a halted state was restored from disk — the restored
-            # baselines are already active and must not be overwritten.
+            # Initialise Guardian with live account data when no valid persisted
+            # state was found.  This also covers the case where restore_state()
+            # rejected the state due to account-identity or baseline mismatch
+            # (the most common cause of false "violation" alerts on a demo account).
             if not _guardian_restored:
-                acc_info = await get_account_info()
-                # FIX: Store acc_info so that WAITING-state writes (while waiting
-                # for the first bar) include real balance/equity instead of empty
-                # dict, which caused the Telegram panel to always show USD 0.00.
-                if acc_info:
-                    self._last_acc_info = acc_info
-                balance  = float(acc_info.get("balance", 0))
-                equity   = float(acc_info.get("equity",  0))
+                balance = float((acc_info or {}).get("balance", 0))
+                equity  = float((acc_info or {}).get("equity",  0))
                 if balance > 0:
                     self.guardian.initialize(balance, equity)
                 else:
-                    log.warning(
-                        "Could not fetch balance for Guardian initialization — "
-                        "Guardian will block trades until account data is available"
-                    )
+                    # Re-fetch if the first attempt returned empty/no data
+                    _retry_acc = await get_account_info()
+                    if _retry_acc:
+                        self._last_acc_info = _retry_acc
+                        balance = float(_retry_acc.get("balance", 0))
+                        equity  = float(_retry_acc.get("equity",  0))
+                    if balance > 0:
+                        self.guardian.initialize(balance, equity)
+                    else:
+                        log.warning(
+                            "Could not fetch balance for Guardian initialization — "
+                            "Guardian will block trades until account data is available"
+                        )
 
             await self._calibrate_wyckoff()
             # Write RUNNING state immediately after connect with real account data
