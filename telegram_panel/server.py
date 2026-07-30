@@ -99,7 +99,25 @@ async def _main() -> None:
     await asyncio.sleep(1)
     print("[server] Health server ready. Starting Telegram panel...", flush=True)
 
-    # ── Auto-seed broker account from env vars once at startup ────────────────
+    # ── Startup validation — fail fast on missing required env vars ─────────────
+      _missing = []
+      if not os.environ.get("TELEGRAM_BOT_TOKEN", "").strip():
+          _missing.append("TELEGRAM_BOT_TOKEN")
+      if not os.environ.get("TELEGRAM_OWNER_ID", "").strip():
+          _missing.append("TELEGRAM_OWNER_ID")
+      if not os.environ.get("PANEL_ENCRYPTION_KEY", "").strip():
+          _missing.append("PANEL_ENCRYPTION_KEY")
+      if _missing:
+          for _var in _missing:
+              print(f"[startup] CRITICAL: required env var '{_var}' is not set.", flush=True)
+          print(
+              "[startup] Set the missing variables in Render dashboard → Environment, "
+              "then redeploy. Panel cannot start without them.",
+              flush=True,
+          )
+          sys.exit(78)   # EX_CONFIG — Render supervisor will NOT restart on non-zero exit
+
+      # ── Auto-seed broker account from env vars once at startup ────────────────
     # Fixes "No accounts configured" after every Render restart that wipes
     # the ephemeral /tmp/panel.db SQLite database.
     try:
