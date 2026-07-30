@@ -20,9 +20,7 @@ services:
   - type: redis
     name: goldscalper-redis
     plan: free
-    ipAllowList:
-      - cidrBlock: 0.0.0.0/0
-        description: robot and panel IPC
+    ipAllowList: []   # private — Render internal routing only; no public access
 
   # ─── Trading robot ─────────────────────────────────────────────────────────
   - type: web
