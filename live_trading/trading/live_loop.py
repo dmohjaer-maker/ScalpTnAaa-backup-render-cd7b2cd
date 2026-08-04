@@ -35,9 +35,14 @@ from live_trading.config import (
     MIN_CONFIRMATIONS, USE_ATR_HIGH_VOL_FILTER,
     DAILY_LOSS_LIMIT_PCT, MAX_DRAWDOWN_PCT, SLIPPAGE_POINTS,
     STATE_FILE, GUARDIAN_STATE_FILE,
+    TRAIL_ENABLED, TRAIL_ACTIVATION_R, TRAIL_STEP_R,
+    TRAIL_LOCK_BUFFER_R, TRAIL_ATR_GAP_MULT, TRAIL_MIN_STEP_PRICE,
 )
 from live_trading.logger import get_logger
 from live_trading.risk.guardian import RiskGuardian, GuardianStatus
+from live_trading.risk.trailing_stop import (
+    TrailingConfig, compute_staircase_sl, should_apply, r_multiple_of,
+)
 from live_trading.signals.decision_engine import run_decision_engine, DecisionResult
 from live_trading.signals.wyckoff_engine import calibrate_wyckoff, set_calibrated_config
 from live_trading.mt5.connector import (
@@ -45,10 +50,10 @@ from live_trading.mt5.connector import (
     connect_with_retry, keepalive_mtapi,
     fetch_candles, get_account_balance, get_account_info,
     get_open_positions, get_last_completed_bar_time,
-    mt5_pos_to_dict,
+    get_current_quote, mt5_pos_to_dict,
 )
 from live_trading.mt5.executor import (
-    place_market_order, close_position, TradeResult
+    place_market_order, close_position, modify_position, TradeResult
 )
 from live_trading.utils.state_writer import (
     write_robot_state, write_mt5_snapshot,
@@ -91,6 +96,28 @@ class GoldScalperLive:
 
         # Handle for the MTAPI keepalive background task (cancelled on stop)
         self._keepalive_task: Optional[asyncio.Task] = None
+
+        # ── Staircase Trailing Stop ──────────────────────────────────────────
+        # Toggleable at runtime via the Telegram panel's "Auto Trail" switch
+        # (routed through the update_risk command — see _process_commands).
+        self.trailing_enabled: bool = TRAIL_ENABLED
+        self._trailing_cfg = TrailingConfig(
+            enabled=TRAIL_ENABLED,
+            activation_r=TRAIL_ACTIVATION_R,
+            step_r=TRAIL_STEP_R,
+            lock_buffer_r=TRAIL_LOCK_BUFFER_R,
+            atr_gap_mult=TRAIL_ATR_GAP_MULT,
+            min_step_price=TRAIL_MIN_STEP_PRICE,
+        )
+        # Baseline for the currently open position: its ORIGINAL entry price
+        # and ORIGINAL risk distance (never mutated once a trade opens), so
+        # the staircase always measures R from where the trade actually
+        # started — not from wherever the stop happens to be right now.
+        self._trail_baseline: Optional[dict] = None  # {"id", "direction", "entry", "risk_distance"}
+        self._last_trailing_status: Optional[dict] = None  # for panel telemetry
+        # Cached ATR (price units) from the last completed bar — reused by the
+        # trailing engine between bars so it doesn't need its own candle fetch.
+        self._last_atr: float = 0.0
 
     # ── Entry point ───────────────────────────────────────────────────────────
 
@@ -318,6 +345,11 @@ class GoldScalperLive:
                     )
                     self._reconnect_attempts = 0
 
+                # Staircase trailing stop — checked every tick (not just on
+                # candle close) so it reacts within seconds of price crossing
+                # a step, not up to 5 minutes late.
+                await self._manage_trailing_stop()
+
                 new_bar = await self._is_new_bar()
                 if new_bar:
                     self.loop_count += 1
@@ -493,6 +525,9 @@ class GoldScalperLive:
         ]
         _snap_win = min(5, len(_snap_trs))
         _snap_atr = round(sum(_snap_trs[-_snap_win:]) / _snap_win, 4) if _snap_trs else 0.0
+        # Cached for the staircase trailing engine, which runs between bars
+        # (every BAR_CHECK_INTERVAL) and has no candle fetch of its own.
+        self._last_atr = _snap_atr
         # Build normalized account_info for the snapshot (snake_case keys to
         # match what telegram_panel's mt5_service expects).
         _snap_account_info = {
@@ -595,6 +630,17 @@ class GoldScalperLive:
                 "bar_time":    bar_time.isoformat(),
             }
             log_trade(self.trade_history, entry_log)
+            # Anchor the staircase trailing-stop baseline to this trade's
+            # ORIGINAL entry price and ORIGINAL risk distance. This is set
+            # exactly once, at open, and never touched again — the staircase
+            # always measures its R-multiples from here, never from wherever
+            # the stop has since been trailed to.
+            self._trail_baseline = {
+                "id":            result.position_id,
+                "direction":     decision.direction,
+                "entry":         tp_params.entry_price,
+                "risk_distance": abs(tp_params.entry_price - tp_params.stop_loss),
+            }
             # Build a synthetic position so the Telegram panel reflects the
             # newly opened trade immediately rather than waiting up to 5 min
             # for the next bar to re-fetch live positions.
@@ -628,6 +674,134 @@ class GoldScalperLive:
             "RUNNING", acc_info, decision, pos,
             extra=self._guardian_extra(gs),
         )
+
+    # ── Staircase trailing stop ───────────────────────────────────────────────
+
+    def _restore_trail_baseline(self, pos: dict) -> Optional[dict]:
+        """Recover the trailing baseline for an already-open position.
+
+        Runs when the engine (re)starts with a position already open (e.g.
+        after a Render restart) and self._trail_baseline is empty. Finds the
+        entry log written when this exact position was opened — that record
+        was written once, before any SL modification, so it still holds the
+        trade's true original risk distance.
+
+        Falls back to the position's *current* entry/SL if no matching log
+        entry survives (e.g. very old trade, log rotated away). This is an
+        approximation only: if the stop had already been trailed before the
+        log was lost, the recovered "risk distance" will be smaller than the
+        true original — the staircase would then activate a little earlier
+        than intended, but it can never move the stop backwards, so this is
+        safe, just slightly more conservative.
+        """
+        pos_id = pos.get("id")
+        for entry in reversed(self.trade_history):
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("position_id")) == str(pos_id) and "sl" in entry and "entry" in entry:
+                risk = abs(float(entry["entry"]) - float(entry["sl"]))
+                if risk > 0:
+                    return {
+                        "id":            pos_id,
+                        "direction":     entry.get("direction", pos.get("type", "BUY")),
+                        "entry":         float(entry["entry"]),
+                        "risk_distance": risk,
+                    }
+                break
+        # Fallback: derive from the position's live snapshot.
+        risk = abs(float(pos.get("open_price", 0.0)) - float(pos.get("sl", 0.0)))
+        if risk > 0:
+            log.warning(
+                f"Trailing baseline for position {pos_id} could not be found in "
+                f"trade history — approximating from live position data."
+            )
+            return {
+                "id":            pos_id,
+                "direction":     pos.get("type", "BUY"),
+                "entry":         float(pos.get("open_price", 0.0)),
+                "risk_distance": risk,
+            }
+        return None
+
+    async def _manage_trailing_stop(self) -> None:
+        """Check the open position (if any) and ratchet its SL forward.
+
+        Runs on every loop tick (every BAR_CHECK_INTERVAL seconds) — not just
+        on M5 candle close — so the stop reacts within seconds of price
+        moving through a staircase step, instead of waiting up to 5 minutes.
+        """
+        if not self.trailing_enabled:
+            return
+
+        try:
+            raw_positions = await get_open_positions(SYMBOL)
+        except RuntimeError as exc:
+            log.debug(f"Trailing check skipped — could not fetch positions: {exc}")
+            return
+
+        if not raw_positions:
+            self._trail_baseline = None
+            self._last_trailing_status = None
+            return
+
+        pos = mt5_pos_to_dict(raw_positions[0])
+
+        if not self._trail_baseline or str(self._trail_baseline.get("id")) != str(pos["id"]):
+            self._trail_baseline = self._restore_trail_baseline(pos)
+        if not self._trail_baseline:
+            return  # no reliable risk baseline — never trail blind
+
+        quote = await get_current_quote(SYMBOL)
+        if not quote:
+            return  # no live price this tick — try again next tick
+
+        direction = self._trail_baseline["direction"]
+        # Close-side price: a BUY exits (and is stopped out) at the bid,
+        # a SELL exits at the ask — trailing off the wrong side would trail
+        # too aggressively by the full spread.
+        current_price = quote["bid"] if direction.upper() == "BUY" else quote["ask"]
+
+        candidate_sl = compute_staircase_sl(
+            direction=direction,
+            entry=self._trail_baseline["entry"],
+            risk_distance=self._trail_baseline["risk_distance"],
+            current_price=current_price,
+            atr=self._last_atr,
+            cfg=self._trailing_cfg,
+        )
+
+        r_now = r_multiple_of(
+            direction, self._trail_baseline["entry"],
+            self._trail_baseline["risk_distance"], current_price,
+        )
+        self._last_trailing_status = {
+            "active":       candidate_sl is not None,
+            "r_multiple":   r_now,
+            "current_sl":   pos["sl"],
+            "candidate_sl": candidate_sl,
+        }
+
+        if not should_apply(direction, pos["sl"], candidate_sl, self._trailing_cfg.min_step_price):
+            return
+
+        result = await modify_position(pos["id"], candidate_sl, pos["tp"])
+        if result.success:
+            log.info(
+                f"📐 Trailing stop advanced — position {pos['id']}  "
+                f"{direction}  +{r_now:.2f}R  SL {pos['sl']:.2f} → {candidate_sl:.2f}"
+            )
+            log_trade(self.trade_history, {
+                "position_id": pos["id"],
+                "action":      "TRAIL_SL",
+                "direction":   direction,
+                "r_multiple":  r_now,
+                "old_sl":      pos["sl"],
+                "new_sl":      candidate_sl,
+            })
+        else:
+            log.warning(
+                f"Trailing stop modify failed for position {pos['id']}: {result.message}"
+            )
 
     # ── Telegram command processing ───────────────────────────────────────────
 
@@ -755,6 +929,13 @@ class GoldScalperLive:
                     if "slippage_points" in payload:
                         v = int(float(payload["slippage_points"]))
                         _live_cfg.SLIPPAGE_POINTS = v; _g["SLIPPAGE_POINTS"] = v
+                    # "Auto Trail" switch on the Telegram panel's Risk menu —
+                    # previously accepted but never actually applied anywhere.
+                    if "auto_trailing" in payload:
+                        v = bool(payload["auto_trailing"])
+                        self.trailing_enabled = v
+                        self._trailing_cfg.enabled = v
+                        log.info(f"📐 Staircase trailing stop {'ENABLED' if v else 'DISABLED'} via Telegram")
                     log.info(f"🔧 Risk config updated via Telegram: {payload}")
                 except Exception as _upd_err:
                     log.warning(f"update_risk payload error: {_upd_err}")
@@ -862,6 +1043,11 @@ class GoldScalperLive:
             merged_extra.update(
                 self._guardian_extra(self._last_guardian_status)
             )
+        if self._last_trailing_status is not None:
+            merged_extra["trailing_stop"] = {
+                "enabled": self.trailing_enabled,
+                **self._last_trailing_status,
+            }
         if extra:
             merged_extra.update(extra)
 

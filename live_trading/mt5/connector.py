@@ -533,6 +533,62 @@ def mt5_pos_to_dict(pos: dict) -> dict:
     }
 
 
+async def get_current_quote(symbol: str) -> dict:
+    """Fetch the current bid/ask price via GET /GetQuote.
+
+    Used by the staircase trailing-stop engine, which needs a live price
+    between M5 candle closes (candles only give the price as of the last
+    completed bar, up to 5 minutes stale).
+
+    Returns {"bid": float, "ask": float} on success, {} on any failure —
+    callers must treat {} as "no live price available this tick" and skip
+    trailing work rather than trail off a stale/fabricated price.
+
+    FIX: retries once with a fresh ConnectEx on stale-conn_id errors, same
+    pattern as the other mt5rest calls in this module.
+    """
+    for attempt in range(2):
+        if not _conn_id:
+            if not await ensure_connected():
+                return {}
+        try:
+            sess = _get_session()
+            async with sess.get(
+                f"{_base_url}/GetQuote",
+                params={"id": _conn_id, "symbol": symbol},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                data = await resp.json(content_type=None)
+
+                if isinstance(data, dict) and not _is_error_quote(data):
+                    bid = data.get("bid", data.get("Bid"))
+                    ask = data.get("ask", data.get("Ask"))
+                    if bid is not None and ask is not None:
+                        return {"bid": float(bid), "ask": float(ask)}
+
+                if attempt == 0:
+                    log.warning(
+                        f"GetQuote unexpected response (stale conn_id?) "
+                        f"— reconnecting and retrying. Response: {str(data)[:200]}"
+                    )
+                    _invalidate_connection()
+                    continue
+                log.warning(f"GetQuote failed after reconnect: {str(data)[:200]}")
+                return {}
+        except Exception as exc:
+            if attempt == 0:
+                log.warning(f"get_current_quote error (attempt 1) — reconnecting: {exc}")
+                _invalidate_connection()
+                continue
+            log.warning(f"get_current_quote error after reconnect: {exc}")
+            return {}
+    return {}
+
+
+def _is_error_quote(data: dict) -> bool:
+    return "code" in data and "stackTrace" in data
+
+
 def get_connection() -> Optional[str]:
     """Return the base URL when connected, None otherwise (used by executor)."""
     return _base_url if _connected else None
