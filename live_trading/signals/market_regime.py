@@ -39,18 +39,22 @@ class RegimeResult:
     description: str
 
 
+# TESTING MODE: min_confidence and min_rr dropped to 0 across every regime so
+# the decision engine never rejects a trade on confidence/R:R grounds. Only
+# directional gates (allow_long/allow_short) remain, since those are basic
+# trend-alignment logic rather than a strictness knob.
 REGIME_RULES = {
-    "STRONG_TREND_BULL": RegimeEntryRules(20, 1.2, True,  False, 1.0,  "Strong Bull Trend"),
-    "STRONG_TREND_BEAR": RegimeEntryRules(20, 1.2, False, True,  1.0,  "Strong Bear Trend"),
-    "WEAK_TREND_BULL":   RegimeEntryRules(20, 1.2, True,  False, 0.9,  "Weak Bull Trend"),
-    "WEAK_TREND_BEAR":   RegimeEntryRules(20, 1.2, False, True,  0.9,  "Weak Bear Trend"),
-    "PULLBACK_BULL":     RegimeEntryRules(20, 1.2, True,  False, 0.95, "Bull Pullback"),
-    "PULLBACK_BEAR":     RegimeEntryRules(20, 1.2, False, True,  0.95, "Bear Pullback"),
-    "RANGE":             RegimeEntryRules(22, 1.2, True,  True,  0.8,  "Range / Choppy"),
-    "ACCUMULATION":      RegimeEntryRules(20, 1.0, True,  False, 1.0,  "Wyckoff Accumulation"),
-    "DISTRIBUTION":      RegimeEntryRules(20, 1.0, False, True,  1.0,  "Wyckoff Distribution"),
-    "HIGH_VOLATILITY":   RegimeEntryRules(22, 1.2, True,  True,  1.3,  "High Volatility"),
-    "LOW_VOLATILITY":    RegimeEntryRules(22, 1.2, True,  True,  0.7,  "Low Volatility / Squeeze"),
+    "STRONG_TREND_BULL": RegimeEntryRules(0, 0.0, True,  False, 1.0,  "Strong Bull Trend"),
+    "STRONG_TREND_BEAR": RegimeEntryRules(0, 0.0, False, True,  1.0,  "Strong Bear Trend"),
+    "WEAK_TREND_BULL":   RegimeEntryRules(0, 0.0, True,  False, 0.9,  "Weak Bull Trend"),
+    "WEAK_TREND_BEAR":   RegimeEntryRules(0, 0.0, False, True,  0.9,  "Weak Bear Trend"),
+    "PULLBACK_BULL":     RegimeEntryRules(0, 0.0, True,  False, 0.95, "Bull Pullback"),
+    "PULLBACK_BEAR":     RegimeEntryRules(0, 0.0, False, True,  0.95, "Bear Pullback"),
+    "RANGE":             RegimeEntryRules(0, 0.0, True,  True,  0.8,  "Range / Choppy"),
+    "ACCUMULATION":      RegimeEntryRules(0, 0.0, True,  False, 1.0,  "Wyckoff Accumulation"),
+    "DISTRIBUTION":      RegimeEntryRules(0, 0.0, False, True,  1.0,  "Wyckoff Distribution"),
+    "HIGH_VOLATILITY":   RegimeEntryRules(0, 0.0, True,  True,  1.3,  "High Volatility"),
+    "LOW_VOLATILITY":    RegimeEntryRules(0, 0.0, True,  True,  0.7,  "Low Volatility / Squeeze"),
 }
 
 

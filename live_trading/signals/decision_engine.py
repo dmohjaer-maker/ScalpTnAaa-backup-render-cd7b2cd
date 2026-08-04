@@ -16,7 +16,8 @@ from live_trading.signals.entry_filter import apply_entry_filter
 from live_trading.risk.capital_manager import CapitalInput, CapitalOutput, calc_trade_parameters
 from live_trading.config import CONF_HARD_MIN
 
-CONF_MARGINAL_RR = 0.5
+# TESTING MODE: marginal R:R floor dropped to 0 (see market_regime.py note).
+CONF_MARGINAL_RR = 0.0
 
 
 @dataclass
