@@ -29,6 +29,14 @@ class HeartbeatMonitor:
     Events.TRADE_OPENED was defined but never published anywhere, so a
     freshly opened trade never triggered a Telegram notification — the
     panel only reflected it once the user manually refreshed the dashboard.
+
+    FIX: The "already notified" ticket set only ever grows, never shrinks
+    to match whatever get_open_positions() returns this cycle. A previous
+    version diffed against "last cycle's tickets", which self-healed to an
+    empty set whenever a single poll returned no positions (e.g. a brief
+    Redis hiccup during a connection blip) — the next successful poll then
+    treated the still-open trade as brand new and sent a duplicate
+    TRADE_OPENED notification for the same ticket.
     """
 
     def __init__(
@@ -49,10 +57,14 @@ class HeartbeatMonitor:
         self._last_status: Optional[RobotStatus] = None
         self._last_connection: Optional[ConnectionStatus] = None
         self._last_hb_notify: Optional[datetime] = None
-        # Tickets seen on the previous check — used to detect newly opened
-        # positions.  None until the first successful poll so we never fire
-        # TRADE_OPENED for positions that were already open before the panel
-        # started (that would misleadingly look like a brand-new trade).
+        # Tickets we have already published TRADE_OPENED for. This set only
+        # ever grows (via |=), it is never replaced/shrunk to "this cycle's
+        # tickets" — that would make a single transient empty/short read (a
+        # Redis or MT5 hiccup) look like every open position just closed,
+        # causing the next good read to re-notify the same still-open ticket.
+        # None until the first successful poll so we never fire TRADE_OPENED
+        # for positions that were already open before the panel started
+        # (that would misleadingly look like a brand-new trade).
         self._known_position_tickets: Optional[set] = None
 
     async def start(self) -> None:
@@ -139,7 +151,11 @@ class HeartbeatMonitor:
             try:
                 positions = await self._mt5.get_open_positions()
                 current_tickets = {p.ticket for p in positions}
-                if self._known_position_tickets is not None:
+                if self._known_position_tickets is None:
+                    # First poll: just establish the baseline, never notify —
+                    # these positions were already open before the panel started.
+                    self._known_position_tickets = current_tickets
+                else:
                     new_tickets = current_tickets - self._known_position_tickets
                     if new_tickets:
                         for pos in positions:
@@ -147,7 +163,10 @@ class HeartbeatMonitor:
                                 await self._bus.publish(
                                     Events.TRADE_OPENED, {"position": pos}
                                 )
-                self._known_position_tickets = current_tickets
+                    # Grow-only: union in this cycle's tickets instead of
+                    # replacing the set, so a transient empty/partial read
+                    # can never erase tickets we've already notified for.
+                    self._known_position_tickets |= current_tickets
             except Exception as e:
                 logger.debug(f"Open-position poll failed (trade-open detection skipped): {e}")
 
