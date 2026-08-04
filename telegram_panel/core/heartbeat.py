@@ -158,8 +158,18 @@ class HeartbeatMonitor:
                 else:
                     new_tickets = current_tickets - self._known_position_tickets
                     if new_tickets:
+                        # Publish exactly once per newly-seen ticket. Iterating
+                        # every row that matches (the previous behaviour) fires
+                        # a duplicate TRADE_OPENED notification whenever the
+                        # upstream snapshot contains more than one row for the
+                        # same ticket (e.g. a corrupted/phantom duplicate row
+                        # from the mt5rest bridge) — the user then sees two
+                        # "TRADE OPENED" messages for one trade, one of them
+                        # with a fabricated volume/price.
+                        notified = set()
                         for pos in positions:
-                            if pos.ticket in new_tickets:
+                            if pos.ticket in new_tickets and pos.ticket not in notified:
+                                notified.add(pos.ticket)
                                 await self._bus.publish(
                                     Events.TRADE_OPENED, {"position": pos}
                                 )

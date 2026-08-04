@@ -486,12 +486,73 @@ def _parse_open_positions_response(data: object, status: int) -> List[dict]:
         )
         raise RuntimeError(f"mt5rest OpenedOrders error (HTTP {status}): {message}")
     if isinstance(data, list):
-        return data
+        return _dedupe_positions(data)
     if isinstance(data, dict):
         message = data.get("message", "unexpected object response")
     else:
         message = f"unexpected response type: {type(data).__name__}"
     raise RuntimeError(f"mt5rest OpenedOrders error: {message}")
+
+
+# The mt5rest bridge has occasionally returned two rows for the very same
+# ticket in a single /OpenedOrders response — one with the real fill data
+# and a second phantom row with a wildly out-of-range volume (e.g.
+# 1,000,000 lots — orders of magnitude beyond anything this account could
+# ever margin). Left unfiltered, that phantom row flows straight into the
+# live position list: it inflates MAX_OPEN_TRADES counting, gets written
+# into the panel snapshot, and the Telegram panel's new-ticket detector
+# (which iterates every row matching a newly-seen ticket) fires a second
+# "TRADE OPENED" notification for the same trade with fabricated size/price.
+# A retail gold position this bot ever opens is a few lots at most, so
+# anything above this cap is unambiguously corrupted bridge output, not a
+# real fill — it is dropped rather than guessed at.
+_MAX_SANE_VOLUME_LOTS = 100.0
+
+
+def _dedupe_positions(rows: List[dict]) -> List[dict]:
+    """Collapse duplicate rows for the same ticket into a single sane entry.
+
+    Prefers a row with a plausible volume; if every duplicate for a ticket
+    looks corrupted, keeps the first as a fallback so a real (if noisy)
+    position is never silently dropped, but logs loudly either way.
+    """
+    by_ticket: "dict[object, List[dict]]" = {}
+    order: List[object] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ticket = row.get("ticket", row.get("identifier"))
+        if ticket not in by_ticket:
+            by_ticket[ticket] = []
+            order.append(ticket)
+        by_ticket[ticket].append(row)
+
+    result: List[dict] = []
+    for ticket in order:
+        group = by_ticket[ticket]
+        if len(group) == 1:
+            result.append(group[0])
+            continue
+
+        sane = [
+            row for row in group
+            if 0 < float(row.get("volume", row.get("lots", 0.0)) or 0.0) <= _MAX_SANE_VOLUME_LOTS
+        ]
+        if len(sane) == 1:
+            log.warning(
+                f"mt5rest returned {len(group)} duplicate rows for ticket {ticket} "
+                f"— keeping the one with a plausible volume, dropping the rest "
+                f"(volumes seen: {[row.get('volume', row.get('lots')) for row in group]})"
+            )
+            result.append(sane[0])
+        else:
+            log.warning(
+                f"mt5rest returned {len(group)} duplicate rows for ticket {ticket} "
+                f"with no single plausible volume — keeping the first row only "
+                f"(volumes seen: {[row.get('volume', row.get('lots')) for row in group]})"
+            )
+            result.append(group[0])
+    return result
 
 
 async def get_last_completed_bar_time(
