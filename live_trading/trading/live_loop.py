@@ -610,6 +610,17 @@ class GoldScalperLive:
                 "profit":     0.0,
                 "comment":    COMMENT,
             }
+            # ROOT-CAUSE FIX: push the newly opened position into the live
+            # Redis snapshot immediately. write_mt5_snapshot() above (step 6)
+            # already ran BEFORE this order was placed, so without this the
+            # panel's "open positions" view (which reads goldscalper:snapshot,
+            # not goldscalper:state) would not show this trade until the next
+            # M5 bar — up to 5 minutes later.
+            try:
+                from live_trading.redis_ipc import redis_update_snapshot_positions
+                redis_update_snapshot_positions(pos_dicts + [pos])
+            except Exception as _sync_exc:
+                log.debug(f"Snapshot position sync skipped: {_sync_exc}")
         else:
             log.error(f"❌ Trade failed: {result.message}")
 

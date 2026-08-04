@@ -291,6 +291,39 @@ def _reset_client() -> None:
     _last_ping_time = 0.0
 
 
+def redis_update_snapshot_positions(positions: list) -> bool:
+    """
+    Merge updated open_positions into the live snapshot Redis key.
+
+    Same rationale as redis_update_snapshot_trades() below: the panel's
+    MT5Service._read_snapshot() reads goldscalper:snapshot (NOT
+    goldscalper:state) for open_positions, but write_mt5_snapshot() only
+    runs once per M5 bar (in live_loop._on_new_bar(), BEFORE that bar's
+    order is placed). Without this, a newly opened trade would not appear
+    as an open position in the panel until the *next* bar — up to 5
+    minutes later — even though goldscalper:state already reflects it via
+    open_position.
+
+    ROOT-CAUSE FIX: newly opened trades were invisible in the panel's
+    "open positions" view for up to one M5 bar because only goldscalper:state
+    was updated immediately; goldscalper:snapshot (what the panel actually
+    reads for open_positions) waited for the next bar.
+    """
+    r = _get_client()
+    if r is None:
+        return False
+    try:
+        raw = r.get(_SNAPSHOT_KEY)
+        snap = json.loads(raw) if raw else {}
+        snap["open_positions"] = positions
+        r.set(_SNAPSHOT_KEY, json.dumps(snap, default=str), ex=_STATE_TTL)
+        return True
+    except Exception as exc:
+        logger.warning("Redis update_snapshot_positions: %s", exc)
+        _reset_client()
+        return False
+
+
 def redis_update_snapshot_trades(trades: list) -> bool:
     """
     Merge updated recent_trades into the live snapshot Redis key.

@@ -23,6 +23,12 @@ class HeartbeatMonitor:
     Periodically checks robot state and emits events when status changes.
     Sends periodic heartbeat notifications ONLY while robot is RUNNING.
     Status-change events (stopped, error, paused) fire once on transition.
+
+    FIX: Also polls open positions (via mt5_service, when provided) and
+    fires Events.TRADE_OPENED the moment a new ticket appears. Previously
+    Events.TRADE_OPENED was defined but never published anywhere, so a
+    freshly opened trade never triggered a Telegram notification — the
+    panel only reflected it once the user manually refreshed the dashboard.
     """
 
     def __init__(
@@ -31,16 +37,23 @@ class HeartbeatMonitor:
         event_bus: EventBus,
         interval_seconds: int = 30,
         heartbeat_notify_interval: int = 600,  # 10 minutes — only while RUNNING
+        mt5_service=None,
     ) -> None:
         self._robot = robot_service
         self._bus = event_bus
         self._interval = interval_seconds
         self._hb_interval = heartbeat_notify_interval
+        self._mt5 = mt5_service
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._last_status: Optional[RobotStatus] = None
         self._last_connection: Optional[ConnectionStatus] = None
         self._last_hb_notify: Optional[datetime] = None
+        # Tickets seen on the previous check — used to detect newly opened
+        # positions.  None until the first successful poll so we never fire
+        # TRADE_OPENED for positions that were already open before the panel
+        # started (that would misleadingly look like a brand-new trade).
+        self._known_position_tickets: Optional[set] = None
 
     async def start(self) -> None:
         self._running = True
@@ -118,4 +131,24 @@ class HeartbeatMonitor:
 
         self._last_status = current_status
         self._last_connection = current_conn
+
+        # ── New-trade detection (fires once per newly seen ticket) ──────────
+        # Best-effort: if mt5_service is unavailable or the read fails, skip
+        # silently — this must never interfere with status/heartbeat events.
+        if self._mt5 is not None:
+            try:
+                positions = await self._mt5.get_open_positions()
+                current_tickets = {p.ticket for p in positions}
+                if self._known_position_tickets is not None:
+                    new_tickets = current_tickets - self._known_position_tickets
+                    if new_tickets:
+                        for pos in positions:
+                            if pos.ticket in new_tickets:
+                                await self._bus.publish(
+                                    Events.TRADE_OPENED, {"position": pos}
+                                )
+                self._known_position_tickets = current_tickets
+            except Exception as e:
+                logger.debug(f"Open-position poll failed (trade-open detection skipped): {e}")
+
         logger.debug(f"Heartbeat check: status={current_status.value} conn={current_conn.value}")

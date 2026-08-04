@@ -197,6 +197,7 @@ class BotApplication:
             event_bus=self._event_bus,
             interval_seconds=self._settings.robot.heartbeat_interval_seconds,
             heartbeat_notify_interval=self._settings.notifications.heartbeat_interval_seconds,
+            mt5_service=mt5_svc,
         )
         await self._heartbeat.start()
 
@@ -291,8 +292,20 @@ class BotApplication:
             msg = f"🔄 <b>System Restart</b>\n{data.get('reason', '')}"
             await notif_svc.notify_all_admins(NotificationType.SYSTEM_RESTART, msg)
 
+        # FIX: Events.TRADE_OPENED was defined but never published/consumed —
+        # newly opened trades never reached Telegram. HeartbeatMonitor now
+        # publishes this event as soon as it detects a new open position; this
+        # handler formats and sends the actual notification.
+        async def on_trade_opened(data: dict) -> None:
+            pos = data.get("position")
+            if pos is None:
+                return
+            msg = formatter.trade_opened(pos)
+            await notif_svc.notify_all_admins(NotificationType.TRADE_OPEN, msg)
+
         self._event_bus.subscribe(Events.HEARTBEAT, on_heartbeat)
         self._event_bus.subscribe(Events.CONNECTION_LOST, on_connection_lost)
         self._event_bus.subscribe(Events.CONNECTION_RESTORED, on_connection_restored)
         self._event_bus.subscribe(Events.ROBOT_ERROR, on_robot_error)
         self._event_bus.subscribe(Events.SYSTEM_RESTART, on_system_restart)
+        self._event_bus.subscribe(Events.TRADE_OPENED, on_trade_opened)
