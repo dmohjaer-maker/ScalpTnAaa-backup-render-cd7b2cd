@@ -52,13 +52,16 @@ services:
         value: "300"
       - key: RISK_PERCENT
         value: "1.0"
-      # FIX #3: Raised from "2" to "3" (code default) for safer entries.
+      # TESTING MODE: strict filters relaxed so the robot trades more freely
+      # on the demo account. Tighten these again before going live for real.
       - key: MIN_CONFIRMATIONS
-        value: "3"
+        value: "1"
+      - key: CONF_HARD_MIN
+        value: "0"
       - key: DAILY_LOSS_LIMIT_PCT
-        value: "3.0"
+        value: "50.0"
       - key: MAX_DRAWDOWN_PCT
-        value: "8.0"
+        value: "50.0"
       - key: SLIPPAGE_POINTS
         value: "30"
       - key: PYTHON_VERSION
