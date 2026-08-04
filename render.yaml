@@ -43,8 +43,11 @@ services:
         sync: false
       - key: MT5_PASSWORD
         sync: false
+      # FIX: broker reports gold as "XAUUSD", not "XAUUSDb" — the wrong
+      # symbol caused every candle/order request to fail silently, which was
+      # the real reason the robot never opened a trade.
       - key: SYMBOL
-        value: XAUUSDb
+        value: XAUUSD
       # FIX: TIMEFRAME and CANDLE_WINDOW are now env-configurable (fix #4).
       - key: TIMEFRAME
         value: "5m"

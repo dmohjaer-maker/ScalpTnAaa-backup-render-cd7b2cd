@@ -99,7 +99,7 @@ MT5_USER      = os.getenv("MT5_USER",     "")
 MT5_PASSWORD  = os.getenv("MT5_PASSWORD", "")
 
 # ── Symbol & Timeframe ───────────────────────────────────────────────────────
-SYMBOL        = os.getenv("SYMBOL", "XAUUSDb")
+SYMBOL        = os.getenv("SYMBOL", "XAUUSD")
 TIMEFRAME     = _timeframe("TIMEFRAME", "5m")
 CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 
