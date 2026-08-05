@@ -299,3 +299,27 @@ def _reset_client() -> None:
     _last_failure_time = time.monotonic()
     _last_ping_time = 0.0
 
+
+# ─── Per-trade strategy explanation (why this trade was opened) ───────────────
+# Mirrors live_trading/redis_ipc.py::redis_set_trade_strategy() — same key
+# format, read-only here. See that function's docstring for the schema.
+
+def redis_get_trade_strategy(ticket) -> Optional[dict]:
+    """
+    Read the decision-engine reasoning the robot published for this ticket
+    at trade-open time. Returns None if Redis is unavailable, nothing was
+    published for this ticket (e.g. it predates this feature), or the entry
+    has expired — callers must treat that as "no strategy info available"
+    and degrade gracefully, not as an error.
+    """
+    r = _get_client()
+    if r is None:
+        return None
+    try:
+        raw = r.get(f"goldscalper:strategy:{ticket}")
+        return json.loads(raw) if raw else None
+    except Exception as exc:
+        logger.warning("Redis get_trade_strategy: %s", exc)
+        _reset_client()
+        return None
+

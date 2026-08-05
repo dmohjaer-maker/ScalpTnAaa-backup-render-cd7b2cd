@@ -291,6 +291,39 @@ def _reset_client() -> None:
     _last_ping_time = 0.0
 
 
+# ─── Per-trade strategy explanation (why this trade was opened) ───────────────
+# Keyed by ticket rather than merged into goldscalper:snapshot so it survives
+# independently of the position/trade-history payloads and expires on its own.
+_STRATEGY_TTL = 259200  # 3 days — comfortably covers the notification path
+
+
+def redis_set_trade_strategy(ticket, strategy: dict) -> bool:
+    """
+    Publish the decision engine's reasoning for a just-opened trade so the
+    Telegram panel can show *why* the robot took it (see
+    live_trading.signals.decision_engine.describe_strategy()).
+
+    Best-effort only: called right after order placement succeeds, so a
+    Redis hiccup here must never be allowed to look like a trading error —
+    callers should not treat a False return as anything more than "the
+    notification will be missing strategy details this time".
+    """
+    r = _get_client()
+    if r is None:
+        return False
+    try:
+        r.set(
+            f"goldscalper:strategy:{ticket}",
+            json.dumps(strategy, default=str),
+            ex=_STRATEGY_TTL,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("Redis set_trade_strategy: %s", exc)
+        _reset_client()
+        return False
+
+
 def redis_update_snapshot_positions(positions: list) -> bool:
     """
     Merge updated open_positions into the live snapshot Redis key.

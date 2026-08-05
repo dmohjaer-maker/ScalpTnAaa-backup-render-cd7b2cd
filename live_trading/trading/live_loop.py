@@ -43,7 +43,7 @@ from live_trading.risk.guardian import RiskGuardian, GuardianStatus
 from live_trading.risk.trailing_stop import (
     TrailingConfig, compute_staircase_sl, should_apply, r_multiple_of,
 )
-from live_trading.signals.decision_engine import run_decision_engine, DecisionResult
+from live_trading.signals.decision_engine import run_decision_engine, DecisionResult, describe_strategy
 from live_trading.signals.wyckoff_engine import calibrate_wyckoff, set_calibrated_config
 from live_trading.mt5.connector import (
     connect, disconnect, ensure_connected,
@@ -616,6 +616,7 @@ class GoldScalperLive:
         )
 
         if result.success:
+            strategy = describe_strategy(decision)
             entry_log = {
                 "position_id": result.position_id,
                 "direction":   decision.direction,
@@ -628,8 +629,18 @@ class GoldScalperLive:
                 "grade":       decision.grade,
                 "regime":      decision.regime,
                 "bar_time":    bar_time.isoformat(),
+                "strategy":    strategy,
             }
             log_trade(self.trade_history, entry_log)
+            # Publish the "why" behind this trade, keyed by ticket, so the
+            # Telegram panel's TRADE OPENED notification can explain the
+            # strategy instead of showing only price/volume/SL/TP. Best
+            # effort — never let a Redis hiccup affect trading itself.
+            try:
+                from live_trading.redis_ipc import redis_set_trade_strategy
+                redis_set_trade_strategy(result.position_id, strategy)
+            except Exception as exc:
+                log.debug(f"Could not publish trade strategy for panel: {exc}")
             # Anchor the staircase trailing-stop baseline to this trade's
             # ORIGINAL entry price and ORIGINAL risk distance. This is set
             # exactly once, at open, and never touched again — the staircase

@@ -12,7 +12,7 @@ from live_trading.signals.trend_engine import TrendResult, analyze_trend
 from live_trading.signals.market_regime import RegimeResult, RegimeEntryRules, detect_market_regime
 from live_trading.signals.confidence_engine import ConfidenceResult, ConfidenceComponents, calc_confidence
 from live_trading.signals.quality_filter import QualityFilterResult, apply_quality_filter, get_session_quality
-from live_trading.signals.entry_filter import apply_entry_filter
+from live_trading.signals.entry_filter import apply_entry_filter, EntryFilterResult
 from live_trading.risk.capital_manager import CapitalInput, CapitalOutput, calc_trade_parameters
 from live_trading.config import CONF_HARD_MIN
 
@@ -38,6 +38,12 @@ class DecisionResult:
     wyckoff: WyckoffResult
     pa:     PriceActionResult
     trend:  TrendResult
+    # Additive, optional — which of the 4 independent engines (SMC/Trend/
+    # PriceAction/Wyckoff) voted for this trade's direction. None on the
+    # early "no SMC signal" path, where the vote was never computed.
+    # Existing callers that construct/consume DecisionResult are unaffected
+    # since this has a default and nothing reads it unless it asks for it.
+    entry_filter:    Optional[EntryFilterResult] = None
 
 
 def _candidate_direction(smc: SmcResult) -> str:
@@ -150,6 +156,7 @@ def run_decision_engine(
             blocked_reasons=[f"Confidence {conf_result.confidence:.1f}% < {CONF_HARD_MIN}%"],
             reasoning=conf_result.reasoning, trade_params=None,
             smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
+            entry_filter=ef,
         )
         return n
 
@@ -164,6 +171,7 @@ def run_decision_engine(
             regime_rules=regime.rules, quality_filter=quality,
             blocked_reasons=quality.blocked_reasons, reasoning=conf_result.reasoning,
             trade_params=None, smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
+            entry_filter=ef,
         )
 
     # Capital manager inputs
@@ -202,6 +210,7 @@ def run_decision_engine(
                 ],
                 reasoning=conf_result.reasoning, trade_params=None,
                 smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
+                entry_filter=ef,
             )
 
     # R:R gate
@@ -217,6 +226,7 @@ def run_decision_engine(
             ],
             reasoning=conf_result.reasoning, trade_params=None,
             smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
+            entry_filter=ef,
         )
 
     # ── TRADE ALLOWED ─────────────────────────────────────────────────────────
@@ -228,4 +238,45 @@ def run_decision_engine(
         blocked_reasons=[], reasoning=conf_result.reasoning,
         trade_params=trade_params,
         smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
+        entry_filter=ef,
     )
+
+
+def describe_strategy(decision: "DecisionResult") -> dict:
+    """Build a human-readable summary of *why* this trade was taken.
+
+    Purely derived from data the decision engine already computed — it adds
+    no new signal logic and cannot change whether a trade is taken. Intended
+    to travel alongside a just-opened trade (e.g. published to Redis by the
+    live loop) so the Telegram panel can explain the trade in its
+    "TRADE OPENED" notification instead of showing only price/volume/SL/TP.
+    """
+    ef = decision.entry_filter
+    _ENGINE_NAMES = {
+        "smc":          "Smart Money Concepts (structure)",
+        "trend":        "Trend (EMA alignment)",
+        "price_action": "Price Action",
+        "wyckoff":      "Wyckoff",
+    }
+    if ef is not None:
+        confirmations = [
+            label for key, label in _ENGINE_NAMES.items() if getattr(ef, key)
+        ]
+        confirmation_count = ef.confirmation_count
+    else:
+        confirmations = []
+        confirmation_count = 0
+
+    return {
+        "direction":           decision.direction,
+        "grade":               decision.grade,
+        "confidence":          round(decision.confidence, 1),
+        "regime":              decision.regime,
+        "regime_label":        decision.regime_label,
+        "confirmations":       confirmations,
+        "confirmation_count":  confirmation_count,
+        "confirmation_total":  4,
+        # Top signal-level reasons behind the confidence score (e.g. "BOS
+        # confirmed", "Strong EMA alignment (50/100/200)", "Spring confirmed").
+        "signals":             list(decision.reasoning[:6]),
+    }

@@ -364,7 +364,7 @@ class MessageFormatter:
 
     @staticmethod
     def trade_opened(pos: Position) -> str:
-        return (
+        text = (
             f"📈 <b>TRADE OPENED</b>\n"
             f"<code>{_DIVIDER}</code>\n"
             f"{pos.direction_icon} {pos.direction.value} · {pos.symbol}\n"
@@ -372,6 +372,32 @@ class MessageFormatter:
             f"🛑 SL: {pos.stop_loss or '—'}  🎯 TP: {pos.take_profit or '—'}\n"
             f"🎫 Ticket: #{pos.ticket}"
         )
+        strategy = pos.strategy
+        if strategy:
+            grade = strategy.get("grade", "—")
+            confidence = strategy.get("confidence")
+            regime_label = strategy.get("regime_label", "—")
+            confirmations = strategy.get("confirmations") or []
+            count = strategy.get("confirmation_count", len(confirmations))
+            total = strategy.get("confirmation_total", 4)
+            signals = strategy.get("signals") or []
+
+            grade_icons = {"PRIME": "🥇", "HIGH": "🥈", "MARGINAL": "🥉"}
+            grade_icon = grade_icons.get(grade, "🔹")
+
+            lines = [
+                f"\n<code>{_DIVIDER}</code>",
+                f"🧠 <b>Strategy</b>",
+                f"{grade_icon} Grade: <b>{grade}</b>"
+                + (f"  ·  Confidence: <b>{confidence:.1f}%</b>" if confidence is not None else ""),
+                f"📊 Regime: {regime_label}",
+                f"✅ Confirmations ({count}/{total}): " + (", ".join(confirmations) if confirmations else "—"),
+            ]
+            if signals:
+                lines.append("🔎 Signals:")
+                lines.extend(f"  • {s}" for s in signals)
+            text += "\n" + "\n".join(lines)
+        return text
 
     @staticmethod
     def trade_closed(trade: TradeRecord) -> str:

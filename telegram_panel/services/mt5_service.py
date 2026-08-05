@@ -89,10 +89,28 @@ class MT5Service:
                     breakeven_activated=raw.get("be_done", False),
                     trailing_stop_active=raw.get("trail_active", False),
                 )
+                pos.strategy = self._get_trade_strategy(pos.ticket)
                 positions.append(pos)
             except Exception as e:
                 logger.warning(f"Failed to parse position: {e}")
         return positions
+
+    @staticmethod
+    def _get_trade_strategy(ticket: int) -> Optional[dict]:
+        """
+        Best-effort lookup of the decision-engine reasoning the robot
+        published for this ticket at trade-open time. Never raises — a
+        missing/unavailable strategy just means the notification/detail
+        view shows the trade without the "why" section.
+        """
+        if not ticket:
+            return None
+        try:
+            from ..redis_ipc import redis_get_trade_strategy
+            return redis_get_trade_strategy(ticket)
+        except Exception as e:
+            logger.debug(f"Strategy lookup skipped for ticket {ticket}: {e}")
+            return None
 
     async def get_pending_orders(self) -> list[PendingOrder]:
         snapshot = await self._read_snapshot()

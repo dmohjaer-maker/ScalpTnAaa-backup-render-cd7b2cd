@@ -68,6 +68,11 @@ class Position(Trade):
     breakeven_activated: bool = False
     trailing_stop_active: bool = False
     partial_close_done: bool = False
+    # Why the robot opened this trade (regime, confirming engines, top
+    # signals) — published by the robot at trade-open time and looked up by
+    # ticket. None when unavailable (older trade, Redis down, etc.); callers
+    # must degrade gracefully rather than assume it is always present.
+    strategy: Optional[dict] = None
 
 
 @dataclass
