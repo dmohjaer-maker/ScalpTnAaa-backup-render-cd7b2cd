@@ -113,6 +113,18 @@ CONF_HARD_MIN     = _float("CONF_HARD_MIN",      35.0, lo=0.0, hi=100.0)
 MAX_OPEN_TRADES   = 1
 
 USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() == "true"
+# ── Multi-Timeframe (HTF) Filter ─────────────────────────────────────────────
+# MTF_ENABLED       : enable/disable the HTF alignment gate (default on).
+#                     Set to "false" to revert to M5-only behaviour instantly.
+# MTF_TIMEFRAME     : the Higher TimeFrame to use for bias detection.
+#                     "H1" is the recommended default for M5 scalping of gold.
+#                     Supported: M1 M5 M15 M30 H1 H4 D1 (same set as TIMEFRAME).
+# MTF_CANDLE_WINDOW : number of HTF bars to fetch (needs ≥ 210 for EMA-200).
+#                     300 gives a comfortable margin without excessive latency.
+MTF_ENABLED       = os.getenv("MTF_ENABLED",   "true").lower() == "true"
+MTF_TIMEFRAME     = _timeframe("MTF_TIMEFRAME",  "H1")
+MTF_CANDLE_WINDOW = _int("MTF_CANDLE_WINDOW",    300, lo=50, hi=1000)
+
 
 # ── Order Settings ───────────────────────────────────────────────────────────
 COMMENT = "GSPv4"
