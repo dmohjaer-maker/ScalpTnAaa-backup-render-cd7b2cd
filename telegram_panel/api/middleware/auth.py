@@ -10,7 +10,7 @@ from typing import Optional, Callable, Awaitable, Any
 from telegram import Update
 from telegram.ext import BaseHandler
 from ...config.constants import BotRole
-from ...models.user import User
+from ...models.user import User, UserPermission
 from ...storage.repositories.user_repo import UserRepository
 from ...storage.repositories.audit_repo import AuditRepository
 from ...models.audit import AuditLog
@@ -80,6 +80,14 @@ class AuthMiddleware:
             if telegram_id == self._owner_id and user.role != BotRole.OWNER:
                 await self._user_repo.set_role(telegram_id, BotRole.OWNER)
                 user.role = BotRole.OWNER
+                # Assigning .role directly (instead of reconstructing the
+                # User dataclass) does NOT re-run __post_init__, so
+                # user.permissions would otherwise stay frozen at whatever
+                # role this row had before (e.g. VIEWER) — the owner would
+                # then look like an owner everywhere (badge, menus) while
+                # every can_* permission check silently returns False for
+                # them. Recompute permissions to match the corrected role.
+                user.permissions = UserPermission.for_role(BotRole.OWNER)
 
             # Update cache
             self._cache[telegram_id] = (user, now)
