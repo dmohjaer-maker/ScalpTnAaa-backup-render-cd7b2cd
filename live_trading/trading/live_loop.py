@@ -37,6 +37,7 @@ from live_trading.config import (
     STATE_FILE, GUARDIAN_STATE_FILE,
     TRAIL_ENABLED, TRAIL_ACTIVATION_R, TRAIL_STEP_R,
     TRAIL_LOCK_BUFFER_R, TRAIL_ATR_GAP_MULT, TRAIL_MIN_STEP_PRICE,
+    MTF_ENABLED, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
 )
 from live_trading.logger import get_logger
 from live_trading.risk.guardian import RiskGuardian, GuardianStatus
@@ -44,6 +45,7 @@ from live_trading.risk.trailing_stop import (
     TrailingConfig, compute_staircase_sl, should_apply, r_multiple_of,
 )
 from live_trading.signals.decision_engine import run_decision_engine, DecisionResult, describe_strategy
+from live_trading.signals.mtf_filter import compute_mtf_bias, mtf_allows_trade, MtfBias
 from live_trading.signals.wyckoff_engine import calibrate_wyckoff, set_calibrated_config
 from live_trading.mt5.connector import (
     connect, disconnect, ensure_connected,
@@ -417,11 +419,34 @@ class GoldScalperLive:
     # ── Per-bar handler ───────────────────────────────────────────────────────
 
     async def _on_new_bar(self, bar_time: datetime) -> None:
-        # 1. Fetch candles
+        # 1. Fetch M5 candles
         candles = await fetch_candles(SYMBOL, TIMEFRAME, CANDLE_WINDOW)
         if len(candles) < 50:
             log.warning(f"Only {len(candles)} candles returned — skipping bar")
             return
+
+        # 1b. Fetch HTF candles for Multi-Timeframe filter (fail-safe: skipped on error)
+        # HTF bias is computed here — before account / guardian checks — so the
+        # fetch latency overlaps with the (slower) account info call that follows.
+        # compute_mtf_bias() never raises; a bad fetch simply yields htf_bias=None.
+        htf_bias: Optional[MtfBias] = None
+        if MTF_ENABLED:
+            try:
+                htf_candles = await fetch_candles(SYMBOL, MTF_TIMEFRAME, MTF_CANDLE_WINDOW)
+                if len(htf_candles) >= 50:
+                    htf_bias = compute_mtf_bias(htf_candles)
+                    log.info(
+                        f"HTF ({MTF_TIMEFRAME}) bias: {htf_bias.direction}  "
+                        f"trend={htf_bias.trend}  smc={htf_bias.smc_signal}  "
+                        f"regime={htf_bias.regime}  strength={htf_bias.strength}"
+                    )
+                else:
+                    log.warning(
+                        f"HTF candles insufficient ({len(htf_candles)}) "
+                        f"— MTF filter skipped this bar"
+                    )
+            except Exception as _mtf_exc:
+                log.warning(f"MTF fetch/analysis error (fail-safe, skipping): {_mtf_exc}")
 
         # 2. Account info (live, required for Guardian)
         acc_info = await get_account_info()
@@ -593,6 +618,29 @@ class GoldScalperLive:
                 extra=self._guardian_extra(gs),
             )
             return
+
+        # 8b. Gate: Multi-Timeframe alignment
+        # Only runs when decision.allowed=True (we never block an already-rejected
+        # trade with extra noise).  mtf_allows_trade() is a pure function that
+        # never raises and returns (True, "") when htf_bias is None or NEUTRAL.
+        if MTF_ENABLED and htf_bias is not None:
+            _mtf_ok, _mtf_reason = mtf_allows_trade(htf_bias, decision.direction)
+            if not _mtf_ok:
+                log.info(f"⛔  {_mtf_reason}")
+                _mtf_extra = {
+                    **self._guardian_extra(gs),
+                    "htf_bias": {
+                        "direction": htf_bias.direction,
+                        "trend":     htf_bias.trend,
+                        "smc":       htf_bias.smc_signal,
+                        "regime":    htf_bias.regime,
+                        "strength":  htf_bias.strength,
+                        "reasoning": htf_bias.reasoning,
+                        "blocked":   _mtf_reason,
+                    },
+                }
+                self._write_state("SCANNING", acc_info, decision, pos, extra=_mtf_extra)
+                return
 
         # 9. ── PLACE ORDER ────────────────────────────────────────────────────
         tp_params = decision.trade_params
