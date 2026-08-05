@@ -104,11 +104,12 @@ TIMEFRAME     = _timeframe("TIMEFRAME", "5m")
 CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 
 # ── Risk & Trade Rules ───────────────────────────────────────────────────────
-# TESTING MODE: strict filters relaxed to 0 so the robot can trade freely on
-# the demo account. Raise these again via env vars once live-testing is done.
-RISK_PERCENT      = _float("RISK_PERCENT",      1.0, lo=0.01, hi=10.0)
-MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   1,   lo=1,    hi=10)
-CONF_HARD_MIN     = _float("CONF_HARD_MIN",      0.0, lo=0.0, hi=100.0)
+# Production defaults — override via Render env vars if needed.
+# MIN_CONFIRMATIONS: minimum engines that must agree (out of 4: SMC, Trend, PA, Wyckoff).
+# CONF_HARD_MIN: trades below this confidence % are always rejected.
+RISK_PERCENT      = _float("RISK_PERCENT",      1.0,  lo=0.01, hi=10.0)
+MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   3,    lo=1,    hi=10)
+CONF_HARD_MIN     = _float("CONF_HARD_MIN",      35.0, lo=0.0, hi=100.0)
 MAX_OPEN_TRADES   = 1
 
 USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() == "true"

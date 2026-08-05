@@ -93,9 +93,12 @@ def _calc_trend_score(trend: TrendResult, candidate: str):
 
 
 def _calc_pa_score(pa: PriceActionResult, candidate: str):
+    # M-2 FIX: removed pa.pa_score * 13 base multiplier — it double-counted the
+    # same patterns that are explicitly rewarded in the blocks below, inflating
+    # PA contribution by up to 13 pts per strong setup.
     reasons = []
     is_buy  = candidate == "BUY"
-    pts = (pa.pa_score if pa.pa_signal == candidate else 0.0) * 13
+    pts = 0.0
 
     if is_buy:
         if pa.bullish_engulf:              pts += 4; reasons.append("Bullish Engulf")

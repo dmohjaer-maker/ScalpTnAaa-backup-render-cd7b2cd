@@ -16,8 +16,9 @@ from live_trading.signals.entry_filter import apply_entry_filter, EntryFilterRes
 from live_trading.risk.capital_manager import CapitalInput, CapitalOutput, calc_trade_parameters
 from live_trading.config import CONF_HARD_MIN
 
-# TESTING MODE: marginal R:R floor dropped to 0 (see market_regime.py note).
-CONF_MARGINAL_RR = 0.0
+# Marginal confidence R:R floor: trades with confidence between CONF_HARD_MIN
+# and the regime minimum must still achieve this R:R to be allowed.
+CONF_MARGINAL_RR = 1.5
 
 
 @dataclass
@@ -108,10 +109,12 @@ def run_decision_engine(
     regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
 
     _RANGE_REGIMES = {"RANGE", "ACCUMULATION", "DISTRIBUTION", "HIGH_VOLATILITY"}
-    if regime.regime in _RANGE_REGIMES:
-        effective_min_confirmations = min(1, min_confirmations)
-    elif _counter_trend:
-        # Counter-trend needs one extra confirmation to compensate for EMA opposition
+    if _counter_trend:
+        # Counter-trend: one extra confirmation required — EMA opposes direction.
+        effective_min_confirmations = min(min_confirmations + 1, 4)
+    elif regime.regime in _RANGE_REGIMES:
+        # Range/volatile regimes: keep the operator-configured threshold unchanged.
+        # These are dangerous conditions for scalping — do not lower the bar.
         effective_min_confirmations = min_confirmations
     else:
         effective_min_confirmations = min_confirmations
@@ -179,19 +182,34 @@ def run_decision_engine(
                    if ob.type == ("BULLISH" if candidate == "BUY" else "BEARISH")]
     latest_ob = aligned_obs[-1] if aligned_obs else None
 
-    swing_highs = [b.price for b in smc.bos_signals if b.type == "BUY"]
-    swing_lows  = [b.price for b in smc.bos_signals if b.type == "SELL"]
+    entry = last_candle.close
+
+    # H-1 FIX: use most-recent directionally-valid BOS price as the SL anchor,
+    # not the global max/min across all time.
+    # BUY SL anchor: most recent SELL-BOS price below entry (= broken swing low)
+    # SELL SL anchor: most recent BUY-BOS price above entry (= broken swing high)
+    sell_bos_below = [b.price for b in smc.bos_signals if b.type == "SELL" and b.price < entry]
+    buy_bos_above  = [b.price for b in smc.bos_signals if b.type == "BUY"  and b.price > entry]
+
+    # H-2 FIX: populate support/resistance from SMC equal levels (previously always None).
+    # Equal lows = institutional demand / support; equal highs = supply / resistance.
+    eq_support    = (smc.equal_lows[-1].price
+                     if smc.equal_lows  and smc.equal_lows[-1].price  < entry else None)
+    eq_resistance = (smc.equal_highs[-1].price
+                     if smc.equal_highs and smc.equal_highs[-1].price > entry else None)
 
     cap_input = CapitalInput(
         direction=candidate,
-        entry_price=last_candle.close,
+        entry_price=entry,
         atr=regime.atr,
         account_balance=account_balance,
         risk_percent=risk_percent,
         order_block_top=latest_ob.high if latest_ob else None,
         order_block_bottom=latest_ob.low if latest_ob else None,
-        swing_high=max(swing_highs) if swing_highs else None,
-        swing_low=min(swing_lows)   if swing_lows  else None,
+        swing_high=buy_bos_above[-1]  if buy_bos_above  else None,
+        swing_low=sell_bos_below[-1]  if sell_bos_below else None,
+        support_level=eq_support,
+        resistance_level=eq_resistance,
     )
     trade_params = calc_trade_parameters(cap_input)
 

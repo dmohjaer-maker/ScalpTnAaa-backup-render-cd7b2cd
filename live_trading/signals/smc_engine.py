@@ -196,6 +196,11 @@ def _detect_bos_and_choch(
                 recent_sl_pos = k
                 break
 
+        # M-3 FIX: one structural break per bar — bullish checked first,
+        # bearish skipped if bullish already fired (prevents BUY+SELL dual
+        # signals on wide news candles that pierce both a swing high and low).
+        bar_broke = False
+
         # Bullish break
         if recent_sh_pos >= 0:
             sh_price   = candles[swing_high_idx[recent_sh_pos]].high
@@ -212,9 +217,10 @@ def _detect_bos_and_choch(
                     if len(recent_bos_dir) >= 2 and all(d == "BUY" for d in recent_bos_dir[-2:]):
                         local_trend = "BULLISH"
                 used_highs.add(recent_sh_pos)
+                bar_broke = True
 
-        # Bearish break
-        if recent_sl_pos >= 0:
+        # Bearish break (skipped if bullish break already registered this bar)
+        if not bar_broke and recent_sl_pos >= 0:
             sl_price   = candles[swing_low_idx[recent_sl_pos]].low
             break_dist = sl_price - c.close
             min_body   = choch_body_ratio if local_trend == "BULLISH" else cfg.min_bos_body_ratio

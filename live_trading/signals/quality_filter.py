@@ -119,7 +119,7 @@ def _is_weak_volume(candles: List[OHLCV]) -> bool:
         return False
     avg_vol  = sum(c.volume for c in candles[-21:-1]) / 20
     curr_vol = candles[-1].volume
-    return avg_vol > 0 and curr_vol < avg_vol * 0.05
+    return avg_vol > 0 and curr_vol < avg_vol * 0.35
 
 
 def apply_quality_filter(
@@ -145,25 +145,33 @@ def apply_quality_filter(
         blocked.blocked_reasons = ["No SMC direction signal"]
         return blocked
 
-    # TESTING MODE: session/severe-range/late-entry/low-momentum/weak-volume
-    # sub-filters are still computed (for panel/logging visibility) but no
-    # longer block a trade. Only the confidence hard-floor (CONF_HARD_MIN,
-    # now 0% by default) can still reject here.
     reasons = []
     last_candle = candles[-1]
 
+    # C-2 FIX: respect BLOCKED sessions — do not override to MODERATE.
+    # BLOCKED hours represent illiquid periods where slippage and false
+    # breakouts are significantly elevated.
     session = get_session_quality(last_candle.time)
     if session == "BLOCKED":
-        session = "MODERATE"
+        reasons.append("Outside tradeable session (BLOCKED hours)")
 
     adx_val   = adx if adx is not None else calc_adx(candles)
     sev_range = _is_severe_range(candles, adx_val)
+    if sev_range:
+        reasons.append("Severe range / compressed volatility — ADX too low")
 
     late = _is_late_entry(candles, last_bos_bar)
+    if late:
+        reasons.append("Late entry: price over-extended from EMA50 or BOS is stale")
 
-    low_mom = adx_val < 2
+    # H-3 FIX: ADX < 20 indicates no meaningful trend momentum (was: < 2).
+    low_mom = adx_val < 20
+    if low_mom:
+        reasons.append(f"Low momentum: ADX {adx_val:.1f} < 20")
 
     weak_vol = _is_weak_volume(candles)
+    # Note: volume filter is informational only — MT5 tick volume is a proxy,
+    # not real market depth, so we log the flag but do not block on it.
 
     low_prob = confidence < CONF_HARD_MIN
     if low_prob:

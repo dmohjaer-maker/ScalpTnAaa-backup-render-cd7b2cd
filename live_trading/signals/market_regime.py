@@ -39,22 +39,22 @@ class RegimeResult:
     description: str
 
 
-# TESTING MODE: min_confidence and min_rr dropped to 0 across every regime so
-# the decision engine never rejects a trade on confidence/R:R grounds. Only
-# directional gates (allow_long/allow_short) remain, since those are basic
-# trend-alignment logic rather than a strictness knob.
+# Production regime rules — min_confidence and min_rr calibrated per-regime.
+# Trending regimes have a lower bar; ranging/volatile regimes require stronger setups.
+# Override individual thresholds via REGIME_RULES at runtime if needed.
 REGIME_RULES = {
-    "STRONG_TREND_BULL": RegimeEntryRules(0, 0.0, True,  False, 1.0,  "Strong Bull Trend"),
-    "STRONG_TREND_BEAR": RegimeEntryRules(0, 0.0, False, True,  1.0,  "Strong Bear Trend"),
-    "WEAK_TREND_BULL":   RegimeEntryRules(0, 0.0, True,  False, 0.9,  "Weak Bull Trend"),
-    "WEAK_TREND_BEAR":   RegimeEntryRules(0, 0.0, False, True,  0.9,  "Weak Bear Trend"),
-    "PULLBACK_BULL":     RegimeEntryRules(0, 0.0, True,  False, 0.95, "Bull Pullback"),
-    "PULLBACK_BEAR":     RegimeEntryRules(0, 0.0, False, True,  0.95, "Bear Pullback"),
-    "RANGE":             RegimeEntryRules(0, 0.0, True,  True,  0.8,  "Range / Choppy"),
-    "ACCUMULATION":      RegimeEntryRules(0, 0.0, True,  False, 1.0,  "Wyckoff Accumulation"),
-    "DISTRIBUTION":      RegimeEntryRules(0, 0.0, False, True,  1.0,  "Wyckoff Distribution"),
-    "HIGH_VOLATILITY":   RegimeEntryRules(0, 0.0, True,  True,  1.3,  "High Volatility"),
-    "LOW_VOLATILITY":    RegimeEntryRules(0, 0.0, True,  True,  0.7,  "Low Volatility / Squeeze"),
+    #                                           min_conf  min_rr  long   short  sl_mult  label
+    "STRONG_TREND_BULL": RegimeEntryRules(50,  1.5,  True,  False, 1.0,  "Strong Bull Trend"),
+    "STRONG_TREND_BEAR": RegimeEntryRules(50,  1.5,  False, True,  1.0,  "Strong Bear Trend"),
+    "WEAK_TREND_BULL":   RegimeEntryRules(55,  1.8,  True,  False, 0.9,  "Weak Bull Trend"),
+    "WEAK_TREND_BEAR":   RegimeEntryRules(55,  1.8,  False, True,  0.9,  "Weak Bear Trend"),
+    "PULLBACK_BULL":     RegimeEntryRules(60,  2.0,  True,  False, 0.95, "Bull Pullback"),
+    "PULLBACK_BEAR":     RegimeEntryRules(60,  2.0,  False, True,  0.95, "Bear Pullback"),
+    "RANGE":             RegimeEntryRules(65,  2.5,  True,  True,  0.8,  "Range / Choppy"),
+    "ACCUMULATION":      RegimeEntryRules(60,  2.0,  True,  False, 1.0,  "Wyckoff Accumulation"),
+    "DISTRIBUTION":      RegimeEntryRules(60,  2.0,  False, True,  1.0,  "Wyckoff Distribution"),
+    "HIGH_VOLATILITY":   RegimeEntryRules(70,  2.5,  True,  True,  1.3,  "High Volatility"),
+    "LOW_VOLATILITY":    RegimeEntryRules(50,  1.5,  True,  True,  0.7,  "Low Volatility / Squeeze"),
 }
 
 
@@ -79,7 +79,7 @@ def _calc_atr_values(candles: List[OHLCV], period: int = 20):
 
 def calc_adx(candles: List[OHLCV], period: int = 14) -> float:
     if len(candles) < period * 2:
-        return 25.0
+        return 20.0  # conservative non-trending default when data is insufficient
     n = len(candles)
     trs, dm_p, dm_m = [], [], []
     for i in range(1, n):
@@ -102,7 +102,7 @@ def calc_adx(candles: List[OHLCV], period: int = 14) -> float:
         total = di_p + di_m
         dx_arr.append(100 * abs(di_p - di_m) / total if total > 0 else 0)
     if len(dx_arr) < period:
-        return 25.0
+        return 20.0  # conservative non-trending default
     return round(sum(dx_arr[-period:]) / period, 2)
 
 
