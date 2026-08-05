@@ -6,6 +6,12 @@ services:
     dockerfilePath: ./mtapi-bridge/Dockerfile
     plan: free
     healthCheckPath: /Ping
+    # Only redeploy when mtapi-bridge files actually change.
+    # Without this filter, every Python commit (live_trading/, telegram_panel/)
+    # triggers an unnecessary Docker redeploy that restarts Wine/MT5 from
+    # scratch — the primary cause of the repeated "Failed deploy" status.
+    paths:
+      - mtapi-bridge/**
     envVars:
       - key: MT5_HOST
         value: "AMarkets-Demo"
