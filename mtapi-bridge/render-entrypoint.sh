@@ -13,19 +13,28 @@
 # Fix strategy:
 #   socat creates a lightweight TCP forwarder that listens on $PORT and
 #   forwards every connection to localhost:80 where mt5rest is running.
-#   This script starts the proxy in the background, then exec-s the original
-#   container command so that:
+#   This script starts the proxy in the background, then runs the original
+#   container command in a supervised restart loop so that:
 #     - mt5rest starts exactly as before (no application changes)
 #     - Render's health check reaches /Ping through the proxy
 #     - The trading robot's MTAPI_URL works through Render's reverse proxy
-#     - Signals (SIGTERM / SIGINT) are delivered directly to the mt5rest
-#       process because we use exec, not a nested shell
+#     - Wine/dotnet transient startup failures are recovered automatically
+#       without the container exiting (which Render would count as earlyExit
+#       and mark the deploy as failed)
+#
+# Wine startup behaviour on Render free tier:
+#   The mt5rest image runs a Windows .NET application under Wine.  Wine can
+#   fail to initialise on the first attempt due to resource contention on
+#   shared infrastructure.  The original "exec" approach caused the container
+#   to exit on every Wine crash, triggering a Render deploy failure and a
+#   restart loop visible in the dashboard.  The supervised loop below keeps
+#   the container (PID 1 = this script) alive through transient Wine crashes,
+#   restarting the child process automatically until Wine initialises
+#   successfully and /Ping begins responding.
 #
 # Local / Docker Compose usage:
 #   When PORT is not set or equals 80, the proxy is skipped entirely so
 #   local development and non-Render deployments are unaffected.
-
-set -e
 
 _PORT="${PORT:-80}"
 
@@ -40,7 +49,39 @@ else
     echo "[render-entrypoint] PORT=80 — running without proxy (local / Docker Compose mode)"
 fi
 
-# Hand off to the original container command.
-# exec replaces this shell with the mt5rest process so it becomes PID 1 and
-# receives all OS signals directly — critical for graceful shutdown on Render.
-exec "$@"
+# ── Supervised restart loop ───────────────────────────────────────────────────
+# Keep PID 1 (this script) alive so Render never sees an earlyExit.
+# On SIGTERM/SIGINT (graceful shutdown from Render), forward the signal to the
+# running child and exit cleanly.
+
+_CHILD_PID=""
+
+_shutdown() {
+    echo "[render-entrypoint] Shutdown signal received — stopping mt5rest (pid=${_CHILD_PID})"
+    if [ -n "$_CHILD_PID" ]; then
+        kill "$_CHILD_PID" 2>/dev/null || true
+        wait "$_CHILD_PID" 2>/dev/null || true
+    fi
+    exit 0
+}
+
+trap _shutdown SIGTERM SIGINT
+
+echo "[render-entrypoint] Starting mt5rest with supervised restart loop..."
+while true; do
+    # Run the original container command as a child (not exec) so this script
+    # remains PID 1 and can catch signals and restart on failure.
+    "$@" &
+    _CHILD_PID=$!
+    wait "$_CHILD_PID"
+    _EXIT=$?
+    _CHILD_PID=""
+
+    if [ "$_EXIT" -eq 0 ]; then
+        echo "[render-entrypoint] mt5rest exited cleanly (code=0) — shutting down"
+        break
+    fi
+
+    echo "[render-entrypoint] mt5rest exited (code=${_EXIT}) — Wine/dotnet crash detected, restarting in 5s..."
+    sleep 5
+done
