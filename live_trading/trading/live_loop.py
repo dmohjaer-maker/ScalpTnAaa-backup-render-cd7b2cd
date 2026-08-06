@@ -39,6 +39,7 @@ from live_trading.config import (
     TRAIL_LOCK_BUFFER_R, TRAIL_ATR_GAP_MULT, TRAIL_MIN_STEP_PRICE,
     MTF_ENABLED, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
     TRADE_TIMEFRAMES,
+    SNIPER_ENABLED, SNIPER_DISPLACEMENT_MIN, SNIPER_REQUIRE_ZONE, SNIPER_SWEEP_LOOKBACK,
 )
 from live_trading.logger import get_logger
 from live_trading.risk.guardian import RiskGuardian, GuardianStatus
@@ -47,6 +48,7 @@ from live_trading.risk.trailing_stop import (
 )
 from live_trading.signals.decision_engine import run_decision_engine, DecisionResult, describe_strategy
 from live_trading.signals.mtf_filter import compute_mtf_bias, mtf_allows_trade, MtfBias
+from live_trading.signals.sniper_filter import sniper_entry_allowed, SniperResult
 from live_trading.signals.wyckoff_engine import calibrate_wyckoff, set_calibrated_config
 from live_trading.mt5.connector import (
     connect, disconnect, ensure_connected,
@@ -666,6 +668,38 @@ class GoldScalperLive:
                 }
                 self._write_state("SCANNING", acc_info, decision, pos, extra=_mtf_extra)
                 return
+
+        # 8c. Gate: Sniper Entry Filter
+        # Only runs when decision.allowed=True AND MTF passed.  Checks three
+        # precision conditions: displacement candle, FVG/OB zone, liquidity sweep.
+        # Uses decision.smc which is already computed — zero extra latency.
+        # sniper_entry_allowed() never raises; any error silently passes through.
+        if SNIPER_ENABLED:
+            _sniper: SniperResult = sniper_entry_allowed(candles, decision.smc, decision.direction)
+            if not _sniper.allowed:
+                log.info(
+                    f"⛔  SNIPER BLOCK [{tf}] → {_sniper.reason}"
+                )
+                self._write_state(
+                    "SCANNING", acc_info, decision, pos,
+                    extra={
+                        **self._guardian_extra(gs),
+                        "sniper": {
+                            "blocked":        True,
+                            "reason":         _sniper.reason,
+                            "displacement_ok":_sniper.displacement_ok,
+                            "in_fvg":         _sniper.in_fvg,
+                            "in_ob":          _sniper.in_ob,
+                            "has_sweep":      _sniper.has_recent_sweep,
+                            "details":        _sniper.details[-3:],
+                        },
+                    },
+                )
+                return
+            # Log sniper pass details at DEBUG level (verbose but useful for tuning)
+            log.debug(
+                f"✅ Sniper OK [{tf}]: " + " | ".join(_sniper.details[-2:])
+            )
 
         # 9. ── PLACE ORDER ────────────────────────────────────────────────────
         tp_params = decision.trade_params
