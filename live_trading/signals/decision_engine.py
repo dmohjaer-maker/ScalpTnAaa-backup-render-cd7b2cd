@@ -18,7 +18,8 @@ from live_trading.config import CONF_HARD_MIN
 
 # Marginal confidence R:R floor: trades with confidence between CONF_HARD_MIN
 # and the regime minimum must still achieve this R:R to be allowed.
-CONF_MARGINAL_RR = 1.5
+# 1.3 = profitable in expectancy even at 45% win rate (1.3 × 0.45 > 0.55).
+CONF_MARGINAL_RR = 1.3
 
 
 @dataclass
