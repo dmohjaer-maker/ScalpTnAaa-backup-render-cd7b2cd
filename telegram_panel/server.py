@@ -28,11 +28,11 @@ PORT = int(os.environ.get("PORT", 8081))
 _BACKOFF_BASE = 10
 _BACKOFF_MAX  = 300
 
-# Self-ping keepalive: ping /health every 14 min to prevent Render free-tier
+# Self-ping keepalive: ping /health every 8 min to prevent Render free-tier
 # web services from spinning down after 15 min of inactivity.
 # Render deploys the panel as a web service (not a worker) so the 15-min
-# sleep timer applies.  14 min < 15 min threshold.
-_KEEPALIVE_INTERVAL_SECONDS = 840  # 14 minutes
+# sleep timer applies.  8 min gives a 7-min safety buffer (was 1 min at 14 min).
+_KEEPALIVE_INTERVAL_SECONDS = 480  # 8 minutes — matches robot keepalive interval
 
 
 async def _health(_req: web.Request) -> web.Response:
@@ -53,34 +53,70 @@ async def _run_health_server() -> None:
 
 
 async def _keepalive() -> None:
-    """External-ping /health every 14 min to prevent Render free-tier sleep.
+    """Ping panel, robot, and mtapi every 8 min to keep the entire chain alive.
+
+    ROOT-CAUSE FIX: The previous implementation only pinged the panel itself
+    every 14 minutes — dangerously close to Render's 15-minute free-tier sleep
+    threshold.  A single slow or failed ping left a 14-minute window where the
+    service could go to sleep.
+
+    Fix:
+    - Interval reduced from 840 s (14 min) to 480 s (8 min), matching the
+      robot's own keepalive interval and giving a 7-minute safety buffer.
+    - Panel now also pings the robot (/health) and mtapi (/Ping) so that even
+      if the robot's own internal keepalive is in a backoff/restart cycle, the
+      panel acts as a second keepalive for the whole stack.
 
     Render's inactivity timer is reset only by EXTERNAL HTTP requests routed
     through Render's edge — localhost/127.0.0.1 requests bypass the edge and
     do NOT reset the timer.
-
-    We read RENDER_EXTERNAL_URL (set in render.yaml) for the external URL.
-    Fallback: localhost (only effective when running locally, not on Render).
     """
     await asyncio.sleep(30)  # wait for health server to start
     import aiohttp
     external_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
-    if external_url:
-        url = f"{external_url}/health"
-    else:
-        url = f"http://127.0.0.1:{PORT}/health"
-    print(f"[keepalive] will ping {url} every {_KEEPALIVE_INTERVAL_SECONDS}s", flush=True)
+    robot_url    = os.environ.get("ROBOT_BASE_URL",      "").rstrip("/")
+    mtapi_url    = os.environ.get("MTAPI_URL",           "").rstrip("/")
+
+    own_url = f"{external_url}/health" if external_url else f"http://127.0.0.1:{PORT}/health"
+    print(
+        f"[keepalive] panel={own_url}  robot={robot_url or '(not set)'}  "
+        f"mtapi={mtapi_url or '(not set)'}  interval={_KEEPALIVE_INTERVAL_SECONDS}s",
+        flush=True,
+    )
     # Reuse a single persistent session — creating a new ClientSession on every
     # iteration wastes connection-pool resources and produces ResourceWarning
     # noise in aiohttp >= 3.9.
     session = aiohttp.ClientSession()
     try:
         while True:
+            # 1. Keep panel itself alive
             try:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    print(f"[keepalive] ping /health -> {resp.status}", flush=True)
+                async with session.get(own_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    print(f"[keepalive] panel /health → {resp.status}", flush=True)
             except Exception as exc:
-                print(f"[keepalive] ping failed: {exc}", flush=True)
+                print(f"[keepalive] panel /health failed: {exc}", flush=True)
+
+            # 2. Keep robot alive (belt-and-suspenders alongside robot's own keepalive)
+            if robot_url:
+                try:
+                    async with session.get(
+                        f"{robot_url}/health", timeout=aiohttp.ClientTimeout(total=20)
+                    ) as resp:
+                        print(f"[keepalive] robot /health → {resp.status}", flush=True)
+                except Exception as exc:
+                    print(f"[keepalive] robot /health failed: {exc}", flush=True)
+
+            # 3. Keep mtapi (mt5rest Docker bridge) alive — Wine cold-start is
+            #    60-90 s, so keeping it warm avoids the 90-s reconnect delay.
+            if mtapi_url:
+                try:
+                    async with session.get(
+                        f"{mtapi_url}/Ping", timeout=aiohttp.ClientTimeout(total=30)
+                    ) as resp:
+                        print(f"[keepalive] mtapi /Ping → {resp.status}", flush=True)
+                except Exception as exc:
+                    print(f"[keepalive] mtapi /Ping failed: {exc}", flush=True)
+
             await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
     finally:
         await session.close()

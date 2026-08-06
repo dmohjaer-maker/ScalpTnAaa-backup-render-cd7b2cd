@@ -50,7 +50,12 @@ _last_connect_time: float = 0.0   # monotonic timestamp of last successful conne
 # isConnected=true on ConnectionStatus.  During this window ensure_connected()
 # would wrongly declare DISCONNECTED and trigger an immediate reconnect loop.
 # The grace period suppresses that false failure.
-_CONNECT_GRACE_PERIOD: float = 90.0   # seconds — Wine on Render free tier needs 60-90 s to fully init
+_CONNECT_GRACE_PERIOD: float = 150.0  # seconds — ROOT-CAUSE FIX: Wine cold-start on Render free tier
+# takes 60-90 s, plus 30-60 s for the service to wake from sleep, totalling up
+# to 150 s before isConnected=true is reliable.  90 s was too short: the grace
+# period expired mid-startup, causing ensure_connected() to detect a false
+# DISCONNECTED and trigger an immediate reconnect that aborted the in-progress
+# ConnectEx — producing the continuous 'Connection Lost' loop in the panel.
 
 # Prevents concurrent reconnect attempts when multiple coroutines detect a
 # stale connection at the same time (e.g. fetch_candles + ensure_connected
