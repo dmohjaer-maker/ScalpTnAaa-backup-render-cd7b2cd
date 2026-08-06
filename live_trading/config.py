@@ -72,8 +72,52 @@ def _float(name: str, default: float, lo: float | None = None, hi: float | None 
 
 
 # ── Valid timeframe labels ────────────────────────────────────────────────────
-_VALID_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h", "4h", "1d",
-                     "M1", "M5", "M15", "M30", "H1", "H4", "D1"}
+_VALID_TIMEFRAMES = {
+    "1m", "5m", "10m", "15m", "20m", "30m", "1h", "4h", "1d",
+    "M1", "M5", "M10", "M15", "M20", "M30", "H1", "H4", "D1",
+}
+
+# Minute-equivalent of every supported timeframe — used to sort TRADE_TIMEFRAMES
+# highest-first so that longer TF signals always get evaluated before shorter ones.
+_TF_MINUTES: dict[str, int] = {
+    "1m": 1,   "M1":  1,
+    "5m": 5,   "M5":  5,
+    "10m": 10, "M10": 10,
+    "15m": 15, "M15": 15,
+    "20m": 20, "M20": 20,
+    "30m": 30, "M30": 30,
+    "1h":  60, "H1":  60,
+    "4h":  240,"H4":  240,
+    "1d":  1440,"D1": 1440,
+}
+
+
+def _trade_timeframes(name: str, default: str) -> list[str]:
+    """Parse a comma-separated list of timeframe labels, validate each entry
+    against _VALID_TIMEFRAMES, and return them sorted highest-first.
+
+    Example:  TRADE_TIMEFRAMES=M20,M15,M10,5m  →  ["M20","M15","M10","5m"]
+    """
+    raw = os.getenv(name, default)
+    tfs = [tf.strip() for tf in raw.split(",") if tf.strip()]
+    if not tfs:
+        print(
+            f"ERROR: {name} is empty. Provide a comma-separated list "
+            f"of timeframes, e.g. M20,M15,M10,5m",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    for tf in tfs:
+        if tf not in _VALID_TIMEFRAMES:
+            print(
+                f"ERROR: {name} contains invalid timeframe {tf!r}. "
+                f"Valid values: {', '.join(sorted(_VALID_TIMEFRAMES))}. "
+                f"Fix it in the Render dashboard and redeploy.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    # Sort highest-first so the loop processes longer-TF signals first.
+    return sorted(tfs, key=lambda t: _TF_MINUTES.get(t, 0), reverse=True)
 
 
 def _timeframe(name: str, default: str) -> str:
@@ -129,6 +173,21 @@ USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() 
 MTF_ENABLED       = os.getenv("MTF_ENABLED",   "true").lower() == "true"
 MTF_TIMEFRAME     = _timeframe("MTF_TIMEFRAME",  "H1")
 MTF_CANDLE_WINDOW = _int("MTF_CANDLE_WINDOW",    300, lo=50, hi=1000)
+
+# ── Trade Timeframes (Multi-Timeframe entry) ─────────────────────────────────
+# Comma-separated list of timeframes the robot will watch for new bars and
+# generate independent trade signals on.  Sorted automatically highest-first
+# so M20 and M15 signals take priority over M10 and M5 when bars close
+# simultaneously (e.g. at minute :20 all four TFs close at once).
+#
+# The H1 HTF bias filter (MTF_TIMEFRAME above) is separate — it is always
+# computed on H1 regardless of which trade TFs are active, because H1
+# represents the directional context for the whole session.
+#
+# Recommended:  "M20,M15,M10,5m"  (4 TFs = ~2-4 entries/day per TF)
+# Conservative: "M15,5m"           (2 TFs = cleaner, fewer signals)
+# Aggressive:   "M20,M15,M10,5m"   (same as recommended)
+TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M20,M15,M10,5m")
 
 
 # ── Order Settings ───────────────────────────────────────────────────────────
