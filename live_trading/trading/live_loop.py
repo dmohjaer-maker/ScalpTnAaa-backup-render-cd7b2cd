@@ -146,7 +146,7 @@ class GoldScalperLive:
         # Restore trade history from previous session (survives restarts)
         self.trade_history = self._load_trade_history()
 
-        connected = await connect_with_retry(max_attempts=5, retry_delay=60.0)
+        connected = await connect_with_retry(max_attempts=12, retry_delay=30.0)
         if not connected:
             log.error("Could not connect to MT5 via mt5rest bridge after 5 attempts. "
                       "Check MTAPI_URL, MT5_USER, and MT5_PASSWORD.")
