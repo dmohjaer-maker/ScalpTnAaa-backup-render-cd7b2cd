@@ -35,8 +35,8 @@ _ALLOWED_COMMANDS = frozenset({
     "UPDATE_RISK", "UPDATE_STRATEGY",
 })
 
-_BACKOFF_BASE = 30
-_BACKOFF_MAX  = 300
+_BACKOFF_BASE = 15
+_BACKOFF_MAX  = 120
 _backoff      = _BACKOFF_BASE
 _robot_status = "STARTING"
 # Only truly fatal states (config errors, unhandled crashes) return 503.
