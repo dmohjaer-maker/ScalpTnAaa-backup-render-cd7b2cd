@@ -38,6 +38,7 @@ from live_trading.config import (
     TRAIL_ENABLED, TRAIL_ACTIVATION_R, TRAIL_STEP_R,
     TRAIL_LOCK_BUFFER_R, TRAIL_ATR_GAP_MULT, TRAIL_MIN_STEP_PRICE,
     MTF_ENABLED, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
+    TRADE_TIMEFRAMES,
 )
 from live_trading.logger import get_logger
 from live_trading.risk.guardian import RiskGuardian, GuardianStatus
@@ -80,7 +81,11 @@ class GoldScalperLive:
         self.running: bool = True
         self.paused:  bool = False
         self.loop_count: int = 0
-        self.last_bar_time: Optional[datetime] = None
+        # Multi-TF bar tracking: one last-seen bar-time per trade timeframe.
+        # Initialised to None so the first bar on every TF is always processed.
+        self._last_bar_times: dict[str, Optional[datetime]] = {
+            tf: None for tf in TRADE_TIMEFRAMES
+        }
         self.trade_history: List[dict] = []
         self.last_decision: Optional[DecisionResult] = None
 
@@ -126,7 +131,7 @@ class GoldScalperLive:
     async def start(self) -> bool:
         log.info("=" * 60)
         log.info("  GoldScalperPro v4 — LIVE TRADING ENGINE (mt5rest)")
-        log.info(f"  Symbol: {SYMBOL}  |  TF: {TIMEFRAME}")
+        log.info(f"  Symbol: {SYMBOL}  |  Trade TFs: {chr(44).join(TRADE_TIMEFRAMES)} (highest first)")
         log.info(f"  Risk: {RISK_PERCENT}%  |  Max positions: {MAX_OPEN_TRADES}")
         log.info(f"  Min confirmations: {MIN_CONFIRMATIONS}")
         log.info(f"  Daily loss limit: {DAILY_LOSS_LIMIT_PCT}%  |  "
@@ -311,8 +316,11 @@ class GoldScalperLive:
                 pass
 
     async def _run_loop(self) -> None:
-        log.info("Entering main loop — checking every "
-                 f"{BAR_CHECK_INTERVAL}s for new M5 bar …")
+        log.info(
+            f"Entering main loop — checking every {BAR_CHECK_INTERVAL}s "
+            f"across {len(TRADE_TIMEFRAMES)} timeframes: "
+            + ", ".join(TRADE_TIMEFRAMES) + " …"
+        )
         try:
             while self.running:
                 await self._process_commands()
@@ -352,12 +360,15 @@ class GoldScalperLive:
                 # a step, not up to 5 minutes late.
                 await self._manage_trailing_stop()
 
-                new_bar = await self._is_new_bar()
-                if new_bar:
-                    self.loop_count += 1
-                    log.info(f"─── Bar #{self.loop_count} "
-                             f"at {new_bar.isoformat()} ───")
-                    await self._on_new_bar(new_bar)
+                new_bars = await self._check_new_bars()
+                if new_bars:
+                    for _tf, _bar_time in new_bars:
+                        self.loop_count += 1
+                        log.info(
+                            f"─── Bar #{self.loop_count} [{_tf}] "
+                            f"at {_bar_time.isoformat()} ───"
+                        )
+                        await self._on_new_bar(_bar_time, _tf)
                 else:
                     # Refresh account info every _ACC_REFRESH_INTERVAL seconds
                     # so the panel shows current balance/equity between candles.
@@ -407,20 +418,34 @@ class GoldScalperLive:
 
     # ── Bar detection ─────────────────────────────────────────────────────────
 
-    async def _is_new_bar(self) -> Optional[datetime]:
-        bar_time = await get_last_completed_bar_time(SYMBOL, TIMEFRAME)
-        if bar_time is None:
-            return None
-        if self.last_bar_time is None or bar_time > self.last_bar_time:
-            self.last_bar_time = bar_time
-            return bar_time
-        return None
+    async def _check_new_bars(self) -> list[tuple[str, datetime]]:
+        """Poll every configured trade timeframe and return a list of
+        (timeframe, bar_time) pairs for every TF that has a new completed bar
+        since the last tick.  Results preserve TRADE_TIMEFRAMES order, which
+        is already sorted highest-first, so M20 signals are processed before
+        M15, then M10, then M5.  If M20 opens a position, the M15/M10/M5
+        handlers in the same tick will see it via get_open_positions() and
+        skip entry, preventing duplicate positions.
+        Never raises — individual TF errors are logged and skipped."""
+        results: list[tuple[str, datetime]] = []
+        for tf in TRADE_TIMEFRAMES:
+            try:
+                bt = await get_last_completed_bar_time(SYMBOL, tf)
+                if bt is None:
+                    continue
+                prev = self._last_bar_times.get(tf)
+                if prev is None or bt > prev:
+                    self._last_bar_times[tf] = bt
+                    results.append((tf, bt))
+            except Exception as _bar_err:
+                log.warning(f"[{tf}] Bar time check failed: {_bar_err}")
+        return results
 
     # ── Per-bar handler ───────────────────────────────────────────────────────
 
-    async def _on_new_bar(self, bar_time: datetime) -> None:
-        # 1. Fetch M5 candles
-        candles = await fetch_candles(SYMBOL, TIMEFRAME, CANDLE_WINDOW)
+    async def _on_new_bar(self, bar_time: datetime, tf: str = TIMEFRAME) -> None:
+        # 1. Fetch candles for this timeframe (M5 / M10 / M15 / M20)
+        candles = await fetch_candles(SYMBOL, tf, CANDLE_WINDOW)
         if len(candles) < 50:
             log.warning(f"Only {len(candles)} candles returned — skipping bar")
             return
@@ -436,7 +461,7 @@ class GoldScalperLive:
                 if len(htf_candles) >= 50:
                     htf_bias = compute_mtf_bias(htf_candles)
                     log.info(
-                        f"HTF ({MTF_TIMEFRAME}) bias: {htf_bias.direction}  "
+                        f"[{tf}] HTF ({MTF_TIMEFRAME}) bias: {htf_bias.direction}  "
                         f"trend={htf_bias.trend}  smc={htf_bias.smc_signal}  "
                         f"regime={htf_bias.regime}  strength={htf_bias.strength}"
                     )
@@ -645,7 +670,7 @@ class GoldScalperLive:
         # 9. ── PLACE ORDER ────────────────────────────────────────────────────
         tp_params = decision.trade_params
         log.info(
-            f"🔔 SIGNAL {decision.direction}  "
+            f"🔔 SIGNAL [{tf}] {decision.direction}  "
             f"conf={decision.confidence:.1f}%  "
             f"lot={tp_params.lot_size}  "
             f"SL={tp_params.stop_loss}  TP={tp_params.take_profit}  "
