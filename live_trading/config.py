@@ -189,6 +189,26 @@ MTF_CANDLE_WINDOW = _int("MTF_CANDLE_WINDOW",    300, lo=50, hi=1000)
 # Aggressive:   "M20,M15,M10,5m"   (same as recommended)
 TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M20,M15,M10,5m")
 
+# ── Sniper Entry Filter ──────────────────────────────────────────────────────
+# Three-gate precision entry system.  Enabled by default.
+# Set SNIPER_ENABLED=false to revert to immediate bar-close entry instantly.
+#
+# SNIPER_DISPLACEMENT_MIN : body/range ratio the trigger candle must meet.
+#   0.55 = 55% body → rules out doji and spinning-top trigger candles.
+#   Increase to 0.70 for stricter displacement, decrease to 0.45 for more trades.
+#
+# SNIPER_REQUIRE_ZONE : when true, price must be inside an active FVG or
+#   Order Block before entry is allowed.  This is the "wait for pullback"
+#   condition — price must return to a structural zone, not be chased.
+#   Set false to disable zone checking (keeps displacement check only).
+#
+# SNIPER_SWEEP_LOOKBACK : number of bars to look back for a liquidity sweep
+#   bonus signal.  Purely informational — does not block or allow trades.
+SNIPER_ENABLED          = os.getenv("SNIPER_ENABLED",       "true").lower() == "true"
+SNIPER_DISPLACEMENT_MIN = _float("SNIPER_DISPLACEMENT_MIN", 0.55, lo=0.30, hi=0.95)
+SNIPER_REQUIRE_ZONE     = os.getenv("SNIPER_REQUIRE_ZONE",  "true").lower() == "true"
+SNIPER_SWEEP_LOOKBACK   = _int("SNIPER_SWEEP_LOOKBACK",     8,    lo=1,    hi=30)
+
 
 # ── Order Settings ───────────────────────────────────────────────────────────
 COMMENT = "GSPv4"
