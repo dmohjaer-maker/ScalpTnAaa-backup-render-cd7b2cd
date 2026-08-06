@@ -110,6 +110,11 @@ CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 RISK_PERCENT      = _float("RISK_PERCENT",      1.0,  lo=0.01, hi=10.0)
 MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   3,    lo=1,    hi=10)
 CONF_HARD_MIN     = _float("CONF_HARD_MIN",      35.0, lo=0.0, hi=100.0)
+# QUALITY_ADX_MIN: minimum ADX value required to confirm trend momentum.
+# Below this threshold the quality filter rejects the signal as "low momentum".
+# 15 is the recommended floor for M5 gold — catches genuine micro-trends
+# without blocking valid moves that ADX=20 would silently filter out.
+QUALITY_ADX_MIN   = _float("QUALITY_ADX_MIN",    15.0, lo=5.0,  hi=40.0)
 MAX_OPEN_TRADES   = 1
 
 USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() == "true"
