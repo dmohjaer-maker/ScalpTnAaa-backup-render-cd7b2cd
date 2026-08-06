@@ -150,6 +150,11 @@ class HeartbeatMonitor:
         if self._mt5 is not None:
             try:
                 positions = await self._mt5.get_open_positions()
+                # Exclude positions with invalid tickets (0 or None) — these
+                # are phantom bridge rows that slipped through earlier filters.
+                # Treating ticket=0 as a "new" position would send a spurious
+                # TRADE OPENED notification with fabricated direction/volume.
+                positions = [p for p in positions if p.ticket and p.ticket != 0]
                 current_tickets = {p.ticket for p in positions}
                 if self._known_position_tickets is None:
                     # First poll: just establish the baseline, never notify —

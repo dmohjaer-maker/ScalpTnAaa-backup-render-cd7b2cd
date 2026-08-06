@@ -62,17 +62,37 @@ class MT5Service:
             "connection_status": info.get("connection_status", "disconnected"),
         }
 
+    # Matches live_trading/mt5/connector._MAX_SANE_VOLUME_LOTS.
+    # Any position with a volume above this threshold is a phantom bridge
+    # artifact — no retail gold account can hold this many lots.
+    _MAX_SANE_VOLUME_LOTS: float = 100.0
+
     async def get_open_positions(self) -> list[Position]:
         snapshot = await self._read_snapshot()
         positions_raw = snapshot.get("open_positions", [])
         positions = []
         for raw in positions_raw:
             try:
+                # Safety net: drop phantom rows with insane volume even if they
+                # somehow reached the snapshot (e.g. before the robot's
+                # _dedupe_positions fix filtered them).  Without this check a
+                # 1 000 000-lot BUY phantom row would appear as a brand-new
+                # open position in the heartbeat monitor and trigger a spurious
+                # "TRADE OPENED" Telegram notification with fabricated details.
+                vol = float(raw.get("volume", 0.0) or 0.0)
+                if vol > self._MAX_SANE_VOLUME_LOTS:
+                    logger.warning(
+                        f"Skipping snapshot position with insane volume "
+                        f"({vol:.0f}L) — likely phantom row from mt5rest bridge "
+                        f"(ticket={raw.get('ticket')}, type={raw.get('type')})"
+                    )
+                    continue
+
                 pos = Position(
                     ticket=raw.get("ticket", 0),
                     symbol=raw.get("symbol", "XAUUSD"),
                     direction=TradeDirection(raw.get("type", "BUY")),
-                    volume=raw.get("volume", 0.01),
+                    volume=vol if vol > 0 else 0.01,
                     open_price=raw.get("open_price", 0.0),
                     current_price=raw.get("current_price", 0.0),
                     stop_loss=raw.get("sl"),

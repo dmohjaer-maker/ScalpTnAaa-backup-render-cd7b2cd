@@ -609,6 +609,15 @@ def _dedupe_positions(rows: List[dict]) -> List[dict]:
     Prefers a row with a plausible volume; if every duplicate for a ticket
     looks corrupted, keeps the first as a fallback so a real (if noisy)
     position is never silently dropped, but logs loudly either way.
+
+    FIX: Also drops lone phantom rows whose volume exceeds _MAX_SANE_VOLUME_LOTS
+    even when they carry a different (or zero/null) ticket from the real
+    position, because in that case same-ticket deduplication cannot catch them.
+    Such rows are always bridge artifacts — no retail gold account can open a
+    1 000 000-lot position — and letting them through would write them into the
+    Redis snapshot where the Telegram heartbeat treats them as a brand-new
+    trade and fires a spurious "TRADE OPENED" notification with fabricated
+    direction, size, and price.
     """
     by_ticket: "dict[object, List[dict]]" = {}
     order: List[object] = []
@@ -625,7 +634,19 @@ def _dedupe_positions(rows: List[dict]) -> List[dict]:
     for ticket in order:
         group = by_ticket[ticket]
         if len(group) == 1:
-            result.append(group[0])
+            row = group[0]
+            vol = float(row.get("volume", row.get("lots", 0.0)) or 0.0)
+            if vol > _MAX_SANE_VOLUME_LOTS:
+                # Lone row with insane volume: phantom bridge artifact with a
+                # unique (possibly zero or null) ticket — drop it entirely.
+                log.warning(
+                    f"mt5rest returned a lone row for ticket {ticket!r} "
+                    f"with an insane volume ({vol:.0f}L > {_MAX_SANE_VOLUME_LOTS}L limit) "
+                    f"— dropping phantom row (direction={row.get('type')}, "
+                    f"openPrice={row.get('openPrice', row.get('price_open'))})"
+                )
+            else:
+                result.append(row)
             continue
 
         sane = [
