@@ -1158,7 +1158,12 @@ class GoldScalperLive:
             trade_history    = self.trade_history,
             loop_count       = self.loop_count,
             last_signal_time = (
-                self.last_bar_time.isoformat() if self.last_bar_time else None
+                max(
+                    (bt for bt in self._last_bar_times.values() if bt is not None),
+                    default=None,
+                ).isoformat()
+                if any(v is not None for v in self._last_bar_times.values())
+                else None
             ),
             extra = merged_extra or None,
         )
