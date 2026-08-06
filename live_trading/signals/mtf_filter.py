@@ -237,9 +237,16 @@ def mtf_allows_trade(
     if m5_direction == bias.direction:
         return True, ""
 
+    # Only block when the opposing HTF bias is STRONG.
+    # A MODERATE or WEAK opposing bias means the HTF is transitioning or
+    # uncertain — blocking in that case eliminates valid M5 setups.
+    # A STRONG opposing bias means HTF trend is clearly against the trade.
+    if bias.strength != "STRONG":
+        return True, ""   # MODERATE / WEAK opposing → pass through
+
     reason = (
-        f"MTF BLOCK: M5 wants {m5_direction} but HTF bias is {bias.direction} "
-        f"[HTF trend={bias.trend}, SMC={bias.smc_signal}, "
+        f"MTF BLOCK: M5 wants {m5_direction} but HTF is STRONGLY {bias.direction} "
+        f"[trend={bias.trend}, SMC={bias.smc_signal}, "
         f"regime={bias.regime}, strength={bias.strength}]"
     )
     return False, reason
