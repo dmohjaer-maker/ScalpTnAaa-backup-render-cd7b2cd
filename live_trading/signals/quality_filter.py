@@ -7,7 +7,7 @@ from typing import List, Literal, Optional
 from datetime import datetime, timezone
 from live_trading.signals.gold_engine import OHLCV
 from live_trading.signals.market_regime import calc_adx
-from live_trading.config import CONF_HARD_MIN
+from live_trading.config import CONF_HARD_MIN, QUALITY_ADX_MIN
 
 ALLOWED_SESSIONS = [
     (0,  7,  "MODERATE"),
@@ -164,10 +164,14 @@ def apply_quality_filter(
     if late:
         reasons.append("Late entry: price over-extended from EMA50 or BOS is stale")
 
-    # H-3 FIX: ADX < 20 indicates no meaningful trend momentum (was: < 2).
-    low_mom = adx_val < 20
+    # ADX momentum check — configurable via QUALITY_ADX_MIN env var (default 15).
+    # Set higher (e.g. 20) for stricter momentum confirmation,
+    # set lower (e.g. 10) to allow weaker-trend entries.
+    low_mom = adx_val < QUALITY_ADX_MIN
     if low_mom:
-        reasons.append(f"Low momentum: ADX {adx_val:.1f} < 20")
+        reasons.append(
+            f"Low momentum: ADX {adx_val:.1f} < {QUALITY_ADX_MIN:.0f} (QUALITY_ADX_MIN)"
+        )
 
     weak_vol = _is_weak_volume(candles)
     # Note: volume filter is informational only — MT5 tick volume is a proxy,
