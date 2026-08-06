@@ -296,7 +296,7 @@ async def ensure_connected(*args, **kwargs) -> bool:
         # Re-check inside the lock: another waiter may have already reconnected
         if _connected and _time.monotonic() - _last_connect_time < _CONNECT_GRACE_PERIOD:
             return True
-        return await connect()
+        return await connect_with_retry(max_attempts=3, retry_delay=30.0)
 
 
 async def start_connection_watchdog(interval_seconds: float = 60.0) -> None:
