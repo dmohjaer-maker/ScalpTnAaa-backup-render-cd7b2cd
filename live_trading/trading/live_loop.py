@@ -51,6 +51,7 @@ from live_trading.signals.wyckoff_engine import calibrate_wyckoff, set_calibrate
 from live_trading.mt5.connector import (
     connect, disconnect, ensure_connected,
     connect_with_retry, keepalive_mtapi,
+    start_connection_watchdog,
     fetch_candles, get_account_balance, get_account_info,
     get_open_positions, get_last_completed_bar_time,
     get_current_quote, mt5_pos_to_dict,
@@ -100,6 +101,7 @@ class GoldScalperLive:
 
         # Exponential backoff state
         self._reconnect_attempts: int = 0
+        self._watchdog_task: asyncio.Task | None = None
 
         # Handle for the MTAPI keepalive background task (cancelled on stop)
         self._keepalive_task: Optional[asyncio.Task] = None
@@ -158,6 +160,12 @@ class GoldScalperLive:
         # multiple background pings accumulate across restarts.
         self._keepalive_task = asyncio.create_task(
             self._keepalive_loop(), name="mtapi_keepalive"
+        )
+        # Proactive connection watchdog: checks MT5 health every 60 s and
+        # reconnects before the trading loop hits a failure.  Faster than
+        # waiting for a bar-tick request to fail (worst case: one full bar).
+        self._watchdog_task = asyncio.create_task(
+            start_connection_watchdog(interval_seconds=60.0), name="mt5_watchdog"
         )
         # Belt-and-suspenders: if any step below raises before _run_loop() is
         # entered, _run_loop()'s own finally block never executes, leaving the
@@ -307,7 +315,7 @@ class GoldScalperLive:
 
     async def _keepalive_loop(self) -> None:
         """Ping mt5rest bridge every 10 minutes to prevent Render free-tier sleep."""
-        _INTERVAL = 600  # 10 minutes
+        _INTERVAL = 480  # 8 minutes — more margin under Render's 15-min sleep threshold
         while True:
             await asyncio.sleep(_INTERVAL)
             try:
@@ -412,6 +420,13 @@ class GoldScalperLive:
                 except asyncio.CancelledError:
                     pass
                 log.debug("MTAPI keepalive task cancelled.")
+            if getattr(self, "_watchdog_task", None) and not self._watchdog_task.done():
+                self._watchdog_task.cancel()
+                try:
+                    await self._watchdog_task
+                except asyncio.CancelledError:
+                    pass
+                log.debug("MT5 connection watchdog cancelled.")
             await disconnect()
             self._write_state("STOPPED")
             log.info("Engine stopped.")

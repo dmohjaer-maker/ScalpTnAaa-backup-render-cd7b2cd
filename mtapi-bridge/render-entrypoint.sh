@@ -32,11 +32,26 @@
 #   restarting the child process automatically until Wine initialises
 #   successfully and /Ping begins responding.
 #
+# SELF-KEEPALIVE (FIX — critical):
+#   Render free tier sleeps a service after 15 minutes of no EXTERNAL traffic.
+#   The trading robot pings /Ping every ~8 minutes, but if the robot itself is
+#   restarting or in a backoff cycle, no pings arrive at the mtapi and the
+#   Docker service sleeps.  Once asleep, the next robot reconnect attempt waits
+#   60-90 s for Wine to cold-start, causing a "Connection Lost" spike in the
+#   panel on every robot restart — a continuous reconnect loop.
+#
+#   Fix: a background loop inside this container pings its OWN /Ping endpoint
+#   through Render's external URL every 8 minutes, independently of the robot.
+#   Even if the robot is down for an hour the mtapi stays warm.
+#   RENDER_EXTERNAL_URL must be set in render.yaml (already done).
+#
 # Local / Docker Compose usage:
-#   When PORT is not set or equals 80, the proxy is skipped entirely so
-#   local development and non-Render deployments are unaffected.
+#   When PORT is not set or equals 80, the proxy and external keepalive are
+#   skipped entirely so local development and non-Render deployments are
+#   unaffected.
 
 _PORT="${PORT:-80}"
+_SELF_KEEPALIVE_INTERVAL=480  # 8 minutes — well under Render's 15-min threshold
 
 if [ "$_PORT" != "80" ]; then
     echo "[render-entrypoint] Render PORT=${_PORT} detected — starting socat proxy: ${_PORT} → 80"
@@ -45,8 +60,34 @@ if [ "$_PORT" != "80" ]; then
     socat TCP-LISTEN:${_PORT},fork,reuseaddr TCP:127.0.0.1:80 &
     _SOCAT_PID=$!
     echo "[render-entrypoint] socat proxy started (pid=${_SOCAT_PID})"
+
+    # ── Self-keepalive loop ───────────────────────────────────────────────────
+    # Pings our OWN external /Ping URL every 8 minutes so this Docker service
+    # never goes to sleep even when the trading robot is down/restarting.
+    # Uses RENDER_EXTERNAL_URL which is set in render.yaml for this service.
+    # Falls back to localhost (which does NOT prevent Render sleep but is harmless).
+    _EXTERNAL_URL="${RENDER_EXTERNAL_URL:-}"
+    if [ -n "$_EXTERNAL_URL" ]; then
+        _PING_TARGET="${_EXTERNAL_URL%/}/Ping"
+        echo "[render-entrypoint] Self-keepalive enabled: pinging ${_PING_TARGET} every ${_SELF_KEEPALIVE_INTERVAL}s"
+    else
+        _PING_TARGET="http://127.0.0.1:${_PORT}/Ping"
+        echo "[render-entrypoint] RENDER_EXTERNAL_URL not set — self-keepalive via localhost (won't prevent Render sleep)"
+    fi
+
+    (
+        # Wait for mt5rest to fully boot before starting pings (Wine startup ~90s)
+        sleep 120
+        while true; do
+            _STATUS=$(wget -qO- --timeout=20 --tries=1 "${_PING_TARGET}" 2>/dev/null && echo "ok" || echo "fail")
+            echo "[self-keepalive] /Ping → ${_STATUS}" >&2
+            sleep ${_SELF_KEEPALIVE_INTERVAL}
+        done
+    ) &
+    _KEEPALIVE_PID=$!
+    echo "[render-entrypoint] Self-keepalive loop started (pid=${_KEEPALIVE_PID})"
 else
-    echo "[render-entrypoint] PORT=80 — running without proxy (local / Docker Compose mode)"
+    echo "[render-entrypoint] PORT=80 — running without proxy or keepalive (local / Docker Compose mode)"
 fi
 
 # ── Supervised restart loop ───────────────────────────────────────────────────
@@ -62,6 +103,9 @@ _shutdown() {
         kill "$_CHILD_PID" 2>/dev/null || true
         wait "$_CHILD_PID" 2>/dev/null || true
     fi
+    # Also stop the keepalive and socat background processes gracefully
+    [ -n "$_KEEPALIVE_PID" ] && kill "$_KEEPALIVE_PID" 2>/dev/null || true
+    [ -n "$_SOCAT_PID" ]     && kill "$_SOCAT_PID"     2>/dev/null || true
     exit 0
 }
 

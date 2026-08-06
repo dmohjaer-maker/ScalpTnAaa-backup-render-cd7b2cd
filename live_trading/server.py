@@ -50,11 +50,11 @@ _robot_status = "STARTING"
 _UNHEALTHY_STATUSES = {"CONFIG_ERROR", "ERROR"}
 _HEARTBEAT_MAX_AGE_SECONDS = 180
 
-# Self-ping keepalive: ping /health every 10 minutes so Render free-tier
+# Self-ping keepalive: ping /health every 8 minutes so Render free-tier
 # services never spin down.  10 min < Render's 15-min inactivity threshold.
 # Also pings the mt5rest Docker bridge (goldscalper-mtapi) so it stays alive
 # even during robot crash/restart cycles when the live loop keepalive is paused.
-_KEEPALIVE_INTERVAL_SECONDS = 600  # 10 minutes
+_KEEPALIVE_INTERVAL_SECONDS = 480  # 8 minutes — more margin under Render's 15-min sleep threshold
 
 
 def _parse_heartbeat(value: object) -> datetime | None:
@@ -418,7 +418,7 @@ async def _run_health_server():
 
 
 async def _keepalive():
-    """External-ping /health and mtapi /Ping every 10 min to prevent Render free-tier sleep.
+    """External-ping /health and mtapi /Ping every 8 min to prevent Render free-tier sleep.
 
     Render spins down free-tier web services after 15 minutes of inactivity.
     The inactivity timer is reset only by EXTERNAL HTTP requests routed through
@@ -460,16 +460,40 @@ async def _keepalive():
             except Exception as exc:
                 print(f"[keepalive] robot /health failed: {exc}", flush=True)
 
-            # 2. Ping mtapi /Ping to keep the mt5rest Docker bridge alive
+            # 2. Ping mtapi /Ping to keep the mt5rest Docker bridge alive.
+            # Retry up to 3 times with 30 s between attempts: if the first ping
+            # hits the Docker container while Wine is initialising (returning a
+            # non-200), the retry gives it time to finish startup rather than
+            # silently failing and leaving the service on the edge of sleeping.
             if mtapi_url:
                 ping_url = f"{mtapi_url}/Ping"
-                try:
-                    async with session.get(
-                        ping_url, timeout=aiohttp.ClientTimeout(total=30)
-                    ) as resp:
-                        print(f"[keepalive] mtapi /Ping → {resp.status}", flush=True)
-                except Exception as exc:
-                    print(f"[keepalive] mtapi /Ping failed: {exc}", flush=True)
+                _mtapi_ok = False
+                for _attempt in range(1, 4):
+                    try:
+                        async with session.get(
+                            ping_url, timeout=aiohttp.ClientTimeout(total=30)
+                        ) as resp:
+                            print(
+                                f"[keepalive] mtapi /Ping (attempt {_attempt}) → {resp.status}",
+                                flush=True,
+                            )
+                            if resp.status == 200:
+                                _mtapi_ok = True
+                                break
+                    except Exception as exc:
+                        print(
+                            f"[keepalive] mtapi /Ping (attempt {_attempt}) failed: {exc}",
+                            flush=True,
+                        )
+                    if _attempt < 3:
+                        await asyncio.sleep(30)
+                if not _mtapi_ok:
+                    print(
+                        "[keepalive] mtapi /Ping failed all 3 attempts — "
+                        "bridge may be cold-starting (Wine); next cycle in "
+                        f"{_KEEPALIVE_INTERVAL_SECONDS}s",
+                        flush=True,
+                    )
 
             await asyncio.sleep(_KEEPALIVE_INTERVAL_SECONDS)
     finally:

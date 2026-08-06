@@ -50,7 +50,27 @@ _last_connect_time: float = 0.0   # monotonic timestamp of last successful conne
 # isConnected=true on ConnectionStatus.  During this window ensure_connected()
 # would wrongly declare DISCONNECTED and trigger an immediate reconnect loop.
 # The grace period suppresses that false failure.
-_CONNECT_GRACE_PERIOD: float = 45.0   # seconds
+_CONNECT_GRACE_PERIOD: float = 90.0   # seconds — Wine on Render free tier needs 60-90 s to fully init
+
+# Prevents concurrent reconnect attempts when multiple coroutines detect a
+# stale connection at the same time (e.g. fetch_candles + ensure_connected
+# racing on the same event loop).  The first coroutine acquires the lock and
+# reconnects; the rest wait and benefit from the result.
+_reconnect_lock: asyncio.Lock | None = None
+
+# Background watchdog task — proactively checks connection every 60 s and
+# reconnects before the trading loop hits a failure.  Stored here so it can
+# be cancelled cleanly on shutdown.
+_watchdog_task: asyncio.Task | None = None
+
+
+def _get_reconnect_lock() -> asyncio.Lock:
+    """Lazily create the reconnect lock on the running event loop."""
+    global _reconnect_lock
+    if _reconnect_lock is None:
+        _reconnect_lock = asyncio.Lock()
+    return _reconnect_lock
+
 
 # ── Timeframe map  (label → mt5rest integer minutes) ─────────────────────────
 _TF_MAP = {
@@ -228,6 +248,12 @@ def _invalidate_connection() -> None:
 
 async def ensure_connected(*args, **kwargs) -> bool:
     """Check live connection status; reconnect if not connected.
+
+    Uses _reconnect_lock to prevent concurrent reconnect storms when multiple
+    coroutines detect a stale connection simultaneously (e.g. fetch_candles and
+    the watchdog racing on the same event loop tick).  The first coroutine
+    acquires the lock and reconnects; the rest wait and benefit from the result.
+
     Extra positional/keyword args are accepted for backward compatibility
     with callers that pass MetaAPI-style token/account/timeout arguments.
     """
@@ -237,6 +263,7 @@ async def ensure_connected(*args, **kwargs) -> bool:
     # few seconds to report isConnected=true on ConnectionStatus.  Trusting the
     # module flag during this window prevents a false DISCONNECTED that would
     # otherwise trigger an immediate reconnect loop on every startup.
+    # 90 s because Wine on Render free tier can take 60-90 s to fully init.
     if (_conn_id and _connected
             and _time.monotonic() - _last_connect_time < _CONNECT_GRACE_PERIOD):
         return True
@@ -257,8 +284,70 @@ async def ensure_connected(*args, **kwargs) -> bool:
             pass
 
     _connected = False
+    lock = _get_reconnect_lock()
+    if lock.locked():
+        # Another coroutine is already reconnecting — wait for it and return
+        # its result rather than firing a second parallel ConnectEx.
+        log.debug("MT5 reconnect already in progress — waiting for result …")
+        async with lock:
+            return _connected  # populated by the coroutine that held the lock
     log.info("MT5 not connected — reconnecting …")
-    return await connect()
+    async with lock:
+        # Re-check inside the lock: another waiter may have already reconnected
+        if _connected and _time.monotonic() - _last_connect_time < _CONNECT_GRACE_PERIOD:
+            return True
+        return await connect()
+
+
+async def start_connection_watchdog(interval_seconds: float = 60.0) -> None:
+    """Proactive background task: checks MT5 connection health every *interval_seconds*
+    and reconnects before the trading loop hits a failure.
+
+    Called once from GoldScalperLive.start() and runs until the engine stops.
+    Stores the asyncio.Task in _watchdog_task so it can be cancelled on shutdown.
+
+    Why this matters:
+      Without a proactive watchdog the connector only reconnects *after* a
+      trading-loop request fails — by which time the bar has already started
+      and the opportunity may be lost.  Checking every 60 s means the worst-case
+      reconnect latency is ~60 s, not one full 5-minute bar.
+    """
+    global _watchdog_task
+    log.info(f"[watchdog] MT5 connection watchdog started (interval={interval_seconds}s)")
+    try:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            # Skip check during grace period — connection is known-good
+            if _connected and _time.monotonic() - _last_connect_time < _CONNECT_GRACE_PERIOD:
+                continue
+            if not _connected or not _conn_id:
+                log.warning("[watchdog] MT5 disconnected — proactive reconnect …")
+                ok = await ensure_connected()
+                if ok:
+                    log.info("[watchdog] ✅ Proactive reconnect succeeded")
+                else:
+                    log.warning("[watchdog] ⚠️  Proactive reconnect failed — will retry next interval")
+            else:
+                # Verify the connection is still truly alive
+                try:
+                    sess = _get_session()
+                    async with sess.get(
+                        f"{_base_url}/ConnectionStatus",
+                        params={"id": _conn_id},
+                        timeout=aiohttp.ClientTimeout(total=8),
+                    ) as resp:
+                        data = await resp.json(content_type=None)
+                        if not (isinstance(data, dict) and data.get("isConnected")):
+                            log.warning("[watchdog] ConnectionStatus=false — reconnecting …")
+                            _invalidate_connection()
+                            await ensure_connected()
+                except Exception as exc:
+                    log.warning(f"[watchdog] ConnectionStatus check failed: {exc} — reconnecting …")
+                    _invalidate_connection()
+                    await ensure_connected()
+    except asyncio.CancelledError:
+        log.info("[watchdog] MT5 connection watchdog stopped")
+        raise
 
 
 # ── Market data ───────────────────────────────────────────────────────────────
