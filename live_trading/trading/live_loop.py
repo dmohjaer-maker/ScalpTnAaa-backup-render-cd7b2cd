@@ -87,6 +87,13 @@ class GoldScalperLive:
         self._last_bar_times: dict[str, Optional[datetime]] = {
             tf: None for tf in TRADE_TIMEFRAMES
         }
+        # Guard against opening multiple trades in the same tick when several
+        # timeframes close simultaneously (e.g. M20+M10+M5 all fire at :20).
+        # Without this, _on_new_bar() is called N times in one iteration of
+        # _run_loop() and each call may see 0 open positions from mt5rest (the
+        # bridge has not yet registered the trade placed by the previous call),
+        # causing N trades to open instead of 1.
+        self._trade_opened_this_tick: bool = False
         self.trade_history: List[dict] = []
         self.last_decision: Optional[DecisionResult] = None
 
@@ -368,6 +375,11 @@ class GoldScalperLive:
                 # a step, not up to 5 minutes late.
                 await self._manage_trailing_stop()
 
+                # Reset the within-tick trade guard before processing this
+                # tick's bars.  All _on_new_bar() calls that share this tick
+                # (e.g. M20+M10+M5 closing simultaneously) will see the same
+                # flag and only the first successful placement will go through.
+                self._trade_opened_this_tick = False
                 new_bars = await self._check_new_bars()
                 if new_bars:
                     for _tf, _bar_time in new_bars:
@@ -649,6 +661,27 @@ class GoldScalperLive:
             )
             return
 
+        # 7b. Gate: within-tick duplicate-entry guard
+        # When TRADE_TIMEFRAMES has N entries and several TFs close at the
+        # same bar boundary (e.g. M20+M15+M10+M5 all fire at minute :60),
+        # _on_new_bar is called N times inside the same _run_loop iteration.
+        # The mt5rest bridge may not yet reflect the position opened by the
+        # first call when the second call runs its get_open_positions() check
+        # above — so the max-positions gate can pass N times in a row and N
+        # trades get placed.  This flag is reset once per tick (before the
+        # for-loop in _run_loop) and set to True by the first successful
+        # placement, blocking all subsequent calls in the same tick.
+        if self._trade_opened_this_tick:
+            log.info(
+                f"[{tf}] Skipping entry — a trade was already opened "
+                f"earlier this tick (multi-TF boundary guard)"
+            )
+            self._write_state(
+                "HOLDING", acc_info, decision, pos,
+                extra=self._guardian_extra(gs),
+            )
+            return
+
         # 8. Gate: decision engine
         if not decision.allowed:
             reasons = " | ".join(decision.blocked_reasons or ["No signal"])
@@ -704,6 +737,9 @@ class GoldScalperLive:
         )
 
         if result.success:
+            # Block all further _on_new_bar calls in this tick from opening
+            # another position (covers the multi-TF same-bar-boundary race).
+            self._trade_opened_this_tick = True
             strategy = describe_strategy(decision)
             entry_log = {
                 "position_id": result.position_id,
