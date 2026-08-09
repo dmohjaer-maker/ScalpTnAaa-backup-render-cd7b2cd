@@ -32,6 +32,18 @@
 #   restarting the child process automatically until Wine initialises
 #   successfully and /Ping begins responding.
 #
+# FIX — earlyExit on Wine code=0 startup failure:
+#   Wine/dotnet sometimes exits with code 0 (not just non-zero) when it fails
+#   to initialise during container startup on Render's free tier.  The previous
+#   logic treated any code=0 exit as a clean intentional shutdown and broke out
+#   of the restart loop — causing the container (PID 1) to exit and Render to
+#   record earlyExit on every new deployment.
+#   Fix: only treat code=0 as intentional if the process ran for > MIN_UPTIME_S
+#   seconds.  A code=0 exit within the first MIN_UPTIME_S seconds is treated as
+#   a Wine startup crash and triggers the same 5s restart as a non-zero exit.
+#   MIN_UPTIME_S=300 (5 min) covers all real shutdown scenarios while catching
+#   any Wine initialisation failures that exit cleanly.
+#
 # SELF-KEEPALIVE (FIX — critical):
 #   Render free tier sleeps a service after 15 minutes of no EXTERNAL traffic.
 #   The trading robot pings /Ping every ~8 minutes, but if the robot itself is
@@ -52,6 +64,10 @@
 
 _PORT="${PORT:-80}"
 _SELF_KEEPALIVE_INTERVAL=480  # 8 minutes — well under Render's 15-min threshold
+# Minimum seconds a child must run for code=0 to be treated as intentional shutdown.
+# Wine startup failures can exit with code 0 within seconds; real shutdowns always
+# come after the service has been running (i.e. > 5 minutes).
+_MIN_UPTIME_S=300
 
 if [ "$_PORT" != "80" ]; then
     echo "[render-entrypoint] Render PORT=${_PORT} detected — starting socat proxy: ${_PORT} → 80"
@@ -111,8 +127,10 @@ _shutdown() {
 
 trap _shutdown SIGTERM SIGINT
 
-echo "[render-entrypoint] Starting mt5rest with supervised restart loop..."
+echo "[render-entrypoint] Starting mt5rest with supervised restart loop (min_uptime=${_MIN_UPTIME_S}s for clean exit)..."
 while true; do
+    _ITER_START=$(date +%s)
+
     # Run the original container command as a child (not exec) so this script
     # remains PID 1 and can catch signals and restart on failure.
     "$@" &
@@ -121,11 +139,22 @@ while true; do
     _EXIT=$?
     _CHILD_PID=""
 
-    if [ "$_EXIT" -eq 0 ]; then
-        echo "[render-entrypoint] mt5rest exited cleanly (code=0) — shutting down"
+    _ITER_END=$(date +%s)
+    _UPTIME=$((_ITER_END - _ITER_START))
+
+    if [ "$_EXIT" -eq 0 ] && [ "$_UPTIME" -ge "$_MIN_UPTIME_S" ]; then
+        # Only treat code=0 as a clean intentional shutdown when the process
+        # ran for at least MIN_UPTIME_S seconds.  This distinguishes a real
+        # graceful shutdown from Wine initialisation failures that exit with
+        # code 0 within seconds of container startup.
+        echo "[render-entrypoint] mt5rest exited cleanly (code=0, uptime=${_UPTIME}s ≥ ${_MIN_UPTIME_S}s) — shutting down"
         break
     fi
 
-    echo "[render-entrypoint] mt5rest exited (code=${_EXIT}) — Wine/dotnet crash detected, restarting in 5s..."
+    if [ "$_EXIT" -eq 0 ]; then
+        echo "[render-entrypoint] mt5rest exited code=0 but uptime=${_UPTIME}s < ${_MIN_UPTIME_S}s — treating as Wine startup crash, restarting in 5s..."
+    else
+        echo "[render-entrypoint] mt5rest exited (code=${_EXIT}, uptime=${_UPTIME}s) — Wine/dotnet crash detected, restarting in 5s..."
+    fi
     sleep 5
 done
