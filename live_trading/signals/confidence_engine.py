@@ -21,6 +21,8 @@ class ConfidenceComponents:
     liquidity_score:  float   # 0–5
     volatility_score: float   # 0–5
     total:            float   # 0–100
+    divergence_score: float = 0.0  # 0–10 bonus (RSI/MACD divergence)
+    dxy_score:        float = 0.0  # –5 to +5 (DXY correlation bonus/penalty)
 
 
 @dataclass
@@ -185,14 +187,59 @@ def _assign_grade(confidence: float, min_conf: float) -> Literal["PRIME","HIGH",
     return "REJECTED"
 
 
+
+
+def _calc_divergence_score(divergence_signal: str, candidate: str) -> tuple:
+    """Score RSI/MACD divergence confirmation (0–10 bonus, –5 penalty)."""
+    reasons = []
+    if divergence_signal == "NEUTRAL":
+        return 0.0, reasons
+    # Map trade direction to expected divergence signal
+    expected = "BULLISH" if candidate == "BUY" else "BEARISH"
+    if divergence_signal == expected:
+        reasons.append(f"{divergence_signal.title()} RSI/MACD divergence confirmed")
+        return 10.0, reasons
+    # Opposing divergence — penalise
+    reasons.append(f"Counter-divergence ({divergence_signal}) against {candidate}")
+    return -5.0, reasons
+
+
+def _calc_dxy_score(dxy_signal: str, candidate: str) -> tuple:
+    """
+    DXY correlation score (–5 to +5).
+    BEARISH_DXY  + BUY  gold → +5  (dollar falling, gold rising)
+    BULLISH_DXY  + SELL gold → +5  (dollar rising,  gold falling)
+    BEARISH_DXY  + SELL gold → –5  (contradiction)
+    BULLISH_DXY  + BUY  gold → –5  (contradiction)
+    NEUTRAL                   →  0
+    """
+    reasons = []
+    if dxy_signal == "NEUTRAL":
+        return 0.0, reasons
+    if dxy_signal == "BEARISH_DXY" and candidate == "BUY":
+        reasons.append("DXY falling — tailwind for gold BUY")
+        return 5.0, reasons
+    if dxy_signal == "BULLISH_DXY" and candidate == "SELL":
+        reasons.append("DXY rising — tailwind for gold SELL")
+        return 5.0, reasons
+    if dxy_signal == "BULLISH_DXY" and candidate == "BUY":
+        reasons.append("DXY rising — headwind against gold BUY")
+        return -5.0, reasons
+    if dxy_signal == "BEARISH_DXY" and candidate == "SELL":
+        reasons.append("DXY falling — headwind against gold SELL")
+        return -5.0, reasons
+    return 0.0, reasons
+
 def calc_confidence(
-    smc:       SmcResult,
-    wyckoff:   WyckoffResult,
-    pa:        PriceActionResult,
-    trend:     TrendResult,
-    regime:    RegimeResult,
-    session:   str,
-    candidate: str,
+    smc:              SmcResult,
+    wyckoff:          WyckoffResult,
+    pa:               PriceActionResult,
+    trend:            TrendResult,
+    regime:           RegimeResult,
+    session:          str,
+    candidate:        str,
+    divergence_signal: str = "NEUTRAL",
+    dxy_signal:        str = "NEUTRAL",
 ) -> ConfidenceResult:
     smc_s,  smc_r  = _calc_smc_score(smc, candidate)
     tr_s,   tr_r   = _calc_trend_score(trend, candidate)
@@ -201,13 +248,21 @@ def calc_confidence(
     liq_s,  liq_r  = _calc_liquidity_score(smc, candidate)
     vol_s,  vol_r  = _calc_volatility_score(regime, session)
 
+    div_s, div_r = _calc_divergence_score(divergence_signal, candidate)
+    dxy_s, dxy_r = _calc_dxy_score(dxy_signal, candidate)
+
+    raw_total  = smc_s + tr_s + pa_s + wy_s + liq_s + vol_s + div_s + dxy_s
+    total_capped = round(min(100.0, max(0.0, raw_total)), 1)
+
     comp = ConfidenceComponents(
         smc_score=smc_s, trend_score=tr_s, pa_score=pa_s,
         wyckoff_score=wy_s, liquidity_score=liq_s, volatility_score=vol_s,
-        total=round(smc_s + tr_s + pa_s + wy_s + liq_s + vol_s, 1),
+        total=total_capped,
+        divergence_score=max(0.0, div_s),
+        dxy_score=dxy_s,
     )
     confidence = comp.total
-    reasoning  = smc_r + tr_r + pa_r + wy_r + liq_r + vol_r
+    reasoning  = smc_r + tr_r + pa_r + wy_r + liq_r + vol_r + div_r + dxy_r
 
     return ConfidenceResult(
         confidence=confidence,
