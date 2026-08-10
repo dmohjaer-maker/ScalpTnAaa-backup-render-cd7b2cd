@@ -426,6 +426,7 @@ async def _run_health_server():
     app.router.add_get("/health", _health)
     app.router.add_get("/status", _status)
     app.router.add_get("/crash-log", _crash_log)
+    app.router.add_get("/progress", _progress_log)
     app.router.add_get("/snapshot", _snapshot)
     app.router.add_post("/command", _command)
     runner = web.AppRunner(app)
@@ -530,6 +531,15 @@ async def _crash_log(request):
     return web.Response(text=content, content_type="text/plain")
 
 
+async def _progress_log(request):
+    try:
+        with open("/tmp/progress.txt", "r", encoding="utf-8") as f:
+            content = f.read()[-20000:]
+    except Exception as e:
+        content = f"(no progress log yet: {e})"
+    return web.Response(text=content, content_type="text/plain")
+
+
 async def _run_robot_once():
     global _robot_status
     from live_trading.config import MTAPI_URL, MT5_USER, MT5_PASSWORD
@@ -550,7 +560,19 @@ async def _run_robot_once():
     engine = GoldScalperLive()
     try:
         _robot_status = "RUNNING"
-        ok = await engine.start()
+        # WATCHDOG: engine.start() has been observed to hang indefinitely with
+        # no exception raised (root cause still under investigation via
+        # /tmp/progress.txt checkpoints). Without a bound, a hang here is only
+        # ever recovered by Render's own platform-level container restart,
+        # which is far slower than the supervisor's 15-120s backoff. Bounding
+        # it here guarantees the fast in-process supervisor path always runs.
+        try:
+            ok = await asyncio.wait_for(engine.start(), timeout=240)
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                "GoldScalperLive.start() hung for >240s with no exception — "
+                "see /progress for the last checkpoint reached."
+            )
         # engine.start() returns False when MT5 connection or startup fails.
         # Without this check a False return is treated as a clean exit,
         # bypassing supervisor backoff and leaving _robot_status as RUNNING.
