@@ -1,6 +1,6 @@
 # GoldScalperPro v4 Stable
 
-**Production-grade gold scalping system for MetaTrader 5 via MetaAPI cloud bridge.**
+**Production-grade gold scalping system for MetaTrader 5, connected directly via the `mt5rest` Docker bridge (no MetaAPI cloud dependency).**
 
 > **Frozen Strategy.** All trading logic, signal engines, and risk thresholds are frozen at v4 Stable. This repository contains only engineering fixes — no strategy modifications.
 
@@ -9,17 +9,27 @@
 ## System Architecture
 
 ```
-┌──────────────────────────────┐    JSON files    ┌───────────────────────────┐
-│  Live Trading Engine          │◄────────────────►│  Telegram Control Panel   │
-│  live_trading/                │  robot_state.json│  telegram_panel/          │
-│  Python / asyncio / MetaAPI   │  robot_cmds.json │  Python / python-tg-bot   │
-│                               │  mt5_snapshot    │  SQLite / aiosqlite       │
-└──────────────┬────────────────┘                  └───────────────────────────┘
-               │ MetaAPI WebSocket
+┌──────────────────────────────┐   Redis (+/tmp cache) ┌───────────────────────────┐
+│  Live Trading Engine          │◄──────────────────────►│  Telegram Control Panel   │
+│  live_trading/                │  robot_state.json      │  telegram_panel/          │
+│  Python / asyncio             │  robot_commands.json   │  Python / python-tg-bot   │
+│  (Render web service)         │  guardian_state.json   │  SQLite / aiosqlite       │
+│                               │  (Redis is the durable  │  (Render web service)     │
+│                               │   cross-service copy;   │                           │
+│                               │   /tmp is an ephemeral  │                           │
+│                               │   same-process cache)   │                           │
+└──────────────┬────────────────┘                        └───────────────────────────┘
+               │ HTTPS (mt5rest REST API)
                ▼
 ┌──────────────────────────────┐
-│  MetaTrader 4/5 Broker        │
-│  (via MetaAPI cloud proxy)    │
+│  mtapi-bridge (Docker)        │  Wine + MT5 terminal + a .NET REST wrapper
+│  goldscalper-mtapi service    │  exposes MT5 as an HTTP API (login/candles/orders)
+└──────────────┬────────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│  MetaTrader 5 Broker          │
+│  (e.g. AMarkets-Demo)         │
 └──────────────────────────────┘
 
 ┌──────────────────────────────┐
@@ -28,15 +38,23 @@
 └──────────────────────────────┘
 ```
 
+**Redis is a required dependency, not optional.** It is the durable store for:
+- Command IPC between the Telegram panel and the robot (`goldscalper:commands` key)
+- The RiskGuardian's halt state (`day_open_balance`, `equity_peak`, halted flag) — this is what lets a halt (or a manual reset) survive a container restart/redeploy
+- Robot state mirrored for the panel to read cross-service
+
+The robot and panel run as separate Render web services with separate, ephemeral `/tmp` filesystems — they cannot share plain JSON files, hence Redis. **The Redis instance must be in the same Render region as both web services**, or its private hostname will not resolve (this exact misconfiguration was found and fixed — see `render.yaml` comment on the `goldscalper-redis` service).
+
 ---
 
 ## Quick Start
 
 ### Prerequisites
 
-- Python 3.11 or 3.12 (3.13 not yet tested)
-- MetaAPI account: [app.metaapi.cloud](https://app.metaapi.cloud)
+- Python 3.11 (pinned — see `.python-version` and `PYTHON_VERSION` in `render.yaml`)
+- A running `mtapi-bridge` instance (see `mtapi-bridge/`) reachable over HTTPS — this is what actually talks to MT5, no MetaAPI account needed
 - MT5 broker account (demo recommended for first run)
+- A Redis instance reachable from both the robot and the panel (Render's managed Redis, or any Redis 5+ compatible instance)
 
 ### Live Trading Engine
 
@@ -46,10 +64,10 @@ pip install -r live_trading/requirements.txt
 
 # 2. Configure environment
 cp live_trading/.env.example .env
-# Edit .env with your MetaAPI credentials and risk settings
+# Edit .env with your mtapi-bridge URL, MT5 broker credentials, and risk settings
 
 # 3. Run
-python -m live_trading.main
+python live_trading/server.py
 ```
 
 ### Telegram Control Panel
@@ -74,27 +92,52 @@ python -m telegram_panel.main
 
 ## Required Environment Variables
 
-### Live Trading Engine
+Full reference with descriptions: [`live_trading/.env.example`](live_trading/.env.example) and [`telegram_panel/.env.example`](telegram_panel/.env.example). The tables below reflect what is actually configured on the live production services (values as of 2026-08-10) — see also `render.yaml`, which is kept in sync with production for a reproducible fresh deploy.
 
-| Variable | Required | Default | Description |
+### Live Trading Engine (`goldscalper-v4-robot`)
+
+| Variable | Required | Current production value | Description |
 |----------|----------|---------|-------------|
-| `METAAPI_TOKEN` | **YES** | — | MetaAPI API token |
-| `METAAPI_ACCOUNT_ID` | **YES** | — | MetaAPI account ID |
-| `SYMBOL` | No | `XAUUSDb` | Trading instrument (AMarkets-Demo account symbol) |
+| `MTAPI_URL` | **YES** | `https://goldscalper-mtapi.onrender.com` | URL of the `mtapi-bridge` Docker service |
+| `MT5_HOST` | **YES** | `AMarkets-Demo` | Broker server name |
+| `MT5_PORT` | **YES** | `443` | Broker TCP port |
+| `MT5_USER` | **YES (secret)** | — | MT5 account login number |
+| `MT5_PASSWORD` | **YES (secret)** | — | MT5 account password |
+| `ROBOT_COMMAND_TOKEN` | **YES (secret)** | — | Shared secret for the panel→robot `/command` HTTP endpoint |
+| `REDIS_URL` | **YES (secret)** | — | Redis connection string (same instance as the panel, same region) |
+| `SYMBOL` | No | `XAUUSD` | Trading instrument (AMarkets reports gold as `XAUUSD`, not `XAUUSDb`) |
+| `TIMEFRAME` | No | `5m` | Primary trading timeframe |
+| `TRADE_TIMEFRAMES` | No | `M20,M15,M10,5m` | Multi-timeframe scan order, highest first |
+| `CANDLE_WINDOW` | No | `300` | Bars fetched per candle request |
 | `RISK_PERCENT` | No | `1.0` | Risk per trade (% of balance) |
-| `MIN_CONFIRMATIONS` | No | `3` | Min signal confirmations (3 or 4) |
-| `DAILY_LOSS_LIMIT_PCT` | No | `3.0` | Guardian: daily loss halt threshold |
-| `MAX_DRAWDOWN_PCT` | No | `8.0` | Guardian: drawdown halt threshold |
+| `MIN_CONFIRMATIONS` | No | `2` | Min signal confirmations (SMC always required + N of Trend/PA/Wyckoff) |
+| `CONF_HARD_MIN` | No | `32` | Confidence-engine hard floor |
+| `QUALITY_ADX_MIN` | No | `12` | Quality filter ADX floor |
+| `DAILY_LOSS_LIMIT_PCT` | No | `4.0` | Guardian: daily loss halt threshold |
+| `MAX_DRAWDOWN_PCT` | No | `12.0` | Guardian: drawdown halt threshold |
 | `SLIPPAGE_POINTS` | No | `30` | Max fill slippage in broker points |
+| `STATE_FILE` / `MT5_SNAPSHOT` / `COMMANDS_FILE` / `GUARDIAN_STATE_FILE` / `LOG_FILE` | No | `/tmp/...` | Local file paths — ephemeral, real cross-restart durability comes from Redis (see Architecture above) |
 
-### Telegram Panel
+### Telegram Panel (`goldscalper-v4-panel`)
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `TELEGRAM_BOT_TOKEN` | **YES** | — | Bot token from @BotFather |
-| `TELEGRAM_OWNER_ID` | **YES** | — | Your Telegram numeric user ID |
-| `PANEL_ENCRYPTION_KEY` | **YES** | — | Fernet key for credential encryption |
-| `TELEGRAM_ADMIN_IDS` | No | — | Comma-separated admin Telegram IDs |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | **YES (secret)** | Bot token from @BotFather |
+| `TELEGRAM_OWNER_ID` | **YES (secret)** | Your Telegram numeric user ID |
+| `PANEL_ENCRYPTION_KEY` | **YES (secret)** | Fernet key for credential encryption — generate with `python -m telegram_panel.main --generate-key` |
+| `ROBOT_COMMAND_TOKEN` | **YES (secret)** | Must match the robot service's value |
+| `REDIS_URL` | **YES (secret)** | Must be the same Redis instance/region as the robot |
+| `ROBOT_BASE_URL` | No | Robot service URL, used for the HTTP command fallback |
+| `MT5_USER` / `MT5_PASSWORD` | **YES (secret)** | Same broker credentials as the robot, for display/verification |
+| `MT5_HOST` | No | Broker server name |
+| `TELEGRAM_ADMIN_IDS` | No | Comma-separated admin Telegram IDs |
+
+### mt5rest Bridge (`goldscalper-mtapi`, Docker)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `MT5_HOST` / `MT5_PORT` | **YES** | Broker server name and port |
+| `MT5_USER` / `MT5_PASSWORD` | **YES (secret)** | Broker login used by the MT5 terminal inside the container |
 
 ---
 
@@ -161,7 +204,7 @@ GoldScalperPro/
 │   ├── .env.example           ← Environment variable template
 │   ├── signals/               ← 7 signal engines (FROZEN)
 │   ├── risk/                  ← Guardian + capital manager (FROZEN)
-│   ├── mt5/                   ← MetaAPI connector + executor
+│   ├── mt5/                   ← mt5rest bridge connector + executor
 │   ├── trading/               ← Async M5 trading loop
 │   └── utils/                 ← State file writer
 ├── telegram_panel/            ← Telegram control panel (Python)
@@ -181,4 +224,4 @@ GoldScalperPro/
 
 ---
 
-*GoldScalperPro v4 Stable — Audited Release 2026-07-19*
+*GoldScalperPro v4 Stable — Audited Release 2026-07-19, Portability-Verified Release 4.0.4 (2026-08-10)*

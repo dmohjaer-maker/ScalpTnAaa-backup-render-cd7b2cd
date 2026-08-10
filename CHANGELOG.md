@@ -9,6 +9,65 @@ metric that affects trading behaviour. Strategy is frozen at v4 Stable.
 
 ---
 
+## [4.0.4] — 2026-08-10 — Stable Release / Portability Pass
+
+Two parts: (1) engineering fixes deployed and verified live during incident response
+this session, (2) a release-preparation pass to make this exact working version
+reproducible on a fresh Render account. No trading logic was changed in either part.
+
+### Fixed — Live Trading Engine (deployed and verified live this session)
+
+- **Timezone-naive bar comparison** (`live_trading/trading/live_loop.py`, `_check_new_bars`)
+  — comparing an aware and a naive timestamp raised on some brokers' candle payloads; normalized
+  to timezone-aware UTC throughout.
+- **Paused/halted branch skipped the heartbeat write** (`live_trading/trading/live_loop.py`)
+  — a guardian-halted robot stopped calling the state-writer, so its heartbeat went stale and it
+  looked like a crash loop to the watchdog even though it was correctly halted and idle. Fixed to
+  write a PAUSED heartbeat every tick.
+- **`asyncio.wait_for(240)` watchdog around the main engine loop removed** (`live_trading/server.py`)
+  — `engine.start()` is designed to run forever; wrapping it in a timeout caused a forced restart
+  every 4 minutes during normal (non-error) idle/paused operation.
+- **`/command` endpoint did not reach the robot** (`live_trading/server.py`) — it wrote to a file the
+  running engine no longer read from; fixed to mirror writes into Redis via `redis_send_command()`,
+  matching how the Telegram panel already delivers commands.
+- **`NameError` on an out-of-scope `log` reference** (`live_trading/server.py`) fixed.
+- **Added `/force-resume` (with optional `reset_baseline`) and `/crash-log`, `/progress` diagnostic
+  endpoints** (`live_trading/server.py`) — operational tools for manually clearing a halt and
+  inspecting engine liveness without redeploying. `/crash-log` and `/progress` are currently
+  unauthenticated; see Known Issues below.
+
+### Fixed — Release / Deployment Manifest
+
+- **`render.yaml` had stale "testing mode" env var values** for `MIN_CONFIRMATIONS`, `CONF_HARD_MIN`,
+  `DAILY_LOSS_LIMIT_PCT`, `MAX_DRAWDOWN_PCT` that no longer matched the values actually configured on
+  the live Render service (updated in the dashboard directly at some earlier point, never synced back
+  to the file). A fresh deploy from the old file would not have reproduced current bot behavior.
+  Corrected to match production; also added `TRADE_TIMEFRAMES` and `QUALITY_ADX_MIN`, which were set
+  live but missing from the manifest entirely.
+- **`README.md` and `audit_reports/DEPLOYMENT_GUIDE.md` described an obsolete architecture** — MetaAPI
+  cloud connectivity and a Render persistent disk at `/data`. Actual production connects to MT5 directly
+  through the `mtapi-bridge` Docker service and uses Render's ephemeral `/tmp` plus a required Redis
+  instance (Redis mirrors Guardian halt state and cross-service commands so they survive restarts —
+  everything else is allowed to reset). Rewrote both docs to describe the system that is actually
+  deployed.
+- **Stale test assertions** in `tests/test_config_validation.py` still expected old defaults
+  (`SYMBOL=XAUUSDb`, `MIN_CONFIRMATIONS=3`) from before those defaults were intentionally changed in
+  `live_trading/config.py`. Updated the assertions to match current code; no config values changed.
+
+### Known Issues (not fixed in this pass — flagged for future work)
+
+- `panel.db` (Telegram accounts, sessions, audit log) has no durable backing store; it lives only in
+  the panel service's ephemeral `/tmp` and is lost on every panel restart.
+- `/crash-log` and `/progress` diagnostic endpoints on the robot service are unauthenticated.
+- A pre-existing, unrelated test (`tests/test_connection_status_fix.py::test_redis_ipc_sends_reconnect_as_restart_mt5`)
+  fails on an unrealistic invocation (`redis_send_command("RECONNECT", {})` with an explicit empty-dict
+  payload); production only ever calls it with no payload, so this does not affect live behavior. Two
+  further pre-existing failures in `tests/test_leverage_real_data.py` use an invalid raw-bytes Fernet key
+  as a test fixture. None of these three are in `live_trading` and none were touched by this session's
+  fixes.
+
+---
+
 ## [4.0.3] — 2026-07-27 — Render Multi-Service Hardening
 
 All fixes in this release address cross-service communication, operational

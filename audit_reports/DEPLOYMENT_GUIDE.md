@@ -1,7 +1,15 @@
 # DEPLOYMENT GUIDE
 ## GoldScalperPro v4 — Production Deployment
-**Date:** 2026-07-19
-**Scope:** Render.com, VPS/Linux (systemd), Docker Compose
+**Date:** 2026-08-10 (rewritten for v4.0.4-stable — supersedes the 2026-07-19 revision below, which
+described an earlier MetaAPI-cloud / persistent-disk architecture that Render is not actually running)
+**Scope:** Render.com (current production setup), VPS/Linux (systemd), Docker Compose
+
+> **What changed since 2026-07-19:** the live system no longer uses MetaAPI cloud — it connects to MT5
+> directly through the `mtapi-bridge` Docker service (`mt5rest`). It also does not use a Render persistent
+> disk; state durability across restarts comes from a required Redis instance instead (see below). The two
+> Python services run as Render **Web Services** (with `/health` endpoints), not Background Workers. The
+> systemd/Docker Compose sections further down this file are unaffected by this correction and remain valid
+> as generic alternatives, except where they also assume MetaAPI/`/data` — adjust env vars accordingly.
 
 ---
 
@@ -10,39 +18,47 @@
 Complete ALL items before deploying with real capital.
 
 ### Mandatory
-- [ ] 5-day paper trading run on MetaAPI demo account completed (no crashes, no double entries)
+- [ ] Paper trading run on a demo MT5 account completed (no crashes, no double entries)
+- [ ] `mtapi-bridge` deployed and reachable, logged into the target MT5 broker account
 - [ ] `PANEL_ENCRYPTION_KEY` generated: `python -m telegram_panel.main --generate-key`
+- [ ] `ROBOT_COMMAND_TOKEN` set to the same random secret on both the robot and panel services
+- [ ] A Redis instance is provisioned in the **same region** as both web services (see Step 3)
 - [ ] All env vars reviewed and set (do NOT use defaults blindly for risk settings)
 - [ ] Engineering tests pass: `python -m pytest tests/ -v`
 - [ ] Dependencies installed from pinned requirements on a clean environment
 
 ### Guardian Threshold Review
-Before live deployment, explicitly decide on these values (do not use defaults without consideration):
+Before live deployment, explicitly decide on these values (do not use defaults without consideration —
+the current production values are shown for reference, they are not necessarily right for a new account):
 
-| Variable | Default | Your decision |
-|----------|---------|---------------|
-| `DAILY_LOSS_LIMIT_PCT` | 3.0% | _______ |
-| `MAX_DRAWDOWN_PCT` | 8.0% | _______ |
-| `SLIPPAGE_POINTS` | 30 | _______ |
-| `RISK_PERCENT` | 1.0% | _______ |
+| Variable | Code default | Current production value | Your decision |
+|----------|---------|---------|---------------|
+| `DAILY_LOSS_LIMIT_PCT` | 3.0% | 4.0% | _______ |
+| `MAX_DRAWDOWN_PCT` | 8.0% | 12.0% | _______ |
+| `MIN_CONFIRMATIONS` | 2 | 2 | _______ |
+| `CONF_HARD_MIN` | — | 32 | _______ |
+| `SLIPPAGE_POINTS` | 30 | 30 | _______ |
+| `RISK_PERCENT` | 1.0% | 1.0% | _______ |
 
 ---
 
-## OPTION 1 — Render.com Deployment (Two-Service)
+## OPTION 1 — Render.com Deployment (Blueprint, `render.yaml`)
 
-### Architecture on Render
+### Architecture on Render (as actually deployed)
 
 ```
-Render Project
-├── goldscalper-v4-robot   (Background Worker)
-│   └── /data/             (Persistent Disk — mount here)
-│       ├── robot_state.json
-│       ├── robot_mt5_snapshot.json
-│       ├── robot_commands.json
-│       └── robot.log
-└── goldscalper-v4-panel   (Background Worker)
-    └── /data/             (Same Persistent Disk — both services share it)
-        └── panel.db
+Render Project (region must match for all services below)
+├── goldscalper-v4-robot   (Web Service — python live_trading/server.py, healthcheck /health)
+├── goldscalper-v4-panel   (Web Service — python telegram_panel/server.py, healthcheck /health)
+├── goldscalper-mtapi      (Docker Web Service — Wine + MT5 + mt5rest, healthcheck /Ping)
+└── goldscalper-redis      (Render managed Redis, internal network only)
+
+No persistent disk is attached or required. Each Python service writes its working files
+(robot_state.json, guardian_state.json, robot_commands.json, panel.db, logs) to its own ephemeral
+/tmp — these are LOST on every restart/redeploy, and that is fine for state that only needs to
+survive within a single running instance. The one thing that DOES need to survive a restart —
+the RiskGuardian's halt/baseline state and cross-service commands — is mirrored to Redis by the
+application itself, which is why Redis is a required dependency, not an optional cache.
 ```
 
 ### Step 1 — Push to GitHub
@@ -59,44 +75,41 @@ git push -u origin main
 
 1. Go to [render.com](https://render.com) → New → Blueprint
 2. Connect your GitHub repository
-3. Render auto-detects `render.yaml` and creates two services
+3. Render auto-detects `render.yaml` and creates all four services (robot, panel, mtapi bridge, Redis)
 
-### Step 3 — Attach Persistent Disk
+### Step 3 — Verify Region Consistency
 
-**Critical:** Without a persistent disk, all state files and the panel database are lost on every restart.
+**Critical:** all four services must be created in the same Render region. If the Redis instance ends up
+in a different region than the robot/panel web services, its internal hostname will not resolve and both
+`redis_send_command()` and the Guardian's Redis mirror will silently fail (commands and halt-state will
+stop surviving restarts, without a hard crash). Check the region on each service in the Render dashboard
+before going live.
 
-1. In Render dashboard → `goldscalper-v4-robot` service → Disks
-2. Add disk: Name `goldscalper-data`, Size `1 GB`, Mount path `/data`
-3. In Render dashboard → `goldscalper-v4-panel` service → Disks
-4. Attach the SAME disk at `/data` (both services must share the same disk)
+### Step 4 — File Paths (already set in `render.yaml`, no action needed)
 
-### Step 4 — Override File Paths
-
-After attaching the persistent disk, set these env vars on BOTH services in the Render dashboard:
-
-```
-STATE_FILE=/data/robot_state.json
-MT5_SNAPSHOT=/data/robot_mt5_snapshot.json
-COMMANDS_FILE=/data/robot_commands.json
-LOG_FILE=/data/robot.log
-PANEL_DB_PATH=/data/panel.db
-ROBOT_STATE_PATH=/data/robot_state.json
-ROBOT_LOG_PATH=/data/robot.log
-PANEL_LOG_PATH=/data/panel.log
-```
+`render.yaml` already points every file-based path at `/tmp/...` for both the robot and the panel. There is
+no persistent disk to mount and no extra path env vars to set — this is a deliberate choice, not a gap (see
+architecture note above).
 
 ### Step 5 — Set Secrets
 
-In Render dashboard → each service → Environment:
+`render.yaml` declares these as `sync: false`, meaning Render will prompt for them in the dashboard the
+first time you deploy the Blueprint — they are never committed to the repo:
 
-**Robot service:**
-- `METAAPI_TOKEN` — from https://app.metaapi.cloud → API
-- `METAAPI_ACCOUNT_ID` — from https://app.metaapi.cloud → Accounts
+**Robot service (`goldscalper-v4-robot`):**
+- `MT5_USER`, `MT5_PASSWORD` — your MT5 broker login/password
+- `ROBOT_COMMAND_TOKEN` — a random shared secret (also set on the panel, must match)
+- `REDIS_URL` — auto-filled by Render from the `goldscalper-redis` service via `fromService`
 
-**Panel service:**
+**Panel service (`goldscalper-v4-panel`):**
 - `TELEGRAM_BOT_TOKEN` — from @BotFather
 - `TELEGRAM_OWNER_ID` — your Telegram numeric user ID
 - `PANEL_ENCRYPTION_KEY` — from `python -m telegram_panel.main --generate-key`
+- `ROBOT_COMMAND_TOKEN` — must match the robot service's value
+- `MT5_USER`, `MT5_PASSWORD` — same broker credentials as the robot
+
+**mtapi bridge (`goldscalper-mtapi`, Docker):**
+- `MT5_USER`, `MT5_PASSWORD` — same broker credentials, used by the MT5 terminal running inside the container
 
 ### Step 6 — Deploy and Verify
 
@@ -285,19 +298,27 @@ docker-compose logs -f panel
 
 ---
 
-## PERSISTENT STORAGE — PLATFORM LIMITATIONS
+## PERSISTENT STORAGE — CURRENT PRODUCTION APPROACH
 
-**Critical finding from audit:** Render uses an ephemeral filesystem. Without a persistent disk, the following data is lost on EVERY container restart:
+**Correction (2026-08-10):** the current deployment does NOT use a Render persistent disk, and this is
+intentional rather than a limitation to work around. Render's filesystem for each web service is ephemeral
+(wiped on every restart/redeploy); the application handles this by mirroring the state that actually needs
+to survive a restart to Redis, and treating everything else as safe to lose:
 
-| Data | Impact of Loss |
-|------|---------------|
-| `robot_state.json` | Trade history lost; Guardian reinitializes from current balance (safe) |
-| `robot_commands.json` | Pending stop commands lost; robot continues running |
-| `robot_mt5_snapshot.json` | Panel shows stale data until next bar |
-| `panel.db` | ALL accounts, users, sessions, audit logs permanently lost |
-| `robot.log` | Historical logs lost |
+| Data | Where it lives | Impact of a restart |
+|------|-----------------|---------------------|
+| `guardian_state.json` (halt flag, daily/session baselines) | **Redis** (durable) + `/tmp` (local cache) | Survives restart — this is the one that matters for safety |
+| `robot_commands.json` (panel → robot commands) | **Redis** (durable) + `/tmp` (local cache) | Survives restart |
+| `robot_state.json`, `robot_mt5_snapshot.json` | `/tmp` only | Lost on restart; robot re-syncs from the broker within one bar — acceptable |
+| `panel.db` (Telegram accounts, sessions, audit log) | `/tmp` only, SQLite | **Lost on every panel restart** — see note below |
+| `robot.log` / `panel.log` | `/tmp` only | Lost on restart; use Render's own log retention/streaming for history |
 
-**This is a PLATFORM LIMITATION — it cannot be fixed in code.** The solution is a persistent disk (Render), a persistent volume (Docker), or a persistent data directory on a VPS.
+**Known gap:** `panel.db` is not currently mirrored anywhere durable. If you need Telegram panel accounts,
+sessions, or its audit log to survive a panel restart, you must either attach a Render persistent disk to
+the panel service and set `PANEL_DB_PATH=/data/panel.db`, or migrate it to Postgres/Redis — this repository
+does not yet do either. This is a real limitation of the current stable version, not something this
+release-preparation pass fixed (fixing it would mean touching application behavior, which was out of scope
+here); flagging it for whoever picks this up next.
 
 ---
 
@@ -306,23 +327,29 @@ docker-compose logs -f panel
 After deploying, verify these are working before enabling live capital:
 
 ```bash
-# 1. Robot is connected
-# Look for this in robot logs:
-✅ MetaAPI connected and synchronized
+# 1. Robot is connected to the mtapi-bridge and MT5
+# Look for this in robot logs (Render dashboard → goldscalper-v4-robot → Logs):
+✅ Connected to mt5rest bridge, MT5 account synchronized
 
 # 2. Guardian is initialized
 # Look for:
 Guardian initialized: balance=XXXX equity=XXXX
 
 # 3. Robot is scanning bars
-# Look for (every 5 minutes):
+# Look for (every timeframe tick):
 ─── Bar #N at 2024-01-15T10:00:00+00:00 ───
 
 # 4. Panel responds
 # Send /status to your Telegram bot — should show robot status
 
-# 5. State file exists and is written
-cat /data/goldscalper/robot_state.json | python -m json.tool
+# 5. Health endpoints respond (used by Render's own health checks too)
+curl https://<your-robot-service>.onrender.com/health
+curl https://<your-panel-service>.onrender.com/health
+curl https://<your-mtapi-service>.onrender.com/Ping
+
+# 6. Guardian/command state is actually reaching Redis (not just /tmp)
+# From the Render dashboard, open a shell on either service and run:
+python -c "from live_trading.redis_ipc import _get_client; print(_get_client().ping())"
 ```
 
 ---
@@ -334,8 +361,11 @@ cat /data/goldscalper/robot_state.json | python -m json.tool
 sudo systemctl stop goldscalper-robot goldscalper-panel
 # or: Render dashboard → Suspend services
 
-# 2. Backup current state
-cp -r /data/goldscalper /data/goldscalper_backup_$(date +%Y%m%d)
+# 2. Backup current state (Render/no persistent disk: pull it out of Redis first, e.g. via a
+# one-off shell on the robot service, since /tmp will not survive the redeploy anyway)
+python -c "from live_trading.redis_ipc import _get_client; import json; print(json.dumps(json.loads(_get_client().get('goldscalper:guardian') or '{}'), indent=2))" > guardian_state_backup_$(date +%Y%m%d).json
+# VPS/systemd with a real /data mount:
+# cp -r /data/goldscalper /data/goldscalper_backup_$(date +%Y%m%d)
 
 # 3. Pull new code
 cd /opt/goldscalper-v4

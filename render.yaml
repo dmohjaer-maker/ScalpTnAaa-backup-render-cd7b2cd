@@ -68,18 +68,29 @@ services:
         value: "300"
       - key: RISK_PERCENT
         value: "1.0"
-      # TESTING MODE: strict filters relaxed so the robot trades more freely
-      # on the demo account. Tighten these again before going live for real.
+      # STABLE v4.0.4 values -- these are the actual settings the bot has been
+      # running with in production (verified against the live Render service
+      # on 2026-08-10). Earlier revisions of this file had leftover
+      # "testing mode" values (MIN_CONFIRMATIONS=1, CONF_HARD_MIN=0,
+      # DAILY_LOSS_LIMIT_PCT=50.0, MAX_DRAWDOWN_PCT=50.0) that no longer
+      # matched the dashboard-configured production values below -- a fresh
+      # deploy from the old file would NOT have reproduced current behavior.
       - key: MIN_CONFIRMATIONS
-        value: "1"
+        value: "2"
       - key: CONF_HARD_MIN
-        value: "0"
+        value: "32"
       - key: DAILY_LOSS_LIMIT_PCT
-        value: "50.0"
+        value: "4.0"
       - key: MAX_DRAWDOWN_PCT
-        value: "50.0"
+        value: "12.0"
       - key: SLIPPAGE_POINTS
         value: "30"
+      # TRADE_TIMEFRAMES / QUALITY_ADX_MIN are read by the live engine and
+      # were set on the live service but missing from this manifest.
+      - key: TRADE_TIMEFRAMES
+        value: "M20,M15,M10,5m"
+      - key: QUALITY_ADX_MIN
+        value: "12"
       - key: PYTHON_VERSION
         value: "3.11.0"
       - key: STATE_FILE

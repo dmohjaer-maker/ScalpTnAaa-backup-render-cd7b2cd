@@ -41,9 +41,10 @@ class TestConfigDefaults:
     """Verify that default values are correct when no env vars are set."""
 
     def test_symbol_default(self):
-        """When SYMBOL is not set, default is XAUUSDb (AMarkets gold symbol)."""
+        """When SYMBOL is not set, default is XAUUSD (AMarkets reports gold as
+        XAUUSD, not XAUUSDb -- see CHANGELOG 4.0.3 render.yaml SYMBOL fix)."""
         cfg = _reload_config({})
-        assert cfg.SYMBOL == "XAUUSDb"
+        assert cfg.SYMBOL == "XAUUSD"
 
     def test_risk_percent_default(self):
         cfg = _reload_config({})
@@ -51,8 +52,10 @@ class TestConfigDefaults:
         assert isinstance(cfg.RISK_PERCENT, float)
 
     def test_min_confirmations_default(self):
+        """Default is 2: SMC (always required) + any 1 of (Trend / PA / Wyckoff)
+        -- see live_trading/config.py MIN_CONFIRMATIONS comment."""
         cfg = _reload_config({})
-        assert cfg.MIN_CONFIRMATIONS == 3
+        assert cfg.MIN_CONFIRMATIONS == 2
         assert isinstance(cfg.MIN_CONFIRMATIONS, int)
 
     def test_daily_loss_limit_default(self):
