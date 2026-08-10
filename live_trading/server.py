@@ -179,6 +179,12 @@ async def _status(req: web.Request):
     now = datetime.now(timezone.utc)
 
     # 1. Try Redis first (cross-service IPC on Render)
+    # FIX: if Redis data is stale (heartbeat too old), fall through to the local
+    # state file instead of returning a frozen "disconnected" snapshot.
+    # The local file is written every BAR_CHECK_INTERVAL (≈15 s) by the engine
+    # loop, so it is usually much fresher than Redis when Redis writes silently
+    # fail (e.g. free-tier connection drops between writes).
+    _redis_stale_fallback: dict | None = None   # kept for last-resort use
     try:
         from live_trading.redis_ipc import redis_read_state, redis_available
         if redis_available():
@@ -191,17 +197,22 @@ async def _status(req: web.Request):
                     state["_data_age_seconds"] = int(age)
                     state["_data_fresh"] = age <= _HEARTBEAT_MAX_AGE_SECONDS
                     if age > _HEARTBEAT_MAX_AGE_SECONDS:
+                        # Stale — annotate but keep aside; try local file first
                         state["status"] = "disconnected"
                         state["connection_status"] = "disconnected"
                         state["mt5_status"] = "disconnected"
+                        _redis_stale_fallback = state
+                    else:
+                        # Fresh Redis data — return immediately
+                        return web.Response(
+                            status=200,
+                            text=json.dumps(state, default=str),
+                            content_type="application/json",
+                        )
                 else:
                     state["_data_fresh"] = False
                     state["_data_age_seconds"] = -1
-                return web.Response(
-                    status=200,
-                    text=json.dumps(state, default=str),
-                    content_type="application/json",
-                )
+                    _redis_stale_fallback = state
     except Exception:
         pass
 
@@ -226,7 +237,15 @@ async def _status(req: web.Request):
             content_type="application/json",
         )
 
-    # 3. Last resort: return in-memory supervisor status (no data = truly unknown)
+    # 3. Stale Redis as fallback (better than nothing — still has account/trade data)
+    if _redis_stale_fallback is not None:
+        return web.Response(
+            status=200,
+            text=json.dumps(_redis_stale_fallback, default=str),
+            content_type="application/json",
+        )
+
+    # 4. Last resort: return in-memory supervisor status (no data = truly unknown)
     return web.Response(
         status=200,
         text=json.dumps({
