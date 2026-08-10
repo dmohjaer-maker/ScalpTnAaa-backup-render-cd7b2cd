@@ -488,11 +488,19 @@ class GoldScalperLive:
                 # 2026 context would crash the signal pipeline or open a trade
                 # with completely wrong ATR/SL/TP values.  Skip any bar that is
                 # more than 2 hours old relative to UTC wall-clock time.
+                # Normalize to naive UTC immediately.  get_last_completed_bar_time()
+                # may return timezone-aware datetimes (when the mt5rest response
+                # includes a "Z" suffix) on some timeframes and naive on others.
+                # Storing a mix into _last_bar_times causes max() inside
+                # _write_state() to raise:
+                #   TypeError: can't compare offset-naive and offset-aware datetimes
+                # which silently crashes every _write_state() call (WAITING, ERROR,
+                # STOPPED) — leaving the state file permanently frozen at RUNNING.
                 _bt_naive = bt.replace(tzinfo=None) if bt.tzinfo else bt
                 _stale_cutoff = datetime.utcnow() - timedelta(hours=2)
                 if _bt_naive < _stale_cutoff:
-                    # Still update last_bar_times so we don't log this every tick
-                    self._last_bar_times[tf] = bt
+                    # Still update last_bar_times (as naive) so we don't re-log
+                    self._last_bar_times[tf] = _bt_naive
                     log.debug(
                         f"[{tf}] Bar {bt.isoformat()} is stale "
                         f"(>{int((datetime.utcnow() - _bt_naive).total_seconds()/3600)}h old) "
@@ -500,9 +508,9 @@ class GoldScalperLive:
                     )
                     continue
                 prev = self._last_bar_times.get(tf)
-                if prev is None or bt > prev:
-                    self._last_bar_times[tf] = bt
-                    results.append((tf, bt))
+                if prev is None or _bt_naive > prev:
+                    self._last_bar_times[tf] = _bt_naive
+                    results.append((tf, _bt_naive))
             except Exception as _bar_err:
                 log.warning(f"[{tf}] Bar time check failed: {_bar_err}")
         return results
