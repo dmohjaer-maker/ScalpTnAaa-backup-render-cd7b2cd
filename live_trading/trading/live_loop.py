@@ -843,6 +843,49 @@ class GoldScalperLive:
                                   extra=self._guardian_extra(gs))
                 return
 
+        # 8c. Safety re-check: confirm we are still flat immediately before
+        # sending the order.
+        #
+        # ROOT CAUSE: mt5rest has occasionally corrupted a genuinely open
+        # position's row into a "lone row with an insane volume" (see
+        # _dedupe_positions in mt5/connector.py) — a bridge-side glitch, not a
+        # real second position. _dedupe_positions correctly discards that
+        # garbage row as unreliable, but the side effect is that
+        # get_open_positions() briefly reports the account as flat (raw
+        # positions = []) even though a real position is still open in MT5.
+        # If that happens to coincide with step 4's position check above, the
+        # MAX_OPEN_TRADES gate (step 7) sees 0 open positions and lets a
+        # second, unintended position stack on top of the first.
+        #
+        # Re-polling right here — seconds later, after the decision engine,
+        # snapshot write, and all other gates have already run — is enough
+        # time for a transient bridge glitch to clear. If a position now
+        # shows up, we abort this entry rather than risk stacking a duplicate.
+        # This costs one extra read-only mt5rest call only on the path that
+        # is about to place an order; every other code path (trailing stop,
+        # /close_all, panel snapshot) is untouched.
+        try:
+            _confirm_positions = await get_open_positions(SYMBOL)
+        except RuntimeError as _confirm_err:
+            log.error(
+                f"Pre-order safety re-check could not verify positions — "
+                f"skipping entry this bar: {_confirm_err}"
+            )
+            self._write_state("WAITING", acc_info, decision, pos,
+                               extra=self._guardian_extra(gs))
+            return
+        if _confirm_positions:
+            _confirm_pos = mt5_pos_to_dict(_confirm_positions[0])
+            log.warning(
+                f"Pre-order safety re-check found position "
+                f"{_confirm_pos.get('id')} that was missing from the earlier "
+                f"scan this bar (likely a transient mt5rest reporting glitch) "
+                f"— aborting this entry to avoid stacking a duplicate position."
+            )
+            self._write_state("HOLDING", acc_info, decision, _confirm_pos,
+                               extra=self._guardian_extra(gs))
+            return
+
         # 9. ── PLACE ORDER ────────────────────────────────────────────────────
         tp_params = decision.trade_params
         log.info(
