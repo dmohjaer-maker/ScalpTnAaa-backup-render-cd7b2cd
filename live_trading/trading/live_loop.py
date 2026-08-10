@@ -66,6 +66,17 @@ from live_trading.utils.state_writer import (
 
 log = get_logger()
 
+def _checkpoint(msg: str) -> None:
+    """Write a bounded-size progress marker to an always-writable path so we
+    can pinpoint exactly where the engine hangs, even when no exception is
+    ever raised (e.g. an unbounded await). Never let this raise."""
+    try:
+        with open("/tmp/progress.txt", "a", encoding="utf-8") as _f:
+            _f.write(f"{datetime.utcnow().isoformat()}  {msg}\n")
+    except Exception:
+        pass
+
+
 # ── Exponential backoff constants ─────────────────────────────────────────────
 _RECONNECT_MAX_DELAY = 300   # seconds — hard cap regardless of attempt count
 _RECONNECT_BASE      = RECONNECT_DELAY  # first-failure delay (from config, default 30s)
@@ -299,7 +310,9 @@ class GoldScalperLive:
                             "Guardian will block trades until account data is available"
                         )
 
+            _checkpoint("before calibrate_wyckoff")
             await self._calibrate_wyckoff()
+            _checkpoint("after calibrate_wyckoff")
             # Write RUNNING state immediately after connect with real account data
             # so the panel shows live balance before the first bar fires.
             self._write_state("RUNNING", self._last_acc_info)
@@ -353,7 +366,9 @@ class GoldScalperLive:
         )
         try:
             while self.running:
+                _checkpoint(f"loop#{self.loop_count} tick start")
                 await self._process_commands()
+                _checkpoint(f"loop#{self.loop_count} commands processed")
 
                 if self.paused:
                     await asyncio.sleep(BAR_CHECK_INTERVAL)
@@ -364,6 +379,7 @@ class GoldScalperLive:
                     SYNC_TIMEOUT,
                     attempt=self._reconnect_attempts + 1,
                 )
+                _checkpoint(f"loop#{self.loop_count} ensure_connected -> {ok}")
                 if not ok:
                     self._reconnect_attempts += 1
                     backoff = min(
@@ -389,6 +405,7 @@ class GoldScalperLive:
                 # candle close) so it reacts within seconds of price crossing
                 # a step, not up to 5 minutes late.
                 await self._manage_trailing_stop()
+                _checkpoint(f"loop#{self.loop_count} trailing stop managed")
 
                 # Reset the within-tick trade guard before processing this
                 # tick's bars.  All _on_new_bar() calls that share this tick
@@ -396,6 +413,7 @@ class GoldScalperLive:
                 # flag and only the first successful placement will go through.
                 self._trade_opened_this_tick = False
                 new_bars = await self._check_new_bars()
+                _checkpoint(f"loop#{self.loop_count} new_bars={len(new_bars)}")
                 if new_bars:
                     for _tf, _bar_time in new_bars:
                         self.loop_count += 1
