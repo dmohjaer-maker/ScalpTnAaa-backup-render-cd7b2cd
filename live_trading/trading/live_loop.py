@@ -1325,19 +1325,27 @@ class GoldScalperLive:
         unavailable — no behavior change from before in that case.
         """
         history: List[dict] = []
+        _file_n = 0
         try:
             if os.path.exists(STATE_FILE):
                 with open(STATE_FILE, "r", encoding="utf-8") as f:
                     state = json.load(f)
                 history = list(state.get("recent_trades", []))
+                _file_n = len(history)
         except Exception as exc:
             log.warning(f"Could not restore trade history from file: {exc}")
 
+        _redis_n = 0
+        _redis_status = "unavailable"
         try:
             from live_trading.redis_ipc import redis_read_state
             redis_state = redis_read_state()
-            if redis_state:
+            if redis_state is None:
+                _redis_status = "no data / unreachable"
+            else:
                 redis_history = redis_state.get("recent_trades", [])
+                _redis_n = len(redis_history)
+                _redis_status = f"{_redis_n} records"
                 if redis_history:
                     # Merge on position_id — Redis may hold trades opened by a
                     # session whose local file never got persisted (or vice
@@ -1352,10 +1360,13 @@ class GoldScalperLive:
                             history.append(entry)
                             seen.add(pid)
         except Exception as exc:
+            _redis_status = f"error: {exc}"
             log.debug(f"Could not restore trade history from Redis: {exc}")
 
-        if history:
-            log.info(f"📂 Restored {len(history)} trade records from previous session")
+        log.info(
+            f"📂 Trade history restore: file={_file_n} record(s), "
+            f"redis={_redis_status} → merged total={len(history)}"
+        )
         return history
 
     # ── Guardian state helper ─────────────────────────────────────────────────
