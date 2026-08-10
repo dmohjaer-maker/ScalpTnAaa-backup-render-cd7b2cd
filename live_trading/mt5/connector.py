@@ -25,7 +25,7 @@ mt5rest endpoints used:
 import asyncio
 import time as _time
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 
@@ -644,8 +644,10 @@ async def get_account_balance() -> float:
 
 
 async def get_open_positions(
-    symbol: str = "", known_positions: Optional[Dict[str, dict]] = None
-) -> List[dict]:
+    symbol: str = "",
+    known_positions: Optional[Dict[str, dict]] = None,
+    return_diagnostics: bool = False,
+):
     """Fetch open positions from mt5rest.
 
     Raises RuntimeError when mt5rest returns an error response (dict with
@@ -657,6 +659,15 @@ async def get_open_positions(
     known_positions: optional map of {str(ticket): {"volume":, "direction":}}
     for tickets this robot itself opened, used to repair a corrupted lone row
     for that same ticket instead of dropping it — see _dedupe_positions.
+
+    return_diagnostics: when True, returns (positions, dropped_unknown_tickets)
+    instead of just positions. dropped_unknown_tickets lists tickets that were
+    dropped as phantom rows because they didn't match known_positions — this
+    does NOT prove a real position is open (most such rows are genuine bridge
+    garbage), but it is a signal the entry gate uses to be conservative: it
+    would rather skip one bar's entry than risk opening on top of a position
+    it simply doesn't recognize yet (e.g. right after a restart, before
+    known_positions has repopulated — see live_loop._known_open_tickets).
 
     FIX: retries once with a fresh ConnectEx on stale-conn_id errors.
     """
@@ -683,7 +694,10 @@ async def get_open_positions(
                     )
                     _invalidate_connection()
                     continue
-                return _parse_open_positions_response(data, resp.status, known_positions)
+                positions, dropped = _parse_open_positions_response(
+                    data, resp.status, known_positions
+                )
+                return (positions, dropped) if return_diagnostics else positions
         except RuntimeError:
             raise
         except Exception as exc:
@@ -698,11 +712,13 @@ async def get_open_positions(
 
 def _parse_open_positions_response(
     data: object, status: int, known_positions: Optional[Dict[str, dict]] = None
-) -> List[dict]:
+) -> Tuple[List[dict], List[str]]:
     """Accept only a successful list response from OpenedOrders.
 
     Any other payload is an unknown position state. Returning an empty list for
     an error-shaped or malformed response could allow a duplicate entry.
+
+    Returns (positions, dropped_unknown_tickets).
     """
     if status < 200 or status >= 300:
         message = (
@@ -783,6 +799,7 @@ def _dedupe_positions(
         by_ticket[ticket].append(row)
 
     result: List[dict] = []
+    dropped_unknown: List[str] = []
     for ticket in order:
         group = by_ticket[ticket]
         if len(group) == 1:
@@ -810,12 +827,18 @@ def _dedupe_positions(
                 else:
                     # Unknown/foreign ticket: no record of ever opening it —
                     # phantom bridge artifact, drop it entirely as before.
+                    # Still recorded in dropped_unknown so the entry gate can
+                    # be conservative (see get_open_positions docstring): most
+                    # of the time this really is bridge garbage, but right
+                    # after a restart (known_positions not yet repopulated)
+                    # it could be a real ticket we just don't recognise yet.
                     log.warning(
                         f"mt5rest returned a lone row for ticket {ticket!r} "
                         f"with an insane volume ({vol:.0f}L > {_MAX_SANE_VOLUME_LOTS}L limit) "
                         f"— dropping phantom row (direction={row.get('type')}, "
                         f"openPrice={row.get('openPrice', row.get('price_open'))})"
                     )
+                    dropped_unknown.append(str(ticket))
             else:
                 result.append(row)
             continue
@@ -838,7 +861,7 @@ def _dedupe_positions(
                 f"(volumes seen: {[row.get('volume', row.get('lots')) for row in group]})"
             )
             result.append(group[0])
-    return result
+    return result, dropped_unknown
 
 
 async def get_last_completed_bar_time(

@@ -666,7 +666,9 @@ class GoldScalperLive:
         # response.  Treat that as a missing position check — skip trade entry
         # for this bar rather than risking duplicate-entry or crashing the loop.
         try:
-            raw_positions = await get_open_positions(SYMBOL, self._known_open_tickets())
+            raw_positions, _dropped_unknown = await get_open_positions(
+                SYMBOL, self._known_open_tickets(), return_diagnostics=True
+            )
         except RuntimeError as _pos_err:
             log.error(
                 f"Cannot verify open positions — skipping trade entry this bar: {_pos_err}"
@@ -675,6 +677,24 @@ class GoldScalperLive:
             return
         pos_dicts = [mt5_pos_to_dict(p) for p in raw_positions]
         pos       = pos_dicts[0] if pos_dicts else None
+
+        # DEFENSE IN DEPTH: an unrecognised corrupted row was dropped this
+        # poll. Most of the time that really is bridge garbage, but right
+        # after a restart (known_positions not yet repopulated — see
+        # _known_open_tickets) it can be a real position we simply don't
+        # recognise yet, and treating "recognised 0 positions" as "flat" is
+        # exactly the bug that let 5 duplicate entries stack in this
+        # incident. Skip entry for this bar rather than risk stacking on top
+        # of something we can't yet identify; positions we DO recognise are
+        # unaffected and continue to be managed normally.
+        if _dropped_unknown and pos is None:
+            log.warning(
+                f"Skipping trade entry — mt5rest reported unidentified ticket(s) "
+                f"{_dropped_unknown} this poll that don't match any known "
+                f"position; treating as possibly-open rather than assuming flat."
+            )
+            self._write_state("WAITING", acc_info)
+            return
 
         if pos:
             log.info(f"Open position: id={pos['id']}  "
@@ -1281,6 +1301,12 @@ class GoldScalperLive:
         "274131357": {"volume": 0.01, "direction": "BUY"},
         "274131902": {"volume": 0.01, "direction": "BUY"},
         "274132482": {"volume": 0.01, "direction": "BUY"},
+        # Opened 22:44:30 UTC during this same incident window, before the
+        # entry-gate hardening below existed: a restart briefly emptied
+        # trade_history, the gate saw zero open positions, and a live signal
+        # was allowed through, stacking a 5th real position. Same recovery
+        # treatment as the other four.
+        "274134983": {"volume": 0.01, "direction": "BUY"},
     }
 
     def _known_open_tickets(self) -> dict:
