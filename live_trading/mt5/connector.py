@@ -325,7 +325,8 @@ async def start_connection_watchdog(interval_seconds: float = 30.0) -> None:
       reconnect latency is ~60 s, not one full 5-minute bar.
     """
     global _watchdog_task
-    log.info(f"[watchdog] MT5 connection watchdog started (interval={interval_seconds}s) — reconnect within {interval_seconds}s of any drop")
+    log.info(f"[watchdog] MT5 connection watchdog started (interval={interval_seconds}s) — reconnect within {interval_seconds*2}s of any sustained drop")
+    _watchdog_consec_failures = 0   # consecutive ConnectionStatus=false counter
     try:
         while True:
             await asyncio.sleep(interval_seconds)
@@ -340,7 +341,9 @@ async def start_connection_watchdog(interval_seconds: float = 30.0) -> None:
                 else:
                     log.warning("[watchdog] ⚠️  Proactive reconnect failed — will retry next interval")
             else:
-                # Verify the connection is still truly alive
+                # Verify the connection is still truly alive.
+                # Require 2 consecutive failures before invalidating to avoid
+                # triggering a full reconnect cycle on a single transient blip.
                 try:
                     sess = _get_session()
                     async with sess.get(
@@ -349,14 +352,37 @@ async def start_connection_watchdog(interval_seconds: float = 30.0) -> None:
                         timeout=aiohttp.ClientTimeout(total=8),
                     ) as resp:
                         data = await resp.json(content_type=None)
-                        if not (isinstance(data, dict) and data.get("isConnected")):
-                            log.warning("[watchdog] ConnectionStatus=false — reconnecting …")
-                            _invalidate_connection()
-                            await ensure_connected()
+                        if isinstance(data, dict) and data.get("isConnected"):
+                            _watchdog_consec_failures = 0  # reset on success
+                        else:
+                            _watchdog_consec_failures += 1
+                            log.warning(
+                                f"[watchdog] ConnectionStatus=false "
+                                f"(failure {_watchdog_consec_failures}/2) — "
+                                + ("reconnecting …" if _watchdog_consec_failures >= 2
+                                   else "waiting for confirmation …")
+                            )
+                            if _watchdog_consec_failures >= 2:
+                                _watchdog_consec_failures = 0
+                                _invalidate_connection()
+                                try:
+                                    await ensure_connected()
+                                except Exception as _rc_err:
+                                    log.warning(f"[watchdog] reconnect attempt failed: {_rc_err}")
                 except Exception as exc:
-                    log.warning(f"[watchdog] ConnectionStatus check failed: {exc} — reconnecting …")
-                    _invalidate_connection()
-                    await ensure_connected()
+                    _watchdog_consec_failures += 1
+                    log.warning(
+                        f"[watchdog] ConnectionStatus check failed (failure "
+                        f"{_watchdog_consec_failures}/2): {exc}"
+                        + (" — reconnecting …" if _watchdog_consec_failures >= 2 else "")
+                    )
+                    if _watchdog_consec_failures >= 2:
+                        _watchdog_consec_failures = 0
+                        _invalidate_connection()
+                        try:
+                            await ensure_connected()
+                        except Exception as _rc_err:
+                            log.warning(f"[watchdog] reconnect attempt failed: {_rc_err}")
     except asyncio.CancelledError:
         log.info("[watchdog] MT5 connection watchdog stopped")
         raise
@@ -421,7 +447,12 @@ async def start_mt5_session_keepalive(
                     log.warning(f"[mt5_keepalive] Proactive refresh error: {exc}")
                 continue
 
-            # Normal keepalive: ping ConnectionStatus to keep broker socket warm
+            # Normal keepalive: ping ConnectionStatus to keep broker socket warm.
+            # This task's ONLY job is keeping the MT5 broker socket alive.
+            # Reconnection is handled exclusively by the watchdog — having two
+            # tasks both call _invalidate_connection() creates a race condition
+            # that crashes the trading loop.  We log warnings here but never
+            # invalidate or reconnect from this task.
             try:
                 sess = _get_session()
                 async with sess.get(
@@ -434,15 +465,14 @@ async def start_mt5_session_keepalive(
                     if is_alive:
                         log.debug("[mt5_keepalive] ✅ Broker session alive")
                     else:
+                        # Log only — watchdog will detect and reconnect within its interval
                         log.warning(
-                            "[mt5_keepalive] Broker ConnectionStatus=false — reconnecting …"
+                            "[mt5_keepalive] Broker ConnectionStatus=false — "
+                            "watchdog will reconnect (no action taken here)"
                         )
-                        _invalidate_connection()
-                        await ensure_connected()
             except Exception as exc:
-                log.warning(f"[mt5_keepalive] ConnectionStatus ping failed: {exc} — reconnecting …")
-                _invalidate_connection()
-                await ensure_connected()
+                # Fail-open: log but never crash or reconnect from keepalive
+                log.debug(f"[mt5_keepalive] ping skipped: {exc}")
 
     except asyncio.CancelledError:
         log.info("[mt5_keepalive] MT5 broker-session keepalive stopped")
