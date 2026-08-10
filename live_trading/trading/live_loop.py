@@ -25,7 +25,7 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from live_trading.config import (
@@ -480,6 +480,24 @@ class GoldScalperLive:
             try:
                 bt = await get_last_completed_bar_time(SYMBOL, tf)
                 if bt is None:
+                    continue
+                # ── Staleness guard ──────────────────────────────────────────
+                # Right after MT5 connects, PriceHistoryV2 returns cached
+                # historical data (sometimes years old) until the terminal
+                # finishes syncing from the broker.  Processing a 2022 bar in
+                # 2026 context would crash the signal pipeline or open a trade
+                # with completely wrong ATR/SL/TP values.  Skip any bar that is
+                # more than 2 hours old relative to UTC wall-clock time.
+                _bt_naive = bt.replace(tzinfo=None) if bt.tzinfo else bt
+                _stale_cutoff = datetime.utcnow() - timedelta(hours=2)
+                if _bt_naive < _stale_cutoff:
+                    # Still update last_bar_times so we don't log this every tick
+                    self._last_bar_times[tf] = bt
+                    log.debug(
+                        f"[{tf}] Bar {bt.isoformat()} is stale "
+                        f"(>{int((datetime.utcnow() - _bt_naive).total_seconds()/3600)}h old) "
+                        f"— waiting for MT5 historical data sync"
+                    )
                     continue
                 prev = self._last_bar_times.get(tf)
                 if prev is None or bt > prev:
