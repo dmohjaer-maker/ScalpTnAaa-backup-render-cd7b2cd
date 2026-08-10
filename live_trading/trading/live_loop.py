@@ -46,6 +46,8 @@ from live_trading.risk.trailing_stop import (
     TrailingConfig, compute_staircase_sl, should_apply, r_multiple_of,
 )
 from live_trading.signals.decision_engine import run_decision_engine, DecisionResult, describe_strategy
+from live_trading.signals.news_filter import check_news_filter
+from live_trading.signals.dxy_filter import get_dxy_signal
 from live_trading.signals.mtf_filter import compute_mtf_bias, mtf_allows_trade, MtfBias
 from live_trading.signals.wyckoff_engine import calibrate_wyckoff, set_calibrated_config
 from live_trading.mt5.connector import (
@@ -577,6 +579,39 @@ class GoldScalperLive:
             log.info(f"Open position: id={pos['id']}  "
                      f"dir={pos['type']}  profit={pos.get('profit', 0):.2f}")
 
+        # 4.5 ── News filter + DXY correlation (async, run concurrently) ──────────
+        #   news_filter: blocks trading 15 min before / 30 min after high-impact
+        #     USD events (FOMC, CPI, NFP, PPI, GDP…).  Fail-open: feed outage
+        #     never silences the robot.
+        #   dxy_filter:  fetches real-time Dollar Index trend from Yahoo Finance
+        #     and passes it to the confidence engine as a ±5 pt bonus/penalty.
+        try:
+            _news_result, _dxy_result = await asyncio.gather(
+                check_news_filter(),
+                get_dxy_signal(),
+                return_exceptions=True,
+            )
+            # If either task raised, treat as neutral / not-blocked
+            if isinstance(_news_result, Exception):
+                log.warning(f"News filter error (fail-open): {_news_result}")
+                _news_result = type("_N", (), {"blocked": False, "reason": ""})()
+            if isinstance(_dxy_result, Exception):
+                log.warning(f"DXY filter error (fail-open): {_dxy_result}")
+                _dxy_result = type("_D", (), {"signal": "NEUTRAL"})()
+        except Exception as _filter_exc:
+            log.warning(f"Filter gather error (fail-open): {_filter_exc}")
+            _news_result = type("_N", (), {"blocked": False, "reason": ""})()
+            _dxy_result  = type("_D", (), {"signal": "NEUTRAL"})()
+
+        if _news_result.blocked:
+            log.info(f"📰 NEWS FILTER — trade skipped: {_news_result.reason}")
+            self._write_state("WAITING", acc_info)
+            return
+
+        _dxy_signal = getattr(_dxy_result, "signal", "NEUTRAL")
+        if _dxy_signal != "NEUTRAL":
+            log.info(f"💵 DXY signal: {_dxy_signal}")
+
         # 5. Run decision engine (synchronous — all heavy math)
         decision = run_decision_engine(
             candles,
@@ -584,6 +619,7 @@ class GoldScalperLive:
             risk_percent=RISK_PERCENT,
             min_confirmations=MIN_CONFIRMATIONS,
             use_atr_high_vol=USE_ATR_HIGH_VOL_FILTER,
+            dxy_signal=_dxy_signal,
         )
         self.last_decision = decision
 
