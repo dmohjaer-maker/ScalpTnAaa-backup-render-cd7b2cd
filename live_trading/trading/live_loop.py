@@ -1309,25 +1309,54 @@ class GoldScalperLive:
 
     def _load_trade_history(self) -> List[dict]:
         """
-        Restore trade history from the last written robot_state.json.
-        This ensures the Telegram panel keeps showing history after a restart.
-        No safety implications — the live MT5 position check prevents
-        duplicate entries independently.
+        Restore trade history from the last written robot_state.json, falling
+        back to (and merging with) the Redis-mirrored copy.
+
+        ROOT-CAUSE FIX: On Render, STATE_FILE lives on the service's ephemeral
+        filesystem — every deploy/restart starts from a clean container, so
+        the local JSON file is empty right after any restart. Without this,
+        _known_open_tickets() (used to repair mt5rest's corrupted phantom-row
+        volume/type fields — see connector._dedupe_positions) would also come
+        back empty right after a restart, silently reopening the exact
+        blind-spot the phantom-row fix targets until this session logs a
+        brand-new trade itself. Redis (REDIS_URL) is the durable cross-service
+        copy already used for guardian-state restore; merging it in here
+        closes that gap. Falls back to file-only, then empty, if Redis is
+        unavailable — no behavior change from before in that case.
         """
+        history: List[dict] = []
         try:
             if os.path.exists(STATE_FILE):
                 with open(STATE_FILE, "r", encoding="utf-8") as f:
                     state = json.load(f)
-                history = state.get("recent_trades", [])
-                if history:
-                    log.info(
-                        f"📂 Restored {len(history)} trade records "
-                        f"from previous session"
-                    )
-                return list(history)
+                history = list(state.get("recent_trades", []))
         except Exception as exc:
-            log.warning(f"Could not restore trade history: {exc}")
-        return []
+            log.warning(f"Could not restore trade history from file: {exc}")
+
+        try:
+            from live_trading.redis_ipc import redis_read_state
+            redis_state = redis_read_state()
+            if redis_state:
+                redis_history = redis_state.get("recent_trades", [])
+                if redis_history:
+                    # Merge on position_id — Redis may hold trades opened by a
+                    # session whose local file never got persisted (or vice
+                    # versa). Keep whichever entry we see first per ticket.
+                    seen = {
+                        entry.get("position_id") for entry in history
+                        if entry.get("position_id") is not None
+                    }
+                    for entry in redis_history:
+                        pid = entry.get("position_id")
+                        if pid is not None and pid not in seen:
+                            history.append(entry)
+                            seen.add(pid)
+        except Exception as exc:
+            log.debug(f"Could not restore trade history from Redis: {exc}")
+
+        if history:
+            log.info(f"📂 Restored {len(history)} trade records from previous session")
+        return history
 
     # ── Guardian state helper ─────────────────────────────────────────────────
 
