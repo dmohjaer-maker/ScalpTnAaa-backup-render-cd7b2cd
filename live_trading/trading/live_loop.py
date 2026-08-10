@@ -94,6 +94,10 @@ class GoldScalperLive:
         # bridge has not yet registered the trade placed by the previous call),
         # causing N trades to open instead of 1.
         self._trade_opened_this_tick: bool = False
+        # tracks the last successfully placed trade (direction + bar_time)
+        # so the post-SL cooldown gate can detect same-direction re-entry.
+        self._last_entry_bar_time: Optional[datetime] = None
+        self._last_entry_direction: str = ""
         self.trade_history: List[dict] = []
         self.last_decision: Optional[DecisionResult] = None
 
@@ -754,6 +758,31 @@ class GoldScalperLive:
                 self._write_state("SCANNING", acc_info, decision, pos, extra=_mtf_extra)
                 return
 
+        # 7c. Gate: post-SL cooldown in choppy/range regimes
+        # If the last trade was in the same direction and closed (or will close)
+        # within 2 bars, the market setup has NOT changed — skip re-entry.
+        # Uses only the existing _last_entry state; fails-open on any parse error.
+        _RANGE_COOLDOWN_REGIMES = {"RANGE", "ACCUMULATION", "DISTRIBUTION", "HIGH_VOLATILITY"}
+        if (self._last_entry_bar_time is not None
+                and self._last_entry_direction == decision.direction
+                and decision.regime in _RANGE_COOLDOWN_REGIMES):
+            _TF_MIN_MAP = {
+                "M1": 1, "1m": 1, "M5": 5, "5m": 5, "M10": 10, "10m": 10,
+                "M15": 15, "15m": 15, "M20": 20, "M30": 30, "30m": 30,
+                "H1": 60, "1h": 60, "H4": 240,
+            }
+            _tf_min = _TF_MIN_MAP.get(tf, 15)
+            _elapsed_min = (bar_time - self._last_entry_bar_time).total_seconds() / 60.0
+            if _elapsed_min < 2 * _tf_min:
+                log.info(
+                    f"⏸ Post-SL cooldown [{tf}]: {decision.direction} last entered "
+                    f"{_elapsed_min:.0f}min ago in {decision.regime} regime — "
+                    f"cooldown {2*_tf_min}min, skipping bar"
+                )
+                self._write_state("WAITING", acc_info, decision, pos,
+                                  extra=self._guardian_extra(gs))
+                return
+
         # 9. ── PLACE ORDER ────────────────────────────────────────────────────
         tp_params = decision.trade_params
         log.info(
@@ -779,6 +808,8 @@ class GoldScalperLive:
             # Block all further _on_new_bar calls in this tick from opening
             # another position (covers the multi-TF same-bar-boundary race).
             self._trade_opened_this_tick = True
+            self._last_entry_bar_time   = bar_time
+            self._last_entry_direction  = decision.direction
             strategy = describe_strategy(decision)
             entry_log = {
                 "position_id": result.position_id,
