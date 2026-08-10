@@ -1265,6 +1265,24 @@ class GoldScalperLive:
                     log.warning(f"update_strategy payload error: {_upd_err}")
             clear_command("update_strategy")
 
+    # INCIDENT RECOVERY (2026-08-10): these 4 real XAUUSD BUY 0.01 tickets were
+    # opened before the phantom-row repair fix existed, then their local
+    # trade-log record (and its Redis mirror) was lost across the several
+    # restarts made while deploying/debugging that fix — leaving mt5rest's
+    # corrupted rows for them with no known-good data to repair from, so the
+    # gate/trailing-stop/close_all stayed blind to all four. Values below
+    # come directly from the account screenshots and the robot's own logs at
+    # the time each was opened (ticket → BUY 0.01 lots). Safe to delete this
+    # block (and the two lines wiring it into _known_open_tickets) once all
+    # four tickets have closed — after that mt5rest will simply stop
+    # reporting them and this map becomes a no-op.
+    _LEGACY_RECOVERED_POSITIONS = {
+        "274131033": {"volume": 0.01, "direction": "BUY"},
+        "274131357": {"volume": 0.01, "direction": "BUY"},
+        "274131902": {"volume": 0.01, "direction": "BUY"},
+        "274132482": {"volume": 0.01, "direction": "BUY"},
+    }
+
     def _known_open_tickets(self) -> dict:
         """Build {str(position_id): {"volume", "direction"}} from this robot's
         own trade log, for every position it has ever opened.
@@ -1275,7 +1293,7 @@ class GoldScalperLive:
         ticket is currently open; this map only fixes its volume/type fields
         when it reports one of our own tickets with obviously corrupted data.
         """
-        known: dict = {}
+        known: dict = dict(self._LEGACY_RECOVERED_POSITIONS)
         for entry in self.trade_history:
             pid = entry.get("position_id")
             direction = entry.get("direction")
