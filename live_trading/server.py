@@ -519,6 +519,16 @@ async def _keepalive():
         await session.close()
 
 
+
+async def _crash_log(request):
+    try:
+        with open("/tmp/crash_trace.txt", "r", encoding="utf-8") as f:
+            content = f.read()[-20000:]
+    except Exception as e:
+        content = f"(no crash log yet: {e})"
+    return web.Response(text=content, content_type="text/plain")
+
+
 async def _run_robot_once():
     global _robot_status
     from live_trading.config import MTAPI_URL, MT5_USER, MT5_PASSWORD
@@ -548,6 +558,17 @@ async def _run_robot_once():
                 "GoldScalperLive.start() returned False — "
                 "MT5 connection or engine startup failed."
             )
+    except Exception:
+        # DIAGNOSTIC: persist the full traceback to an always-writable path so
+        # it survives even if the in-memory log buffer / Redis / state file
+        # writes are themselves failing.  Exposed via GET /crash-log.
+        try:
+            with open("/tmp/crash_trace.txt", "a", encoding="utf-8") as _f:
+                _f.write(f"\n\n=== crash at {datetime.now(timezone.utc).isoformat()} ===\n")
+                traceback.print_exc(file=_f)
+        except Exception:
+            pass
+        raise
     finally:
         _robot_status = "STOPPED"
         try:
