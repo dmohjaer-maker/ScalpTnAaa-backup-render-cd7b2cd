@@ -274,6 +274,18 @@ class GoldScalperLive:
                                     "🛡️  Guardian HALT restored — trading PAUSED.  "
                                     "Use /reset_guardian in Telegram to resume."
                                 )
+                                # ROOT-CAUSE FIX: without this write, the paused loop
+                                # below never calls _write_state() again (it takes the
+                                # `if self.paused: sleep; continue` branch before ever
+                                # reaching a state-writing code path), so the state
+                                # file/Redis heartbeat freezes forever at the last
+                                # RUNNING write and /status looks like a dead/crashed
+                                # robot even though it is alive and correctly halted.
+                                self._write_state(
+                                    "PAUSED",
+                                    self._last_acc_info,
+                                    extra={"guardian_halt_reason": _gs_data.get("halt_reason", "restored from previous session")},
+                                )
                             else:
                                 log.info(
                                     "🛡️  Guardian baseline restored — "
@@ -371,6 +383,10 @@ class GoldScalperLive:
                 _checkpoint(f"loop#{self.loop_count} commands processed")
 
                 if self.paused:
+                    # Keep the heartbeat alive while paused so /status reflects
+                    # reality (PAUSED with a fresh timestamp) instead of freezing
+                    # at the last pre-pause state and looking like a dead process.
+                    self._write_state("PAUSED", self._last_acc_info)
                     await asyncio.sleep(BAR_CHECK_INTERVAL)
                     continue
 
