@@ -118,9 +118,11 @@ def run_decision_engine(
         # Counter-trend: one extra confirmation required — EMA opposes direction.
         effective_min_confirmations = min(min_confirmations + 1, 4)
     elif regime.regime in _RANGE_REGIMES:
-        # Range/volatile regimes: keep the operator-configured threshold unchanged.
-        # These are dangerous conditions for scalping — do not lower the bar.
-        effective_min_confirmations = min_confirmations
+        # Range/volatile regimes: require one extra confirmation over the base
+        # minimum.  Structural signals alone (e.g. SMC + Wyckoff without EMA
+        # trend or PA) are insufficient in choppy/ranging markets — at least
+        # one momentum engine must also agree to avoid repeated SL hits.
+        effective_min_confirmations = min(min_confirmations + 1, 4)
     else:
         effective_min_confirmations = min_confirmations
 
