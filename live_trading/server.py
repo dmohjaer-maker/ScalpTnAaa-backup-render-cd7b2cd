@@ -442,8 +442,20 @@ async def _command(req: web.Request) -> web.Response:
 async def _force_resume(request):
     """POST /force-resume — directly manipulate the live engine object
     in-process (bypasses Redis/file command queues entirely). Same auth as
-    /command. Only does what RESET_GUARDIAN + START already do: clear the
-    guardian halt flag and unpause -- no risk/trading parameters touched.
+    /command.
+
+    Body: {"reset_baseline": bool}
+      - false (default): only clears the halt flag (same as RESET_GUARDIAN).
+        Note: if the underlying daily-loss/drawdown condition is still true,
+        guardian.check() on the very next bar will immediately re-trigger the
+        halt -- this is intentional, sticky-halt-until-cause-resolved design.
+      - true: ALSO re-baselines the guardian (day_open_balance, equity_peak,
+        session_open_balance) to the current account balance/equity via
+        guardian.initialize(), i.e. treats "now" as the new reference point
+        for today's loss tracking. This is an explicit, user-authorized
+        override of risk-tracking state -- it does not change any configured
+        risk parameter (daily_loss_limit_pct, max_drawdown_pct, etc.), but it
+        does erase the currently-tracked loss for the rest of the day.
     """
     authorized, status, message = _command_authorized(request)
     if not authorized:
@@ -451,13 +463,33 @@ async def _force_resume(request):
     if _current_engine is None:
         return web.Response(status=503, text="engine not running yet")
     try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        reset_baseline = bool(body.get("reset_baseline", False))
+
         was_halted = _current_engine.guardian.is_halted
+        rebaselined = False
+        if reset_baseline:
+            acc = _current_engine._last_acc_info or {}
+            balance = float(acc.get("balance", 0.0))
+            equity = float(acc.get("equity", balance))
+            if balance > 0:
+                _current_engine.guardian.initialize(balance, equity)
+                rebaselined = True
+
         _current_engine.guardian.reset_halt()
         _current_engine.paused = False
         _current_engine._write_state("RUNNING")
         return web.Response(
             status=200,
-            text=json.dumps({"ok": True, "was_halted": was_halted, "paused": _current_engine.paused}),
+            text=json.dumps({
+                "ok": True,
+                "was_halted": was_halted,
+                "rebaselined": rebaselined,
+                "paused": _current_engine.paused,
+            }),
             content_type="application/json",
         )
     except Exception as exc:
