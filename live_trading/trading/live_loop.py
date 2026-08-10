@@ -46,14 +46,12 @@ from live_trading.risk.trailing_stop import (
     TrailingConfig, compute_staircase_sl, should_apply, r_multiple_of,
 )
 from live_trading.signals.decision_engine import run_decision_engine, DecisionResult, describe_strategy
-from live_trading.signals.news_filter import check_news_filter
-from live_trading.signals.dxy_filter import get_dxy_signal
 from live_trading.signals.mtf_filter import compute_mtf_bias, mtf_allows_trade, MtfBias
 from live_trading.signals.wyckoff_engine import calibrate_wyckoff, set_calibrated_config
 from live_trading.mt5.connector import (
     connect, disconnect, ensure_connected,
     connect_with_retry, keepalive_mtapi,
-    start_connection_watchdog,
+    start_connection_watchdog, start_mt5_session_keepalive,
     fetch_candles, get_account_balance, get_account_info,
     get_open_positions, get_last_completed_bar_time,
     get_current_quote, mt5_pos_to_dict,
@@ -111,6 +109,12 @@ class GoldScalperLive:
         # Exponential backoff state
         self._reconnect_attempts: int = 0
         self._watchdog_task: asyncio.Task | None = None
+
+        # Consecutive account-info failures before writing DISCONNECTED state.
+        # This prevents a single transient network hiccup from triggering a
+        # "Connection Lost" alert — we retry once silently first.
+        self._consecutive_acc_failures: int = 0
+        self._mt5_keepalive_task: asyncio.Task | None = None
 
         # Handle for the MTAPI keepalive background task (cancelled on stop)
         self._keepalive_task: Optional[asyncio.Task] = None
@@ -174,7 +178,12 @@ class GoldScalperLive:
         # reconnects before the trading loop hits a failure.  Faster than
         # waiting for a bar-tick request to fail (worst case: one full bar).
         self._watchdog_task = asyncio.create_task(
-            start_connection_watchdog(interval_seconds=60.0), name="mt5_watchdog"
+            start_connection_watchdog(interval_seconds=30.0), name="mt5_watchdog"
+        )
+        # MT5 broker-session keepalive: pings /ConnectionStatus every 3 min
+        # so the broker socket stays open and conn_id never expires silently.
+        self._mt5_keepalive_task = asyncio.create_task(
+            start_mt5_session_keepalive(), name="mt5_session_keepalive"
         )
         # Belt-and-suspenders: if any step below raises before _run_loop() is
         # entered, _run_loop()'s own finally block never executes, leaving the
@@ -434,6 +443,12 @@ class GoldScalperLive:
                 except asyncio.CancelledError:
                     pass
                 log.debug("MTAPI keepalive task cancelled.")
+            if getattr(self, "_mt5_keepalive_task", None) and not self._mt5_keepalive_task.done():
+                self._mt5_keepalive_task.cancel()
+                try:
+                    await self._mt5_keepalive_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             if getattr(self, "_watchdog_task", None) and not self._watchdog_task.done():
                 self._watchdog_task.cancel()
                 try:
@@ -508,13 +523,35 @@ class GoldScalperLive:
         # request must block trading rather than make the risk guard appear
         # healthy and allow an order with stale/default data.
         if not acc_info or "balance" not in acc_info or "equity" not in acc_info:
-            log.error("Account data unavailable — skipping this bar")
-            self._write_state(
-                "DISCONNECTED",
-                acc_info=acc_info,
-                extra={"error": "Live account data unavailable"},
-            )
-            return
+            self._consecutive_acc_failures += 1
+            if self._consecutive_acc_failures == 1:
+                # First failure — try a silent reconnect + one immediate retry
+                # before showing "Connection Lost" in the panel.  A single
+                # transient network blip or broker timeout would otherwise
+                # generate a spurious alert every time.
+                log.warning(
+                    "Account data unavailable (attempt 1) — "
+                    "reconnecting and retrying before declaring DISCONNECTED …"
+                )
+                await ensure_connected()
+                acc_info = await get_account_info()
+            if not acc_info or "balance" not in acc_info or "equity" not in acc_info:
+                log.error(
+                    f"Account data unavailable after {self._consecutive_acc_failures} "
+                    "attempt(s) — declaring DISCONNECTED"
+                )
+                self._write_state(
+                    "DISCONNECTED",
+                    acc_info=acc_info,
+                    extra={"error": "Live account data unavailable after retry"},
+                )
+                return
+            # Retry succeeded
+            log.info("✅ Account data recovered after retry — continuing bar")
+            self._consecutive_acc_failures = 0
+
+        else:
+            self._consecutive_acc_failures = 0   # reset on clean success
 
         self._last_acc_info = acc_info  # update cache so WAITING writes show real balance
         balance  = float(acc_info["balance"])
@@ -579,39 +616,6 @@ class GoldScalperLive:
             log.info(f"Open position: id={pos['id']}  "
                      f"dir={pos['type']}  profit={pos.get('profit', 0):.2f}")
 
-        # 4.5 ── News filter + DXY correlation (async, run concurrently) ──────────
-        #   news_filter: blocks trading 15 min before / 30 min after high-impact
-        #     USD events (FOMC, CPI, NFP, PPI, GDP…).  Fail-open: feed outage
-        #     never silences the robot.
-        #   dxy_filter:  fetches real-time Dollar Index trend from Yahoo Finance
-        #     and passes it to the confidence engine as a ±5 pt bonus/penalty.
-        try:
-            _news_result, _dxy_result = await asyncio.gather(
-                check_news_filter(),
-                get_dxy_signal(),
-                return_exceptions=True,
-            )
-            # If either task raised, treat as neutral / not-blocked
-            if isinstance(_news_result, Exception):
-                log.warning(f"News filter error (fail-open): {_news_result}")
-                _news_result = type("_N", (), {"blocked": False, "reason": ""})()
-            if isinstance(_dxy_result, Exception):
-                log.warning(f"DXY filter error (fail-open): {_dxy_result}")
-                _dxy_result = type("_D", (), {"signal": "NEUTRAL"})()
-        except Exception as _filter_exc:
-            log.warning(f"Filter gather error (fail-open): {_filter_exc}")
-            _news_result = type("_N", (), {"blocked": False, "reason": ""})()
-            _dxy_result  = type("_D", (), {"signal": "NEUTRAL"})()
-
-        if _news_result.blocked:
-            log.info(f"📰 NEWS FILTER — trade skipped: {_news_result.reason}")
-            self._write_state("WAITING", acc_info)
-            return
-
-        _dxy_signal = getattr(_dxy_result, "signal", "NEUTRAL")
-        if _dxy_signal != "NEUTRAL":
-            log.info(f"💵 DXY signal: {_dxy_signal}")
-
         # 5. Run decision engine (synchronous — all heavy math)
         decision = run_decision_engine(
             candles,
@@ -619,7 +623,6 @@ class GoldScalperLive:
             risk_percent=RISK_PERCENT,
             min_confirmations=MIN_CONFIRMATIONS,
             use_atr_high_vol=USE_ATR_HIGH_VOL_FILTER,
-            dxy_signal=_dxy_signal,
         )
         self.last_decision = decision
 
