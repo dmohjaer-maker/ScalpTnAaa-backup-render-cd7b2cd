@@ -27,7 +27,6 @@ class QualityFilterResult:
     allowed: bool
     blocked_reasons: List[str]
     session_quality: Literal["PRIME", "MODERATE", "BLOCKED"]
-    is_news_blocked: bool = False   # blocked by high-impact USD news event
     adx: float
     is_severe_range: bool
     is_late_entry: bool
@@ -35,6 +34,7 @@ class QualityFilterResult:
     is_fake_breakout: bool
     is_weak_volume: bool
     is_low_momentum: bool
+    is_news_blocked: bool = False   # must be last — it has a default value
 
 
 def get_session_quality(iso_timestamp: str) -> Literal["PRIME", "MODERATE", "BLOCKED"]:
@@ -151,18 +151,21 @@ def apply_quality_filter(
     reasons = []
     last_candle = candles[-1]
 
-    # ── News event blackout ── highest priority, block immediately ────────────
+    # ── News event blackout — highest priority ────────────────────────────────
     if news_blocked:
         reasons.append(news_reason or "High-impact USD news event blackout")
         return QualityFilterResult(
             allowed=False,
             blocked_reasons=reasons,
             session_quality=get_session_quality(last_candle.time),
-            is_news_blocked=True,
             adx=adx if adx is not None else 0.0,
-            is_severe_range=False, is_late_entry=False,
-            is_low_probability=False, is_fake_breakout=False,
-            is_weak_volume=False, is_low_momentum=False,
+            is_severe_range=False,
+            is_late_entry=False,
+            is_low_probability=False,
+            is_fake_breakout=False,
+            is_weak_volume=False,
+            is_low_momentum=False,
+            is_news_blocked=True,
         )
 
     # C-2 FIX: respect BLOCKED sessions — do not override to MODERATE.
