@@ -39,6 +39,7 @@ _BACKOFF_BASE = 15
 _BACKOFF_MAX  = 120
 _backoff      = _BACKOFF_BASE
 _robot_status = "STARTING"
+_current_engine = None  # live GoldScalperLive instance, set in _run_robot_once()
 # Only truly fatal states (config errors, unhandled crashes) return 503.
 # DISCONNECTED is intentionally excluded: the robot is alive and actively
 # trying to reconnect to the MT5 bridge.  Returning 503 for DISCONNECTED
@@ -438,6 +439,31 @@ async def _command(req: web.Request) -> web.Response:
         return web.Response(status=500, text=f"server error: {exc}")
 
 
+async def _force_resume(request):
+    """POST /force-resume — directly manipulate the live engine object
+    in-process (bypasses Redis/file command queues entirely). Same auth as
+    /command. Only does what RESET_GUARDIAN + START already do: clear the
+    guardian halt flag and unpause -- no risk/trading parameters touched.
+    """
+    authorized, status, message = _command_authorized(request)
+    if not authorized:
+        return web.Response(status=status, text=message)
+    if _current_engine is None:
+        return web.Response(status=503, text="engine not running yet")
+    try:
+        was_halted = _current_engine.guardian.is_halted
+        _current_engine.guardian.reset_halt()
+        _current_engine.paused = False
+        _current_engine._write_state("RUNNING")
+        return web.Response(
+            status=200,
+            text=json.dumps({"ok": True, "was_halted": was_halted, "paused": _current_engine.paused}),
+            content_type="application/json",
+        )
+    except Exception as exc:
+        return web.Response(status=500, text=f"server error: {exc}")
+
+
 async def _run_health_server():
     app = web.Application()
     app.router.add_get("/", _health)
@@ -445,6 +471,7 @@ async def _run_health_server():
     app.router.add_get("/status", _status)
     app.router.add_get("/crash-log", _crash_log)
     app.router.add_get("/progress", _progress_log)
+    app.router.add_post("/force-resume", _force_resume)
     app.router.add_get("/snapshot", _snapshot)
     app.router.add_post("/command", _command)
     runner = web.AppRunner(app)
@@ -575,7 +602,9 @@ async def _run_robot_once():
         raise RuntimeError("MT5_USER / MT5_PASSWORD is not set — cannot connect to broker.")
 
     _robot_status = "STARTING"
+    global _current_engine
     engine = GoldScalperLive()
+    _current_engine = engine
     try:
         _robot_status = "RUNNING"
         # NOTE: engine.start() runs indefinitely by design -- including while
