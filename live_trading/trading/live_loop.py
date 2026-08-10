@@ -666,7 +666,7 @@ class GoldScalperLive:
         # response.  Treat that as a missing position check — skip trade entry
         # for this bar rather than risking duplicate-entry or crashing the loop.
         try:
-            raw_positions = await get_open_positions(SYMBOL)
+            raw_positions = await get_open_positions(SYMBOL, self._known_open_tickets())
         except RuntimeError as _pos_err:
             log.error(
                 f"Cannot verify open positions — skipping trade entry this bar: {_pos_err}"
@@ -865,7 +865,7 @@ class GoldScalperLive:
         # is about to place an order; every other code path (trailing stop,
         # /close_all, panel snapshot) is untouched.
         try:
-            _confirm_positions = await get_open_positions(SYMBOL)
+            _confirm_positions = await get_open_positions(SYMBOL, self._known_open_tickets())
         except RuntimeError as _confirm_err:
             log.error(
                 f"Pre-order safety re-check could not verify positions — "
@@ -1042,7 +1042,7 @@ class GoldScalperLive:
             return
 
         try:
-            raw_positions = await get_open_positions(SYMBOL)
+            raw_positions = await get_open_positions(SYMBOL, self._known_open_tickets())
         except RuntimeError as exc:
             log.debug(f"Trailing check skipped — could not fetch positions: {exc}")
             return
@@ -1265,9 +1265,29 @@ class GoldScalperLive:
                     log.warning(f"update_strategy payload error: {_upd_err}")
             clear_command("update_strategy")
 
+    def _known_open_tickets(self) -> dict:
+        """Build {str(position_id): {"volume", "direction"}} from this robot's
+        own trade log, for every position it has ever opened.
+
+        Used only to repair a corrupted lone row in get_open_positions() (see
+        connector._dedupe_positions) — never to assert that a ticket is still
+        open. mt5rest's OpenedOrders is the sole source of truth for whether a
+        ticket is currently open; this map only fixes its volume/type fields
+        when it reports one of our own tickets with obviously corrupted data.
+        """
+        known: dict = {}
+        for entry in self.trade_history:
+            pid = entry.get("position_id")
+            direction = entry.get("direction")
+            lot = entry.get("lot")
+            if pid is None or direction is None or lot is None:
+                continue
+            known[str(pid)] = {"volume": lot, "direction": direction}
+        return known
+
     async def _close_all_positions(self) -> None:
         try:
-            positions = await get_open_positions(SYMBOL)
+            positions = await get_open_positions(SYMBOL, self._known_open_tickets())
         except RuntimeError as exc:
             log.error(f"CLOSE_ALL: could not fetch positions from mt5rest: {exc}")
             return

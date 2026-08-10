@@ -25,7 +25,7 @@ mt5rest endpoints used:
 import asyncio
 import time as _time
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import aiohttp
 
@@ -643,7 +643,9 @@ async def get_account_balance() -> float:
     return float(info.get("balance", 0.0))
 
 
-async def get_open_positions(symbol: str = "") -> List[dict]:
+async def get_open_positions(
+    symbol: str = "", known_positions: Optional[Dict[str, dict]] = None
+) -> List[dict]:
     """Fetch open positions from mt5rest.
 
     Raises RuntimeError when mt5rest returns an error response (dict with
@@ -651,6 +653,10 @@ async def get_open_positions(symbol: str = "") -> List[dict]:
     rather than silently assuming zero open positions.  Returning [] on an
     error could cause duplicate-entry: the robot sees 0 positions and opens
     a second trade on top of an existing one.
+
+    known_positions: optional map of {str(ticket): {"volume":, "direction":}}
+    for tickets this robot itself opened, used to repair a corrupted lone row
+    for that same ticket instead of dropping it — see _dedupe_positions.
 
     FIX: retries once with a fresh ConnectEx on stale-conn_id errors.
     """
@@ -677,7 +683,7 @@ async def get_open_positions(symbol: str = "") -> List[dict]:
                     )
                     _invalidate_connection()
                     continue
-                return _parse_open_positions_response(data, resp.status)
+                return _parse_open_positions_response(data, resp.status, known_positions)
         except RuntimeError:
             raise
         except Exception as exc:
@@ -690,7 +696,9 @@ async def get_open_positions(symbol: str = "") -> List[dict]:
     raise RuntimeError("get_open_positions: failed after reconnect attempt")
 
 
-def _parse_open_positions_response(data: object, status: int) -> List[dict]:
+def _parse_open_positions_response(
+    data: object, status: int, known_positions: Optional[Dict[str, dict]] = None
+) -> List[dict]:
     """Accept only a successful list response from OpenedOrders.
 
     Any other payload is an unknown position state. Returning an empty list for
@@ -704,7 +712,7 @@ def _parse_open_positions_response(data: object, status: int) -> List[dict]:
         )
         raise RuntimeError(f"mt5rest OpenedOrders error (HTTP {status}): {message}")
     if isinstance(data, list):
-        return _dedupe_positions(data)
+        return _dedupe_positions(data, known_positions)
     if isinstance(data, dict):
         message = data.get("message", "unexpected object response")
     else:
@@ -727,7 +735,9 @@ def _parse_open_positions_response(data: object, status: int) -> List[dict]:
 _MAX_SANE_VOLUME_LOTS = 100.0
 
 
-def _dedupe_positions(rows: List[dict]) -> List[dict]:
+def _dedupe_positions(
+    rows: List[dict], known_positions: Optional[Dict[str, dict]] = None
+) -> List[dict]:
     """Collapse duplicate rows for the same ticket into a single sane entry.
 
     Prefers a row with a plausible volume; if every duplicate for a ticket
@@ -742,7 +752,25 @@ def _dedupe_positions(rows: List[dict]) -> List[dict]:
     Redis snapshot where the Telegram heartbeat treats them as a brand-new
     trade and fires a spurious "TRADE OPENED" notification with fabricated
     direction, size, and price.
+
+    ROOT-CAUSE FIX (observed live): for a ticket this robot itself opened,
+    mt5rest can return a *lone* row for that exact ticket with the volume/type
+    fields corrupted (insane volume, type=None) — and, unlike the scenario
+    above, this is not a one-off blip: it can repeat on every single poll for
+    the rest of that position's life. Since OpenedOrders only ever lists
+    currently-open positions, the ticket showing up at all — even corrupted —
+    is itself proof the position is still open in MT5. Dropping it outright
+    made get_open_positions() permanently blind to a real, live position,
+    which let MAX_OPEN_TRADES be bypassed (observed: 4 simultaneous BUY
+    positions opened one bar apart while MAX_OPEN_TRADES=1). If the caller
+    passes `known_positions` (a {str(ticket): {"volume", "direction"}} map
+    built from this robot's own trade log) and the corrupted ticket is a
+    known one, repair only the volume/type fields from our own record instead
+    of dropping the row — the ticket/openPrice from mt5rest are kept as-is.
+    An unknown ticket (never opened by this robot) is still dropped exactly
+    as before; this only rescues positions we can independently verify.
     """
+    known_positions = known_positions or {}
     by_ticket: "dict[object, List[dict]]" = {}
     order: List[object] = []
     for row in rows:
@@ -761,14 +789,33 @@ def _dedupe_positions(rows: List[dict]) -> List[dict]:
             row = group[0]
             vol = float(row.get("volume", row.get("lots", 0.0)) or 0.0)
             if vol > _MAX_SANE_VOLUME_LOTS:
-                # Lone row with insane volume: phantom bridge artifact with a
-                # unique (possibly zero or null) ticket — drop it entirely.
-                log.warning(
-                    f"mt5rest returned a lone row for ticket {ticket!r} "
-                    f"with an insane volume ({vol:.0f}L > {_MAX_SANE_VOLUME_LOTS}L limit) "
-                    f"— dropping phantom row (direction={row.get('type')}, "
-                    f"openPrice={row.get('openPrice', row.get('price_open'))})"
-                )
+                known = known_positions.get(str(ticket))
+                if known is not None:
+                    # Ticket is one we opened ourselves and mt5rest still
+                    # lists it in OpenedOrders — it's genuinely open, only
+                    # the volume/type fields on this poll are corrupted.
+                    # Repair rather than drop.
+                    repaired = dict(row)
+                    repaired["volume"] = known["volume"]
+                    repaired["lots"] = known["volume"]
+                    repaired["type"] = known["direction"]
+                    log.warning(
+                        f"mt5rest returned ticket {ticket!r} with a corrupted "
+                        f"volume ({vol:.0f}L) and type={row.get('type')} — "
+                        f"repaired from this robot's own trade log "
+                        f"(volume={known['volume']}, direction={known['direction']}) "
+                        f"instead of dropping a position known to be open."
+                    )
+                    result.append(repaired)
+                else:
+                    # Unknown/foreign ticket: no record of ever opening it —
+                    # phantom bridge artifact, drop it entirely as before.
+                    log.warning(
+                        f"mt5rest returned a lone row for ticket {ticket!r} "
+                        f"with an insane volume ({vol:.0f}L > {_MAX_SANE_VOLUME_LOTS}L limit) "
+                        f"— dropping phantom row (direction={row.get('type')}, "
+                        f"openPrice={row.get('openPrice', row.get('price_open'))})"
+                    )
             else:
                 result.append(row)
             continue

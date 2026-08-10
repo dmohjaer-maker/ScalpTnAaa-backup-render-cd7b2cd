@@ -144,6 +144,47 @@ class TestDeduplicationLogic:
         ]
 
 
+class TestPhantomRowRepair:
+    """A lone insane-volume row for a KNOWN ticket is repaired, not dropped;
+    an insane-volume row for an UNKNOWN ticket is still dropped."""
+
+    def test_unknown_ticket_still_dropped(self):
+        from live_trading.mt5.connector import _dedupe_positions
+
+        rows = [{"ticket": 999, "volume": 1_000_000, "type": None, "openPrice": 4390.0}]
+        result = _dedupe_positions(rows, known_positions=None)
+        assert result == []
+
+    def test_known_ticket_repaired_instead_of_dropped(self):
+        from live_trading.mt5.connector import _dedupe_positions
+
+        rows = [{"ticket": 274131033, "volume": 1_000_000, "type": None, "openPrice": 4390.07}]
+        known = {"274131033": {"volume": 0.01, "direction": "BUY"}}
+        result = _dedupe_positions(rows, known_positions=known)
+        assert len(result) == 1
+        assert result[0]["volume"] == 0.01
+        assert result[0]["type"] == "BUY"
+        # Untouched fields are preserved
+        assert result[0]["ticket"] == 274131033
+        assert result[0]["openPrice"] == 4390.07
+
+    def test_known_ticket_but_sane_volume_is_unaffected(self):
+        """A known ticket with a normal, plausible volume is passed through
+        unchanged — the repair path only triggers on insane volumes."""
+        from live_trading.mt5.connector import _dedupe_positions
+
+        rows = [{"ticket": 274131033, "volume": 0.01, "type": "BUY", "openPrice": 4390.07}]
+        known = {"274131033": {"volume": 0.01, "direction": "BUY"}}
+        result = _dedupe_positions(rows, known_positions=known)
+        assert result == rows
+
+    def test_no_known_positions_arg_behaves_like_before(self):
+        from live_trading.mt5.connector import _dedupe_positions
+
+        rows = [{"ticket": 1, "volume": 1_000_000, "type": None}]
+        assert _dedupe_positions(rows) == []
+
+
 class TestOpenPositionsResponse:
     """Malformed OpenedOrders responses must never look like zero positions."""
 
