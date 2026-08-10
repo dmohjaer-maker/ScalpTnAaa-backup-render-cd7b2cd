@@ -54,7 +54,7 @@ _HEARTBEAT_MAX_AGE_SECONDS = 180
 # services never spin down.  10 min < Render's 15-min inactivity threshold.
 # Also pings the mt5rest Docker bridge (goldscalper-mtapi) so it stays alive
 # even during robot crash/restart cycles when the live loop keepalive is paused.
-_KEEPALIVE_INTERVAL_SECONDS = 480  # 8 minutes — more margin under Render's 15-min sleep threshold
+_KEEPALIVE_INTERVAL_SECONDS = 360  # 6 minutes — safer margin: 3 pings before Render 15-min sleep
 
 
 def _parse_heartbeat(value: object) -> datetime | None:
