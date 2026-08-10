@@ -400,7 +400,10 @@ async def _command(req: web.Request) -> web.Response:
             from live_trading.redis_ipc import redis_send_command
             redis_send_command(command, data.get("payload") or {})
         except Exception as _redis_exc:
-            log.warning(f"/command: redis mirror failed (falling back to file only): {_redis_exc}")
+            from live_trading.logger import get_logger
+            get_logger().warning(
+                f"/command: redis mirror failed (falling back to file only): {_redis_exc}"
+            )
 
         # Thread-safe atomic file append using the module-level lock.
         # _commands_lock is defined at module level so ALL concurrent requests
