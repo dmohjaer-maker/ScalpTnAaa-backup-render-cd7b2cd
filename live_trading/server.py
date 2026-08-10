@@ -387,6 +387,21 @@ async def _command(req: web.Request) -> web.Response:
             "issued_at": datetime.now(timezone.utc).isoformat(),
         }
 
+        # BUGFIX: this handler previously only appended to the local
+        # COMMANDS_FILE. read_commands() in state_writer.py checks Redis
+        # FIRST and returns immediately whenever Redis is configured and
+        # reachable (which it always is on Render, robot + panel share one
+        # Redis instance for cross-service IPC) -- so the local-file write
+        # below was silently ignored and this endpoint never actually worked
+        # while Redis was up. Mirror the command into Redis too, exactly like
+        # the panel's own redis_send_command() does, so this HTTP path is a
+        # real command channel and not just a dead fallback.
+        try:
+            from live_trading.redis_ipc import redis_send_command
+            redis_send_command(command, data.get("payload") or {})
+        except Exception as _redis_exc:
+            log.warning(f"/command: redis mirror failed (falling back to file only): {_redis_exc}")
+
         # Thread-safe atomic file append using the module-level lock.
         # _commands_lock is defined at module level so ALL concurrent requests
         # share the same lock — unlike a local lock which provides no exclusion.
