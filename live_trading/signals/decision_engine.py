@@ -13,6 +13,7 @@ from live_trading.signals.market_regime import RegimeResult, RegimeEntryRules, d
 from live_trading.signals.confidence_engine import ConfidenceResult, ConfidenceComponents, calc_confidence
 from live_trading.signals.quality_filter import QualityFilterResult, apply_quality_filter, get_session_quality
 from live_trading.signals.entry_filter import apply_entry_filter, EntryFilterResult
+from live_trading.signals.divergence_engine import analyze_divergence, DivergenceResult
 from live_trading.risk.capital_manager import CapitalInput, CapitalOutput, calc_trade_parameters
 from live_trading.config import CONF_HARD_MIN
 
@@ -46,6 +47,8 @@ class DecisionResult:
     # Existing callers that construct/consume DecisionResult are unaffected
     # since this has a default and nothing reads it unless it asks for it.
     entry_filter:    Optional[EntryFilterResult] = None
+    divergence:      Optional[DivergenceResult]  = None
+    dxy_signal:      str                         = "NEUTRAL"
 
 
 def _candidate_direction(smc: SmcResult) -> str:
@@ -81,11 +84,12 @@ def _make_neutral(smc, wyckoff, pa, trend, blocked_reasons, reasoning=None) -> D
 
 
 def run_decision_engine(
-    candles:        List[OHLCV],
-    account_balance: float,
-    risk_percent:   float = 1.0,
-    min_confirmations: int = 1,
-    use_atr_high_vol: bool = False,
+    candles:           List[OHLCV],
+    account_balance:   float,
+    risk_percent:      float = 1.0,
+    min_confirmations: int   = 1,
+    use_atr_high_vol:  bool  = False,
+    dxy_signal:        str   = "NEUTRAL",
 ) -> DecisionResult:
 
     smc     = analyze_smc_structure(candles)
@@ -146,7 +150,12 @@ def run_decision_engine(
 
     last_candle  = candles[-1]
     session      = get_session_quality(last_candle.time)
-    conf_result  = calc_confidence(smc, wyckoff, pa, trend, regime, session, candidate)
+    divergence   = analyze_divergence(candles)
+    conf_result  = calc_confidence(
+        smc, wyckoff, pa, trend, regime, session, candidate,
+        divergence_signal=divergence.signal,
+        dxy_signal=dxy_signal,
+    )
 
     if conf_result.confidence < CONF_HARD_MIN:
         n = DecisionResult(
@@ -258,6 +267,8 @@ def run_decision_engine(
         trade_params=trade_params,
         smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
         entry_filter=ef,
+        divergence=divergence,
+        dxy_signal=dxy_signal,
     )
 
 
