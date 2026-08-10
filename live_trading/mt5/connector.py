@@ -68,6 +68,13 @@ _reconnect_lock: asyncio.Lock | None = None
 # be cancelled cleanly on shutdown.
 _watchdog_task: asyncio.Task | None = None
 
+# MT5 broker-session keepalive: pings /ConnectionStatus with the actual conn_id
+# every _MT5_KEEPALIVE_INTERVAL_S seconds so the broker socket stays open.
+# Completely separate from the HTTP-bridge /Ping in server.py.
+_MT5_KEEPALIVE_TASK: asyncio.Task | None = None
+_MT5_KEEPALIVE_INTERVAL_S:    float = 180.0    # 3 min  — keep broker session alive
+_MT5_SESSION_REFRESH_AGE_S:   float = 14400.0  # 4 hours — proactively refresh conn_id
+
 
 def _get_reconnect_lock() -> asyncio.Lock:
     """Lazily create the reconnect lock on the running event loop."""
@@ -304,7 +311,7 @@ async def ensure_connected(*args, **kwargs) -> bool:
         return await connect_with_retry(max_attempts=3, retry_delay=30.0)
 
 
-async def start_connection_watchdog(interval_seconds: float = 60.0) -> None:
+async def start_connection_watchdog(interval_seconds: float = 30.0) -> None:
     """Proactive background task: checks MT5 connection health every *interval_seconds*
     and reconnects before the trading loop hits a failure.
 
@@ -318,7 +325,7 @@ async def start_connection_watchdog(interval_seconds: float = 60.0) -> None:
       reconnect latency is ~60 s, not one full 5-minute bar.
     """
     global _watchdog_task
-    log.info(f"[watchdog] MT5 connection watchdog started (interval={interval_seconds}s)")
+    log.info(f"[watchdog] MT5 connection watchdog started (interval={interval_seconds}s) — reconnect within {interval_seconds}s of any drop")
     try:
         while True:
             await asyncio.sleep(interval_seconds)
@@ -352,6 +359,93 @@ async def start_connection_watchdog(interval_seconds: float = 60.0) -> None:
                     await ensure_connected()
     except asyncio.CancelledError:
         log.info("[watchdog] MT5 connection watchdog stopped")
+        raise
+
+
+async def start_mt5_session_keepalive(
+    interval_s: float = _MT5_KEEPALIVE_INTERVAL_S,
+    refresh_age_s: float = _MT5_SESSION_REFRESH_AGE_S,
+) -> None:
+    """
+    MT5 Broker-Session Keepalive — GoldScalperPro v4.
+
+    The MTAPI /Ping (called from server.py) keeps the HTTP bridge process
+    alive on Render free-tier, but does NOT send any traffic to the MT5
+    broker socket.  After extended inactivity the broker can terminate the
+    session, invalidating the conn_id and triggering a "Connection Lost"
+    alert even though the HTTP bridge itself is healthy.
+
+    This task fixes that by:
+      1. Every `interval_s` seconds: calling /ConnectionStatus with the
+         real conn_id, which flushes traffic through the MT5 broker socket
+         and resets any broker-side inactivity timer.
+      2. Proactive conn_id refresh: if the session is older than
+         `refresh_age_s` (default 4 h), calls ConnectEx to get a fresh
+         UUID before the broker can expire it.
+      3. If the session is already dead: calls ensure_connected() to restore
+         it silently, before the trading loop's next bar attempt would fail.
+
+    Runs as a background asyncio.Task — never blocks the trading loop.
+    Fails silently: any exception is logged and the loop continues.
+    """
+    global _MT5_KEEPALIVE_TASK
+    log.info(
+        f"[mt5_keepalive] MT5 broker-session keepalive started "
+        f"(ping every {interval_s:.0f}s, refresh after {refresh_age_s/3600:.1f}h)"
+    )
+    try:
+        while True:
+            await asyncio.sleep(interval_s)
+
+            if not _connected or not _conn_id or not _base_url:
+                # Not yet connected — let ensure_connected handle it
+                if _conn_id or _base_url:
+                    log.info("[mt5_keepalive] Not connected — triggering ensure_connected")
+                    await ensure_connected()
+                continue
+
+            # Proactive session refresh before broker expires the conn_id
+            session_age = _time.monotonic() - _last_connect_time
+            if session_age > refresh_age_s:
+                log.info(
+                    f"[mt5_keepalive] Session age {session_age/3600:.1f}h exceeds "
+                    f"{refresh_age_s/3600:.1f}h — proactively refreshing conn_id …"
+                )
+                try:
+                    ok = await connect()
+                    if ok:
+                        log.info("[mt5_keepalive] ✅ Proactive conn_id refresh succeeded")
+                    else:
+                        log.warning("[mt5_keepalive] ⚠️  Proactive conn_id refresh failed")
+                except Exception as exc:
+                    log.warning(f"[mt5_keepalive] Proactive refresh error: {exc}")
+                continue
+
+            # Normal keepalive: ping ConnectionStatus to keep broker socket warm
+            try:
+                sess = _get_session()
+                async with sess.get(
+                    f"{_base_url}/ConnectionStatus",
+                    params={"id": _conn_id},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    data = await resp.json(content_type=None)
+                    is_alive = isinstance(data, dict) and data.get("isConnected")
+                    if is_alive:
+                        log.debug("[mt5_keepalive] ✅ Broker session alive")
+                    else:
+                        log.warning(
+                            "[mt5_keepalive] Broker ConnectionStatus=false — reconnecting …"
+                        )
+                        _invalidate_connection()
+                        await ensure_connected()
+            except Exception as exc:
+                log.warning(f"[mt5_keepalive] ConnectionStatus ping failed: {exc} — reconnecting …")
+                _invalidate_connection()
+                await ensure_connected()
+
+    except asyncio.CancelledError:
+        log.info("[mt5_keepalive] MT5 broker-session keepalive stopped")
         raise
 
 
