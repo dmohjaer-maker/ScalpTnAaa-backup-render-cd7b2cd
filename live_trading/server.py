@@ -425,6 +425,7 @@ async def _run_health_server():
     app.router.add_get("/", _health)
     app.router.add_get("/health", _health)
     app.router.add_get("/status", _status)
+    app.router.add_get("/crash-log", _crash_log)
     app.router.add_get("/snapshot", _snapshot)
     app.router.add_post("/command", _command)
     runner = web.AppRunner(app)
