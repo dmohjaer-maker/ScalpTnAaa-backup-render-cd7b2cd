@@ -560,19 +560,16 @@ async def _run_robot_once():
     engine = GoldScalperLive()
     try:
         _robot_status = "RUNNING"
-        # WATCHDOG: engine.start() has been observed to hang indefinitely with
-        # no exception raised (root cause still under investigation via
-        # /tmp/progress.txt checkpoints). Without a bound, a hang here is only
-        # ever recovered by Render's own platform-level container restart,
-        # which is far slower than the supervisor's 15-120s backoff. Bounding
-        # it here guarantees the fast in-process supervisor path always runs.
-        try:
-            ok = await asyncio.wait_for(engine.start(), timeout=240)
-        except asyncio.TimeoutError:
-            raise RuntimeError(
-                "GoldScalperLive.start() hung for >240s with no exception — "
-                "see /progress for the last checkpoint reached."
-            )
+        # NOTE: engine.start() runs indefinitely by design -- including while
+        # legitimately PAUSED (e.g. a RiskGuardian halt) -- so it must NOT be
+        # wrapped in a bounded asyncio.wait_for(). A timeout here previously
+        # forced a full engine restart (and MT5 disconnect/reconnect) every
+        # ~240s even during normal, healthy PAUSED operation, which is what
+        # was producing the repeated "Connection Lost / Connection Restored"
+        # Telegram notifications. The actual root cause (frozen heartbeat
+        # while paused) is fixed directly in live_loop.py's paused branch, so
+        # no artificial bound is needed here.
+        ok = await engine.start()
         # engine.start() returns False when MT5 connection or startup fails.
         # Without this check a False return is treated as a clean exit,
         # bypassing supervisor backoff and leaving _robot_status as RUNNING.
