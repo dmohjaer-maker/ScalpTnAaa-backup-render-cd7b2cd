@@ -1,0 +1,13 @@
+# GoldScalperPro v4 – Live Trading Engine Dependencies
+# Direct MT5 connection via mt5rest Docker bridge (no MetaAPI cloud).
+#
+# Install:
+#   pip install -r live_trading/requirements.txt
+#
+# Audit date: 2026-07-24
+
+# ── Async HTTP – mt5rest bridge calls and health checks ──────────────────────
+aiohttp==3.9.5
+
+# ── Redis – cross-service IPC between robot and Telegram panel ───────────────
+redis==5.2.1
