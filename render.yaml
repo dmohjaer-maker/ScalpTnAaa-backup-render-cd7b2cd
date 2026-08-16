@@ -16,7 +16,7 @@ services:
         - mtapi-bridge/**
     envVars:
       - key: RENDER_EXTERNAL_URL
-        value: "https://goldscalper-mtapi.onrender.com"
+        value: "https://goldscalper-mtapi-rqho.onrender.com"
       - key: MT5_HOST
         value: "AMarkets-Demo"
       - key: MT5_PORT
@@ -47,9 +47,9 @@ services:
     startCommand: python live_trading/server.py
     envVars:
       - key: RENDER_EXTERNAL_URL
-        value: "https://goldscalper-v4-robot.onrender.com"
+        value: "https://goldscalper-v4-robot-bpqa.onrender.com"
       - key: MTAPI_URL
-        value: "https://goldscalper-mtapi.onrender.com"
+        value: "https://goldscalper-mtapi-rqho.onrender.com"
       - key: MT5_HOST
         value: "AMarkets-Demo"
       - key: MT5_PORT
@@ -131,7 +131,7 @@ services:
     startCommand: python telegram_panel/server.py
     envVars:
       - key: RENDER_EXTERNAL_URL
-        value: "https://goldscalper-v4-panel.onrender.com"
+        value: "https://goldscalper-v4-panel-e07b.onrender.com"
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_OWNER_ID
@@ -160,7 +160,7 @@ services:
         value: "/tmp/robot_state.json"
       # FIX #1: ROBOT_BASE_URL and ROBOT_COMMAND_TOKEN enable HTTP fallback.
       - key: ROBOT_BASE_URL
-        value: "https://goldscalper-v4-robot.onrender.com"
+        value: "https://goldscalper-v4-robot-bpqa.onrender.com"
       - key: ROBOT_COMMAND_TOKEN
         sync: false
       - key: REDIS_URL

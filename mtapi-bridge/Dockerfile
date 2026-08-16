@@ -34,6 +34,10 @@ RUN apt-get update -qq \
 # ── Stage 2: final mt5rest image with Render PORT proxy ───────────────────────
 FROM timurila/mt5rest:26.07.22-06.37
 
+# Avoid exhausting the Render container inotify quota used by .NET FileSystemWatcher.
+# mt5rest only needs configuration reload support; polling is sufficient here.
+ENV DOTNET_USE_POLLING_FILE_WATCHER=1
+
 # Copy socat binary and its one missing runtime dependency (libwrap.so.0).
 # Paths are from ubuntu:20.04 where libs live under /lib, not /usr/lib.
 COPY --from=socat-source /usr/bin/socat                              /usr/local/bin/socat
