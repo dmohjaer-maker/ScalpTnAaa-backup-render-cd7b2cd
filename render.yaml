@@ -4,6 +4,7 @@ services:
     name: goldscalper-mtapi
     runtime: docker
     dockerfilePath: ./mtapi-bridge/Dockerfile
+    dockerContext: ./mtapi-bridge
     plan: free
     healthCheckPath: /Ping
     # Only redeploy when mtapi-bridge files actually change.
