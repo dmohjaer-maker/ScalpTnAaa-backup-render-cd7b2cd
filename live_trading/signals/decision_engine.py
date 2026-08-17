@@ -124,18 +124,11 @@ def run_decision_engine(
     # regimes. Trending regimes keep the stricter operator-configured value.
     regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
 
-    _RANGE_REGIMES = {"RANGE", "ACCUMULATION", "DISTRIBUTION", "HIGH_VOLATILITY"}
-    if _counter_trend:
-        # Counter-trend: one extra confirmation required — EMA opposes direction.
-        effective_min_confirmations = min(min_confirmations + 1, 4)
-    elif regime.regime in _RANGE_REGIMES:
-        # Range/volatile regimes: require one extra confirmation over the base
-        # minimum.  Structural signals alone (e.g. SMC + Wyckoff without EMA
-        # trend or PA) are insufficient in choppy/ranging markets — at least
-        # one momentum engine must also agree to avoid repeated SL hits.
-        effective_min_confirmations = min(min_confirmations + 1, 4)
-    else:
-        effective_min_confirmations = min_confirmations
+    # Respect the configured minimum exactly.  The demo account uses a
+    # two-engine confirmation policy; do not silently raise it to three based
+    # on market regime or counter-trend direction.  Regime direction rules
+    # below still remain active as a separate safety gate.
+    effective_min_confirmations = min_confirmations
 
     # Entry filter — minimum N-of-4 vote gate (SMC always required)
     ef = apply_entry_filter(
