@@ -265,21 +265,36 @@ class RiskGuardian:
             except Exception:
                 self._last_day = None
 
-        # Restore risk limits if they were saved (UPDATE_RISK via panel persists these).
-        # Fall back to the current constructor values (from env vars) if absent,
-        # so cold-start and old Redis entries without these fields still work.
-        saved_daily_limit = data.get("daily_loss_limit_pct")
-        if saved_daily_limit is not None:
-            try:
-                self._daily_loss_limit_pct = float(saved_daily_limit)
-            except (TypeError, ValueError):
-                pass
-        saved_drawdown = data.get("max_drawdown_pct")
-        if saved_drawdown is not None:
-            try:
-                self._max_drawdown_pct = float(saved_drawdown)
-            except (TypeError, ValueError):
-                pass
+        # Deployment Environment values are authoritative when explicitly set.
+        # This prevents an old Redis state (for example, a previous 12% limit)
+        # from silently overriding the current Render configuration after restart.
+        # In local deployments without these env vars, panel-saved values remain
+        # restorable for backward compatibility.
+        if os.getenv("DAILY_LOSS_LIMIT_PCT") is None:
+            saved_daily_limit = data.get("daily_loss_limit_pct")
+            if saved_daily_limit is not None:
+                try:
+                    self._daily_loss_limit_pct = float(saved_daily_limit)
+                except (TypeError, ValueError):
+                    pass
+        else:
+            log.info(
+                "Guardian daily loss limit kept from Environment configuration: "
+                f"{self._daily_loss_limit_pct}%"
+            )
+
+        if os.getenv("MAX_DRAWDOWN_PCT") is None:
+            saved_drawdown = data.get("max_drawdown_pct")
+            if saved_drawdown is not None:
+                try:
+                    self._max_drawdown_pct = float(saved_drawdown)
+                except (TypeError, ValueError):
+                    pass
+        else:
+            log.info(
+                "Guardian max drawdown kept from Environment configuration: "
+                f"{self._max_drawdown_pct}%"
+            )
 
         # Mark as initialized — baselines are restored from persisted state
         self._initialized = True
