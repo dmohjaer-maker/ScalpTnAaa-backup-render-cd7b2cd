@@ -23,6 +23,7 @@ mt5rest endpoints used:
 """
 
 import asyncio
+import os
 import time as _time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -91,6 +92,145 @@ _TF_MAP = {
     "M1":  1,   "M5":  5,   "M10": 10,  "M15": 15,  "M20": 20,  "M30": 30,
     "H1":  60,  "H4":  240, "D1":  1440,
 }
+
+# PriceHistoryV2 on some MT5 brokers interprets the ISO range as broker-server
+# time rather than UTC.  The old connector sent UTC values and then compared
+# the returned naive broker timestamps to UTC, which made the newest candle
+# look several hours old and permanently produced `new_bars=0`.
+#
+# `auto` is the safe default: the connector widens the query window, measures
+# the offset of the newest returned naive candle against the UTC wall clock,
+# and normalises every candle timestamp to UTC before it reaches the loop.
+# Operators can provide a fixed decimal-hour offset when a broker has a known
+# non-standard schedule (for example, 3.5 or -4).
+_SERVER_UTC_OFFSET_ENV = os.getenv("MT5_SERVER_UTC_OFFSET_HOURS", "auto").strip()
+_SERVER_OFFSET_MAX_HOURS = 14.0
+_QUERY_PADDING_HOURS = 12.0
+_last_logged_server_offset: float | None = None
+
+
+def _configured_server_offset_hours() -> float | None:
+    """Return an explicit broker-server offset, or None for auto-detection."""
+    raw = _SERVER_UTC_OFFSET_ENV.lower()
+    if raw in {"", "auto", "detect", "dynamic"}:
+        return None
+    try:
+        value = float(_SERVER_UTC_OFFSET_ENV)
+    except ValueError:
+        log.warning(
+            "MT5_SERVER_UTC_OFFSET_HOURS=%r is invalid; falling back to auto-detection",
+            _SERVER_UTC_OFFSET_ENV,
+        )
+        return None
+    if not -_SERVER_OFFSET_MAX_HOURS <= value <= _SERVER_OFFSET_MAX_HOURS:
+        log.warning(
+            "MT5_SERVER_UTC_OFFSET_HOURS=%r is outside the supported range "
+            "[-%s, %s]; falling back to auto-detection",
+            _SERVER_UTC_OFFSET_ENV,
+            _SERVER_OFFSET_MAX_HOURS,
+            _SERVER_OFFSET_MAX_HOURS,
+        )
+        return None
+    return value
+
+
+def _parse_mt5_candle_time(value: object) -> tuple[datetime, bool] | None:
+    """Parse an mt5rest timestamp and report whether it explicitly contains UTC.
+
+    Naive ISO timestamps are broker-local values.  A numeric timestamp or an
+    ISO value with an offset is already absolute UTC data.
+    """
+    if isinstance(value, (int, float)):
+        number = float(value)
+        # Unix milliseconds are common in JSON APIs; seconds are also accepted.
+        if abs(number) > 100_000_000_000:
+            number /= 1000.0
+        try:
+            return datetime.fromtimestamp(number, tz=timezone.utc), True
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed, False
+    return parsed.astimezone(timezone.utc), True
+
+
+def _normalise_mt5_candles(
+    data: list[dict], now: datetime | None = None
+) -> list[OHLCV]:
+    """Convert broker-local candle times into one comparable UTC timeline."""
+    global _last_logged_server_offset
+
+    current_utc = now or datetime.now(timezone.utc)
+    if current_utc.tzinfo is None:
+        current_utc = current_utc.replace(tzinfo=timezone.utc)
+    current_utc = current_utc.astimezone(timezone.utc)
+
+    parsed_rows: list[tuple[dict, datetime, bool]] = []
+    for bar in data:
+        if not isinstance(bar, dict):
+            continue
+        parsed = _parse_mt5_candle_time(bar.get("time"))
+        if parsed is None:
+            log.warning("Skipping MT5 candle with invalid time: %r", bar.get("time"))
+            continue
+        parsed_rows.append((bar, parsed[0], parsed[1]))
+
+    if not parsed_rows:
+        return []
+
+    configured_offset = _configured_server_offset_hours()
+    if configured_offset is not None:
+        offset_hours = configured_offset
+    elif any(explicit_utc for _, _, explicit_utc in parsed_rows):
+        # An explicit offset/Z suffix is authoritative; do not infer from it.
+        offset_hours = 0.0
+    else:
+        latest_raw = max(parsed_time for _, parsed_time, _ in parsed_rows)
+        latest_naive = latest_raw.replace(tzinfo=None)
+        delta_hours = (
+            latest_naive - current_utc.replace(tzinfo=None)
+        ).total_seconds() / 3600.0
+        # Round to 15-minute increments to support brokers using half-hour
+        # and quarter-hour server offsets without reacting to candle lag.
+        offset_hours = round(delta_hours * 4.0) / 4.0
+        if abs(offset_hours) > _SERVER_OFFSET_MAX_HOURS:
+            offset_hours = 0.0
+
+    if offset_hours != _last_logged_server_offset:
+        log.info(
+            "MT5 candle clock normalisation: server UTC offset=%+.2fh (%s)",
+            offset_hours,
+            "configured" if configured_offset is not None else "auto-detected",
+        )
+        _last_logged_server_offset = offset_hours
+
+    candles: list[OHLCV] = []
+    for bar, parsed_time, explicit_utc in parsed_rows:
+        if explicit_utc and configured_offset is None:
+            normalized_time = parsed_time.astimezone(timezone.utc)
+        else:
+            naive_time = parsed_time.replace(tzinfo=None)
+            normalized_time = (
+                naive_time - timedelta(hours=offset_hours)
+            ).replace(tzinfo=timezone.utc)
+
+        candles.append(OHLCV(
+            time=normalized_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            open=float(bar.get("openPrice", 0.0)),
+            high=float(bar.get("highPrice", 0.0)),
+            low=float(bar.get("lowPrice", 0.0)),
+            close=float(bar.get("closePrice", 0.0)),
+            volume=float(bar.get("tickVolume", bar.get("volume", 0))),
+        ))
+    return candles
 
 
 def _get_session() -> aiohttp.ClientSession:
@@ -498,10 +638,19 @@ async def fetch_candles(
         # Request slightly more bars than needed to account for the current open bar
         request_count = count + 5
         now      = datetime.now(timezone.utc)
-        from_dt  = now - timedelta(minutes=tf_min * request_count)
+        # PriceHistoryV2 may parse these values as broker-server local time.
+        # Send a padded range on both sides of UTC now so a +/-14h server clock
+        # still includes the current candles.  Returned timestamps are
+        # normalised below before the trading loop compares them.
+        from_dt  = (
+            now
+            - timedelta(minutes=tf_min * request_count)
+            - timedelta(hours=_QUERY_PADDING_HOURS)
+        )
+        to_dt = now + timedelta(hours=_QUERY_PADDING_HOURS)
 
         from_str = from_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-        to_str   = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        to_str   = to_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         try:
             sess = _get_session()
@@ -530,23 +679,7 @@ async def fetch_candles(
                     log.error(f"fetch_candles unexpected response after reconnect: {str(data)[:300]}")
                     return []
 
-                candles: List[OHLCV] = []
-                for bar in data:
-                    # Normalise time to a plain string regardless of what
-                    # mt5rest serialises it as (ISO string, integer timestamp,
-                    # or datetime).  OHLCV.time is typed str; a non-string here
-                    # would crash candle.time.replace() in
-                    # get_last_completed_bar_time() and also break the sort
-                    # key when types are mixed across bars.
-                    t = str(bar.get("time", ""))
-                    candles.append(OHLCV(
-                        time=t,
-                        open=float(bar.get("openPrice",  0.0)),
-                        high=float(bar.get("highPrice",  0.0)),
-                        low=float(bar.get("lowPrice",    0.0)),
-                        close=float(bar.get("closePrice", 0.0)),
-                        volume=float(bar.get("tickVolume", bar.get("volume", 0))),
-                    ))
+                candles = _normalise_mt5_candles(data, now=now)
 
                 # Sort and deduplicate by timestamp before removing the open bar.
                 # The bridge can return overlapping pages with duplicate candles;

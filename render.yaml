@@ -68,6 +68,11 @@ services:
         value: "5m"
       - key: CANDLE_WINDOW
         value: "300"
+      # PriceHistoryV2 auto-detects broker-local candle time versus UTC.
+      # Set a decimal-hour offset here only if the broker's server clock is
+      # known and auto-detection is unsuitable (for example, 3.5 or -4).
+      - key: MT5_SERVER_UTC_OFFSET_HOURS
+        value: "auto"
       # Option 4: old BOS/CHoCH events cannot authorize live entries.
       - key: STRUCTURE_MAX_AGE_BARS
         value: "24"
