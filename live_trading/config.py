@@ -243,12 +243,12 @@ SLIPPAGE_POINTS      = _int("SLIPPAGE_POINTS",         30,   lo=1,   hi=500)
 # it can be tuned on Render without a code change.
 TRAIL_ENABLED        = os.getenv("TRAIL_ENABLED", "true").lower() == "true"
 # R-multiple of profit required before the stop first moves off its entry level.
-TRAIL_ACTIVATION_R   = _float("TRAIL_ACTIVATION_R",   1.0,  lo=0.1, hi=10.0)
+TRAIL_ACTIVATION_R   = _float("TRAIL_ACTIVATION_R",   0.8,  lo=0.1, hi=10.0)
 # Size, in R-multiples, of each staircase step beyond activation.
 TRAIL_STEP_R         = _float("TRAIL_STEP_R",         0.5,  lo=0.05, hi=5.0)
 # Extra R-multiple locked in at every step so the stop locks real profit
 # (covers spread/slippage) instead of landing on exact break-even.
-TRAIL_LOCK_BUFFER_R  = _float("TRAIL_LOCK_BUFFER_R",  0.1,  lo=0.0, hi=2.0)
+TRAIL_LOCK_BUFFER_R  = _float("TRAIL_LOCK_BUFFER_R",  0.08, lo=0.0, hi=2.0)
 # Safety floor: the stop is never placed closer to the live price than this
 # multiple of the current ATR, so a fast move can't ratchet the stop into
 # the middle of normal M5 noise.
@@ -256,6 +256,22 @@ TRAIL_ATR_GAP_MULT   = _float("TRAIL_ATR_GAP_MULT",   0.5,  lo=0.0, hi=5.0)
 # Minimum price-unit improvement required before sending a modify request —
 # avoids spamming OrderModifySafe with no-op / sub-cent adjustments.
 TRAIL_MIN_STEP_PRICE = _float("TRAIL_MIN_STEP_PRICE", 0.05, lo=0.0, hi=100.0)
+# Smart candle-aware trailing.  The stop follows the best favorable quote,
+# then tightens around confirmed swing structure and consecutive opposing
+# closed candles.  These are deliberately separate knobs so the operator can
+# tune responsiveness without changing the entry strategy.
+TRAIL_PEAK_ATR_GAP_MULT = _float("TRAIL_PEAK_ATR_GAP_MULT", 1.10, lo=0.1, hi=5.0)
+TRAIL_PEAK_R_GAP_MULT   = _float("TRAIL_PEAK_R_GAP_MULT",   0.60, lo=0.1, hi=5.0)
+TRAIL_STRUCTURE_BUFFER_ATR = _float(
+    "TRAIL_STRUCTURE_BUFFER_ATR", 0.18, lo=0.0, hi=2.0
+)
+TRAIL_REVERSAL_CONFIRMATION_BARS = _int(
+    "TRAIL_REVERSAL_CONFIRMATION_BARS", 2, lo=1, hi=5
+)
+TRAIL_REVERSAL_TIGHTEN_ATR_MULT = _float(
+    "TRAIL_REVERSAL_TIGHTEN_ATR_MULT", 0.75, lo=0.1, hi=3.0
+)
+TRAIL_SWING_LOOKBACK = _int("TRAIL_SWING_LOOKBACK", 2, lo=1, hi=5)
 
 # ── Wyckoff Calibration ──────────────────────────────────────────────────────
 WYCKOFF_MAX_RANGE_PCT = 0.01163

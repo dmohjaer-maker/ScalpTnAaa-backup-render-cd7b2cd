@@ -38,13 +38,16 @@ from live_trading.config import (
     STATE_FILE, GUARDIAN_STATE_FILE,
     TRAIL_ENABLED, TRAIL_ACTIVATION_R, TRAIL_STEP_R,
     TRAIL_LOCK_BUFFER_R, TRAIL_ATR_GAP_MULT, TRAIL_MIN_STEP_PRICE,
+    TRAIL_PEAK_ATR_GAP_MULT, TRAIL_PEAK_R_GAP_MULT,
+    TRAIL_STRUCTURE_BUFFER_ATR, TRAIL_REVERSAL_CONFIRMATION_BARS,
+    TRAIL_REVERSAL_TIGHTEN_ATR_MULT, TRAIL_SWING_LOOKBACK,
     MTF_ENABLED, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
     TRADE_TIMEFRAMES,
 )
 from live_trading.logger import get_logger
 from live_trading.risk.guardian import RiskGuardian, GuardianStatus
 from live_trading.risk.trailing_stop import (
-    TrailingConfig, compute_staircase_sl, should_apply, r_multiple_of,
+    TrailingConfig, compute_smart_trailing_sl, should_apply, r_multiple_of,
 )
 from live_trading.signals.decision_engine import run_decision_engine, DecisionResult, describe_strategy
 from live_trading.signals.mtf_filter import compute_mtf_bias, mtf_allows_trade, MtfBias
@@ -146,6 +149,12 @@ class GoldScalperLive:
             lock_buffer_r=TRAIL_LOCK_BUFFER_R,
             atr_gap_mult=TRAIL_ATR_GAP_MULT,
             min_step_price=TRAIL_MIN_STEP_PRICE,
+            peak_atr_gap_mult=TRAIL_PEAK_ATR_GAP_MULT,
+            peak_r_gap_mult=TRAIL_PEAK_R_GAP_MULT,
+            structure_buffer_atr=TRAIL_STRUCTURE_BUFFER_ATR,
+            reversal_confirmation_bars=TRAIL_REVERSAL_CONFIRMATION_BARS,
+            reversal_tighten_atr_mult=TRAIL_REVERSAL_TIGHTEN_ATR_MULT,
+            swing_lookback=TRAIL_SWING_LOOKBACK,
         )
         # Baseline for EACH currently open position, keyed by str(ticket id):
         # its ORIGINAL entry price and ORIGINAL risk distance (never mutated
@@ -164,6 +173,10 @@ class GoldScalperLive:
         # Cached ATR (price units) from the last completed bar — reused by the
         # trailing engine between bars so it doesn't need its own candle fetch.
         self._last_atr: float = 0.0
+        # Closed candles for the primary trading timeframe.  The smart
+        # trailing engine uses these to confirm swings and reversals without
+        # adding an expensive MT5 request on every 15-second loop tick.
+        self._trail_candles: list = []
 
     # ── Entry point ───────────────────────────────────────────────────────────
 
@@ -566,6 +579,8 @@ class GoldScalperLive:
         if len(candles) < 50:
             log.warning(f"Only {len(candles)} candles returned — skipping bar")
             return
+        if tf.lower() == TIMEFRAME.lower():
+            self._trail_candles = candles
 
         # 1b. Fetch HTF candles for Multi-Timeframe filter (fail-safe: skipped on error)
         # HTF bias is computed here — before account / guardian checks — so the
@@ -979,6 +994,7 @@ class GoldScalperLive:
                 "direction":     decision.direction,
                 "entry":         tp_params.entry_price,
                 "risk_distance": abs(tp_params.entry_price - tp_params.stop_loss),
+                "peak_price":    tp_params.entry_price,
             }
             # Build a synthetic position so the Telegram panel reflects the
             # newly opened trade immediately rather than waiting up to 5 min
@@ -1034,19 +1050,33 @@ class GoldScalperLive:
         safe, just slightly more conservative.
         """
         pos_id = pos.get("id")
-        for entry in reversed(self.trade_history):
-            if not isinstance(entry, dict):
-                continue
-            if str(entry.get("position_id")) == str(pos_id) and "sl" in entry and "entry" in entry:
-                risk = abs(float(entry["entry"]) - float(entry["sl"]))
-                if risk > 0:
-                    return {
-                        "id":            pos_id,
-                        "direction":     entry.get("direction", pos.get("type", "BUY")),
-                        "entry":         float(entry["entry"]),
-                        "risk_distance": risk,
-                    }
-                break
+        matching = [
+            entry for entry in self.trade_history
+            if isinstance(entry, dict)
+            and str(entry.get("position_id")) == str(pos_id)
+        ]
+        original = next(
+            (entry for entry in reversed(matching) if "sl" in entry and "entry" in entry),
+            None,
+        )
+        if original:
+            risk = abs(float(original["entry"]) - float(original["sl"]))
+            if risk > 0:
+                direction = original.get("direction", pos.get("type", "BUY"))
+                peaks = [
+                    float(entry["peak_price"])
+                    for entry in matching
+                    if entry.get("peak_price") is not None
+                ]
+                initial_entry = float(original["entry"])
+                peak = max(peaks + [initial_entry]) if str(direction).upper() == "BUY" else min(peaks + [initial_entry])
+                return {
+                    "id":            pos_id,
+                    "direction":     direction,
+                    "entry":         initial_entry,
+                    "risk_distance": risk,
+                    "peak_price":    peak,
+                }
         # Fallback: derive from the position's live snapshot.
         risk = abs(float(pos.get("open_price", 0.0)) - float(pos.get("sl", 0.0)))
         if risk > 0:
@@ -1059,6 +1089,7 @@ class GoldScalperLive:
                 "direction":     pos.get("type", "BUY"),
                 "entry":         float(pos.get("open_price", 0.0)),
                 "risk_distance": risk,
+                "peak_price":    float(pos.get("open_price", 0.0)),
             }
         return None
 
@@ -1123,13 +1154,23 @@ class GoldScalperLive:
             # a SELL exits at the ask — trailing off the wrong side would
             # trail too aggressively by the full spread.
             current_price = quote["bid"] if direction.upper() == "BUY" else quote["ask"]
+            previous_peak = float(baseline.get("peak_price", baseline["entry"]))
+            peak_price = (
+                max(previous_peak, current_price)
+                if direction.upper() == "BUY"
+                else min(previous_peak, current_price)
+            )
+            baseline["peak_price"] = peak_price
 
-            candidate_sl = compute_staircase_sl(
+            candidate_sl = compute_smart_trailing_sl(
                 direction=direction,
                 entry=baseline["entry"],
                 risk_distance=baseline["risk_distance"],
                 current_price=current_price,
+                peak_price=peak_price,
+                current_sl=float(pos.get("sl", 0.0)),
                 atr=self._last_atr,
+                candles=self._trail_candles,
                 cfg=self._trailing_cfg,
             )
 
@@ -1141,6 +1182,7 @@ class GoldScalperLive:
                 "r_multiple":   r_now,
                 "current_sl":   pos["sl"],
                 "candidate_sl": candidate_sl,
+                "peak_price":   peak_price,
             }
 
             if not should_apply(direction, pos["sl"], candidate_sl, self._trailing_cfg.min_step_price):
@@ -1159,6 +1201,7 @@ class GoldScalperLive:
                     "r_multiple":  r_now,
                     "old_sl":      pos["sl"],
                     "new_sl":      candidate_sl,
+                    "peak_price":  peak_price,
                 })
             else:
                 log.warning(

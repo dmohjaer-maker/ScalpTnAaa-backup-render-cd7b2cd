@@ -34,6 +34,16 @@ export MIN_CONFIRMATIONS=3
 export DAILY_LOSS_LIMIT_PCT=3.0   # halt if day PnL drops below -3% of balance
 export MAX_DRAWDOWN_PCT=8.0        # halt if equity drops 8% from session peak
 export SLIPPAGE_POINTS=30          # max fill deviation in broker points
+
+# Smart candle-aware trailing (optional; these are the production defaults)
+export TRAIL_ENABLED=true
+export TRAIL_ACTIVATION_R=0.8
+export TRAIL_PEAK_ATR_GAP_MULT=1.10
+export TRAIL_PEAK_R_GAP_MULT=0.60
+export TRAIL_STRUCTURE_BUFFER_ATR=0.18
+export TRAIL_REVERSAL_CONFIRMATION_BARS=2
+export TRAIL_REVERSAL_TIGHTEN_ATR_MULT=0.75
+export TRAIL_SWING_LOOKBACK=2
 ```
 
 ### 4 — Run
@@ -76,7 +86,8 @@ live_trading/
 │   └── decision_engine.py        ← master orchestrator
 ├── risk/
 │   ├── capital_manager.py        ← SL (structural), TP=2R, lot=1%
-│   └── guardian.py               ← ⭐ circuit breaker: daily loss + drawdown stop
+│   ├── guardian.py               ← ⭐ circuit breaker: daily loss + drawdown stop
+│   └── trailing_stop.py          ← peak/ATR/swing/reversal-aware SL management
 ├── mt5/
 │   ├── connector.py              ← MetaAPI connect / fetch candles (exp. backoff)
 │   └── executor.py               ← place / modify / close (slippage-controlled)
@@ -106,6 +117,28 @@ candles (300 M5 bars)
    │
    └─► Decision Engine   → ALLOWED / BLOCKED + full reasoning
 ```
+
+---
+
+### How smart trailing protects a winning trade
+
+The trailing engine is intentionally not a fixed-distance stop:
+
+1. It activates after the trade reaches `+0.8R`, then records the best favorable
+   price reached by the position.
+2. It places the stop behind that peak using the larger of an ATR-based gap and
+   an R-based gap, so normal gold noise is not treated as a reversal.
+3. It recognizes confirmed candle swing structure and never uses an unconfirmed
+   wick as a stop anchor.
+4. After two consecutive closed candles against the position, it tightens the
+   stop using the last closed price and ATR.
+5. It only moves in the profitable direction and records the peak in trade
+   history so a Render restart cannot intentionally loosen an existing stop.
+
+The result is a stop that can preserve substantially more of a strong move while
+still leaving room for normal XAUUSD noise. Broker execution, spread, slippage,
+connection uptime, and the candle feed still determine the exact exit price; no
+trailing algorithm can guarantee the exact high or exact reversal price.
 
 ---
 
