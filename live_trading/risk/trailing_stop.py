@@ -52,10 +52,10 @@ from typing import Any, Optional, Sequence
 @dataclass
 class TrailingConfig:
     enabled:         bool  = True
-    activation_r:    float = 0.8   # R-multiple that first engages trailing
+    activation_r:    float = 1.0   # R-multiple that first engages trailing
     step_r:          float = 0.5   # R-multiple per staircase step
     lock_buffer_r:   float = 0.08  # extra R locked in at every step
-    atr_gap_mult:    float = 0.5   # never place SL closer than this × ATR to price
+    atr_gap_mult:    float = 0.8   # never place SL closer than this × ATR to price
     min_step_price:  float = 0.05  # minimum price-unit improvement to bother modifying
     peak_atr_gap_mult:       float = 1.10  # normal distance behind the best favorable price
     peak_r_gap_mult:         float = 0.60  # minimum distance behind the best favorable price
@@ -271,6 +271,12 @@ def compute_smart_trailing_sl(
         close_gap = live_atr * max(cfg.atr_gap_mult, 0.1)
         safe_close_side = current_price - close_gap if is_buy else current_price + close_gap
         candidate = min(candidate, safe_close_side) if is_buy else max(candidate, safe_close_side)
+
+    # In very volatile conditions the ATR safety cap can pull the candidate
+    # back through the small profit lock.  Do not move the stop to a fragile
+    # break-even-or-worse area; wait until price has created enough room.
+    if (is_buy and candidate < profit_floor) or (not is_buy and candidate > profit_floor):
+        return None
 
     # A live SL is an additional safety floor.  The normal caller checks this
     # via should_apply(), but retaining it here makes the pure helper safe when

@@ -17,9 +17,16 @@ def candle(open_price, high, low, close):
 
 
 class SmartTrailingTests(unittest.TestCase):
+    def test_trailing_does_not_move_before_one_r(self):
+        cfg = TrailingConfig(activation_r=1.0)
+        candidate = compute_smart_trailing_sl(
+            "BUY", 100.0, 5.0, 104.99, 104.99, 95.0, 1.0, [], cfg,
+        )
+        self.assertIsNone(candidate)
+
     def test_buy_trailing_follows_peak_and_locks_profit(self):
         cfg = TrailingConfig(
-            activation_r=0.8,
+            activation_r=1.0,
             peak_atr_gap_mult=1.1,
             peak_r_gap_mult=0.6,
             atr_gap_mult=0.5,
@@ -43,7 +50,9 @@ class SmartTrailingTests(unittest.TestCase):
         self.assertTrue(should_apply("BUY", 95.0, candidate, 0.05))
 
     def test_buy_peak_is_not_lost_during_a_small_pullback(self):
-        cfg = TrailingConfig(peak_atr_gap_mult=1.1, peak_r_gap_mult=0.6)
+        cfg = TrailingConfig(
+            activation_r=1.0, peak_atr_gap_mult=1.1, peak_r_gap_mult=0.6,
+        )
 
         first = compute_smart_trailing_sl(
             "BUY", 100.0, 5.0, 118.0, 118.0, 95.0, 2.0, [], cfg,
@@ -58,6 +67,7 @@ class SmartTrailingTests(unittest.TestCase):
 
     def test_reversal_confirmation_tightens_candidate(self):
         cfg = TrailingConfig(
+            activation_r=1.0,
             peak_atr_gap_mult=1.1,
             peak_r_gap_mult=0.6,
             atr_gap_mult=0.5,
@@ -86,7 +96,7 @@ class SmartTrailingTests(unittest.TestCase):
         self.assertGreater(with_confirmation, without_confirmation)
 
     def test_sell_trailing_moves_down_and_never_locks_a_loss(self):
-        cfg = TrailingConfig(activation_r=0.8)
+        cfg = TrailingConfig(activation_r=1.0)
         candidate = compute_smart_trailing_sl(
             "SELL",
             entry=200.0,

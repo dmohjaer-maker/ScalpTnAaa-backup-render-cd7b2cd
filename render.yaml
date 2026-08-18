@@ -95,13 +95,13 @@ services:
         value: "50.0"
       - key: SLIPPAGE_POINTS
         value: "30"
-      # Smart candle-aware trailing stop.  The stop activates at +0.8R,
+      # Smart candle-aware trailing stop.  The stop activates at +1.0R,
       # follows the best favorable quote, respects confirmed swing structure,
       # and tightens after two opposing closed candles.
       - key: TRAIL_ENABLED
         value: "true"
       - key: TRAIL_ACTIVATION_R
-        value: "0.8"
+        value: "1.0"
       - key: TRAIL_PEAK_ATR_GAP_MULT
         value: "1.10"
       - key: TRAIL_PEAK_R_GAP_MULT
@@ -117,9 +117,11 @@ services:
       - key: TRAIL_LOCK_BUFFER_R
         value: "0.08"
       - key: TRAIL_ATR_GAP_MULT
-        value: "0.5"
+        value: "0.8"
       - key: TRAIL_MIN_STEP_PRICE
         value: "0.05"
+      - key: TP_STRUCTURE_BUFFER_ATR
+        value: "0.15"
       # TRADE_TIMEFRAMES / QUALITY_ADX_MIN are read by the live engine and
       # were set on the live service but missing from this manifest.
       - key: TRADE_TIMEFRAMES

@@ -243,7 +243,9 @@ SLIPPAGE_POINTS      = _int("SLIPPAGE_POINTS",         30,   lo=1,   hi=500)
 # it can be tuned on Render without a code change.
 TRAIL_ENABLED        = os.getenv("TRAIL_ENABLED", "true").lower() == "true"
 # R-multiple of profit required before the stop first moves off its entry level.
-TRAIL_ACTIVATION_R   = _float("TRAIL_ACTIVATION_R",   0.8,  lo=0.1, hi=10.0)
+# Keep this at 1R by default: normal noise before the trade has earned its
+# original risk must never cause an SL modification.
+TRAIL_ACTIVATION_R   = _float("TRAIL_ACTIVATION_R",   1.0,  lo=0.1, hi=10.0)
 # Size, in R-multiples, of each staircase step beyond activation.
 TRAIL_STEP_R         = _float("TRAIL_STEP_R",         0.5,  lo=0.05, hi=5.0)
 # Extra R-multiple locked in at every step so the stop locks real profit
@@ -252,7 +254,7 @@ TRAIL_LOCK_BUFFER_R  = _float("TRAIL_LOCK_BUFFER_R",  0.08, lo=0.0, hi=2.0)
 # Safety floor: the stop is never placed closer to the live price than this
 # multiple of the current ATR, so a fast move can't ratchet the stop into
 # the middle of normal M5 noise.
-TRAIL_ATR_GAP_MULT   = _float("TRAIL_ATR_GAP_MULT",   0.5,  lo=0.0, hi=5.0)
+TRAIL_ATR_GAP_MULT   = _float("TRAIL_ATR_GAP_MULT",   0.8,  lo=0.0, hi=5.0)
 # Minimum price-unit improvement required before sending a modify request —
 # avoids spamming OrderModifySafe with no-op / sub-cent adjustments.
 TRAIL_MIN_STEP_PRICE = _float("TRAIL_MIN_STEP_PRICE", 0.05, lo=0.0, hi=100.0)
@@ -272,6 +274,13 @@ TRAIL_REVERSAL_TIGHTEN_ATR_MULT = _float(
     "TRAIL_REVERSAL_TIGHTEN_ATR_MULT", 0.75, lo=0.1, hi=3.0
 )
 TRAIL_SWING_LOOKBACK = _int("TRAIL_SWING_LOOKBACK", 2, lo=1, hi=5)
+
+# TP structure clearance.  A structure-aware target is placed just before a
+# significant resistance/support level.  If no usable level exists, the
+# capital manager falls back to its 2R target.
+TP_STRUCTURE_BUFFER_ATR = _float(
+    "TP_STRUCTURE_BUFFER_ATR", 0.15, lo=0.0, hi=1.0
+)
 
 # ── Wyckoff Calibration ──────────────────────────────────────────────────────
 WYCKOFF_MAX_RANGE_PCT = 0.01163

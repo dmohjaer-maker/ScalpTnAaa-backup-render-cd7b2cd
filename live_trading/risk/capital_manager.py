@@ -3,7 +3,9 @@ Capital Manager — Smart SL/TP/LotSize for XAUUSD.
 Ported from capitalManager.ts
 """
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Sequence
+
+from live_trading.config import TP_STRUCTURE_BUFFER_ATR
 
 DEFAULT_RISK_PCT    = 1.0
 ATR_BUFFER_MULT     = 0.25
@@ -28,6 +30,10 @@ class CapitalInput:
     swing_low:           Optional[float] = None
     resistance_level:    Optional[float] = None
     support_level:       Optional[float] = None
+    # Multiple confirmed structure levels let TP use the nearest meaningful
+    # obstacle instead of whichever single level happened to be most recent.
+    resistance_levels:   Sequence[float] = ()
+    support_levels:      Sequence[float] = ()
 
 
 @dataclass
@@ -62,6 +68,7 @@ def _calc_smart_sl(direction: str, entry: float, atr: float, inp: CapitalInput) 
 
     if direction == "BUY":
         cands = []
+        cands.extend(level for level in inp.support_levels if level < entry)
         if inp.order_block_bottom is not None and inp.order_block_bottom < entry:
             cands.append(inp.order_block_bottom)
         if inp.swing_low is not None and inp.swing_low < entry:
@@ -73,6 +80,7 @@ def _calc_smart_sl(direction: str, entry: float, atr: float, inp: CapitalInput) 
             raw_sl = entry - (entry - level + buffer)
     else:
         cands = []
+        cands.extend(level for level in inp.resistance_levels if level > entry)
         if inp.order_block_top is not None and inp.order_block_top > entry:
             cands.append(inp.order_block_top)
         if inp.swing_high is not None and inp.swing_high > entry:
@@ -87,6 +95,53 @@ def _calc_smart_sl(direction: str, entry: float, atr: float, inp: CapitalInput) 
     sl_dist   = abs(entry - raw_sl) if raw_sl is not None else fallback
     clamped   = _clamp(sl_dist, min_sl, max_sl)
     return _r2(entry - clamped if direction == "BUY" else entry + clamped)
+
+
+def _calc_structure_tp(
+    direction: str,
+    entry: float,
+    sl_dist: float,
+    atr: float,
+    inp: CapitalInput,
+) -> Optional[float]:
+    """Return a target just before the nearest confirmed obstacle.
+
+    A structure target is intentionally conservative: it exits before the
+    resistance/support rather than placing TP directly on liquidity.  The
+    caller's normal R:R gate still decides whether the resulting target is
+    good enough for the current market regime.
+    """
+    if atr <= 0:
+        return None
+
+    if direction == "BUY":
+        levels = [
+            *inp.resistance_levels,
+            inp.resistance_level,
+            inp.swing_high,
+        ]
+        valid = [float(level) for level in levels if level is not None and level > entry]
+        if not valid:
+            return None
+        obstacle = min(valid)
+        target = obstacle - atr * TP_STRUCTURE_BUFFER_ATR
+        if target <= entry:
+            return None
+        return _r2(target)
+
+    levels = [
+        *inp.support_levels,
+        inp.support_level,
+        inp.swing_low,
+    ]
+    valid = [float(level) for level in levels if level is not None and level < entry]
+    if not valid:
+        return None
+    obstacle = max(valid)
+    target = obstacle + atr * TP_STRUCTURE_BUFFER_ATR
+    if target >= entry:
+        return None
+    return _r2(target)
 
 
 def _calc_lot_size(sl_dist_usd: float, balance: float, risk_pct: float):
@@ -109,8 +164,13 @@ def calc_trade_parameters(inp: CapitalInput) -> CapitalOutput:
     sl_dist    = _r2(abs(entry - sl))
     sl_pips    = _r2(sl_dist * 100)
 
-    tp_dist    = sl_dist * FIXED_TP_RR
-    tp         = _r2(entry + tp_dist if direction == "BUY" else entry - tp_dist)
+    structure_tp = _calc_structure_tp(direction, entry, sl_dist, atr, inp)
+    fallback_tp_dist = sl_dist * FIXED_TP_RR
+    fallback_tp = _r2(
+        entry + fallback_tp_dist if direction == "BUY" else entry - fallback_tp_dist
+    )
+    tp = structure_tp if structure_tp is not None else fallback_tp
+    tp_dist = abs(tp - entry)
     rr         = _r2(tp_dist / sl_dist) if sl_dist > 0 else 0.0
 
     lot, risk  = _calc_lot_size(sl_dist, inp.account_balance, risk_pct)

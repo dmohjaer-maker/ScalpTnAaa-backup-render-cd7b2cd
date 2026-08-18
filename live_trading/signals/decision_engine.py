@@ -258,10 +258,23 @@ def run_decision_engine(
 
     # H-2 FIX: populate support/resistance from SMC equal levels (previously always None).
     # Equal lows = institutional demand / support; equal highs = supply / resistance.
-    eq_support    = (smc.equal_lows[-1].price
-                     if smc.equal_lows  and smc.equal_lows[-1].price  < entry else None)
-    eq_resistance = (smc.equal_highs[-1].price
-                     if smc.equal_highs and smc.equal_highs[-1].price > entry else None)
+    # Use the nearest confirmed equal level in the trade's path.  The newest
+    # detected level is not always the most relevant obstacle.
+    _support_levels = [level.price for level in smc.equal_lows if level.price < entry]
+    _resistance_levels = [level.price for level in smc.equal_highs if level.price > entry]
+    eq_support = max(_support_levels) if _support_levels else None
+    eq_resistance = min(_resistance_levels) if _resistance_levels else None
+
+    # BOS/CHoCH prices are also confirmed market-structure levels.  Supplying
+    # all valid levels allows the TP engine to choose the nearest obstacle,
+    # while the SL engine still uses the strongest nearby anchor.
+    _structure_events = [*smc.bos_signals, *smc.choch_signals]
+    _structure_supports = [
+        event.price for event in _structure_events if event.price < entry
+    ]
+    _structure_resistances = [
+        event.price for event in _structure_events if event.price > entry
+    ]
 
     cap_input = CapitalInput(
         direction=candidate,
@@ -275,6 +288,8 @@ def run_decision_engine(
         swing_low=sell_bos_below[-1]  if sell_bos_below else None,
         support_level=eq_support,
         resistance_level=eq_resistance,
+        support_levels=(*_support_levels, *_structure_supports),
+        resistance_levels=(*_resistance_levels, *_structure_resistances),
     )
     trade_params = calc_trade_parameters(cap_input)
 
