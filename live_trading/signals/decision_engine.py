@@ -25,10 +25,82 @@ from live_trading.config import (
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
 )
 
-# Marginal confidence R:R floor: trades with confidence between CONF_HARD_MIN
-# and the regime minimum must still achieve this R:R to be allowed.
-# 1.3 = profitable in expectancy even at 45% win rate (1.3 × 0.45 > 0.55).
+# Marginal confidence R:R floor for the few non-trend, non-strict regimes where
+# the legacy marginal path remains valid. Trend, RANGE, and HIGH_VOLATILITY
+# entries must reach their real regime threshold and never use this path.
 CONF_MARGINAL_RR = 1.3
+CONF_BORDERLINE_MARGIN = 5.0
+
+# Trend regimes preserve the balanced two-confirmation policy. Range and high
+# volatility regimes are structurally less forgiving and use a stricter gate.
+TREND_REGIMES = frozenset({
+    "STRONG_TREND_BULL",
+    "STRONG_TREND_BEAR",
+    "WEAK_TREND_BULL",
+    "WEAK_TREND_BEAR",
+    "PULLBACK_BULL",
+    "PULLBACK_BEAR",
+})
+STRICT_ENTRY_REGIMES = frozenset({"RANGE", "HIGH_VOLATILITY"})
+
+
+def evaluate_regime_entry_policy(
+    regime: str,
+    regime_min_confidence: float,
+    confidence: float,
+    confirmation_count: int,
+    has_price_action: bool,
+    candidate: str,
+    trend_direction: str,
+    configured_min_confirmations: int = 2,
+) -> List[str]:
+    """Return policy violations before quality/R:R checks are evaluated.
+
+    This is intentionally pure so the adaptive gate can be tested without
+    market-data fixtures. SMC remains the candidate direction; the other
+    engines contribute confirmations through ``confirmation_count``.
+    """
+    reasons: List[str] = []
+    counter_trend = (
+        (candidate == "BUY" and trend_direction == "SELL")
+        or (candidate == "SELL" and trend_direction == "BUY")
+    )
+    if counter_trend:
+        reasons.append(
+            f"Counter-trend entry blocked: EMA trend is {trend_direction} "
+            f"against SMC direction {candidate}"
+        )
+
+    if regime in STRICT_ENTRY_REGIMES:
+        required = max(configured_min_confirmations, 3)
+        if confirmation_count < required:
+            reasons.append(
+                f"{regime} requires at least {required} confirmations "
+                f"(got {confirmation_count})"
+            )
+        if not has_price_action:
+            reasons.append(f"{regime} requires Price Action confirmation")
+        if confidence < regime_min_confidence:
+            reasons.append(
+                f"{regime} requires confidence ≥ {regime_min_confidence:.1f}% "
+                f"(got {confidence:.1f}%)"
+            )
+        return reasons
+
+    if regime in TREND_REGIMES:
+        if confidence < regime_min_confidence:
+            reasons.append(
+                f"{regime} requires confidence ≥ {regime_min_confidence:.1f}% "
+                f"(got {confidence:.1f}%)"
+            )
+        elif confidence < regime_min_confidence + CONF_BORDERLINE_MARGIN and not has_price_action:
+            reasons.append(
+                f"Borderline trend confidence {confidence:.1f}% requires "
+                f"Price Action confirmation (< "
+                f"{regime_min_confidence + CONF_BORDERLINE_MARGIN:.1f}%)"
+            )
+
+    return reasons
 
 
 @dataclass
@@ -96,7 +168,7 @@ def run_decision_engine(
     candles:           List[OHLCV],
     account_balance:   float,
     risk_percent:      float = 1.0,
-    min_confirmations: int   = 1,
+    min_confirmations: int   = 2,
     use_atr_high_vol:  bool  = False,
     dxy_signal:        str   = "NEUTRAL",
     require_price_action: bool = False,
@@ -112,23 +184,20 @@ def run_decision_engine(
     if candidate == "NEUTRAL":
         return _make_neutral(smc, wyckoff, pa, trend, ["No SMC signal"])
 
-    # Soft EMA gate — counter-trend trades are allowed but need 3 confirmations
+    # EMA direction is also used by the regime-aware policy below. A direct
+    # opposite-direction setup must never reach the order path.
     trend_dir = ("BUY" if trend.trend == "BULLISH" else
                  "SELL" if trend.trend == "BEARISH" else "NEUTRAL")
-    _counter_trend = (candidate == "BUY" and trend_dir == "SELL") or \
-                     (candidate == "SELL" and trend_dir == "BUY")
 
     # Detect regime early — needed to set the adaptive confirmation threshold.
-    # RANGE / ACCUMULATION / DISTRIBUTION / HIGH_VOLATILITY markets suppress
-    # PA and Wyckoff signals by design, so we lower the bar to 2 in those
-    # regimes. Trending regimes keep the stricter operator-configured value.
+    # RANGE and HIGH_VOLATILITY deliberately raise the bar because two weak
+    # votes are not enough in those regimes.
     regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
 
-    # Respect the configured minimum exactly.  The demo account uses a
-    # two-engine confirmation policy; do not silently raise it to three based
-    # on market regime or counter-trend direction.  Regime direction rules
-    # below still remain active as a separate safety gate.
-    effective_min_confirmations = min_confirmations
+    strict_regime = regime.regime in STRICT_ENTRY_REGIMES
+    effective_min_confirmations = (
+        max(min_confirmations, 3) if strict_regime else min_confirmations
+    )
 
     # Entry filter — minimum N-of-4 vote gate (SMC always required)
     ef = apply_entry_filter(
@@ -137,7 +206,7 @@ def run_decision_engine(
         pa_signal       = pa.pa_signal,
         wyckoff_signal  = wyckoff.wyckoff_signal,
         min_confirmations = effective_min_confirmations,
-        require_price_action = require_price_action,
+        require_price_action = require_price_action or strict_regime,
         require_smc_price_action_wyckoff = require_smc_price_action_wyckoff,
     )
     if not ef.allowed:
@@ -179,16 +248,41 @@ def run_decision_engine(
         divergence_signal=divergence.signal,
     )
 
-    if conf_result.confidence < CONF_HARD_MIN:
+    policy_reasons = evaluate_regime_entry_policy(
+        regime=regime.regime,
+        regime_min_confidence=regime.rules.min_confidence,
+        confidence=conf_result.confidence,
+        confirmation_count=ef.confirmation_count,
+        has_price_action=ef.price_action,
+        candidate=candidate,
+        trend_direction=trend_dir,
+        configured_min_confirmations=min_confirmations,
+    )
+    confidence_block_reason = (
+        f"Confidence {conf_result.confidence:.1f}% < {CONF_HARD_MIN}% hard minimum"
+        if conf_result.confidence < CONF_HARD_MIN
+        else (policy_reasons[0] if policy_reasons else None)
+    )
+    if confidence_block_reason:
+        all_reasons = (
+            [confidence_block_reason]
+            if confidence_block_reason in policy_reasons
+            else [confidence_block_reason, *policy_reasons]
+        )
         n = DecisionResult(
             allowed=False, direction=candidate,  # type: ignore
             confidence=conf_result.confidence, components=conf_result.components,
-            grade="REJECTED", regime=regime.regime, regime_label=regime.rules.label,
+            grade=(
+                "REJECTED"
+                if conf_result.confidence < CONF_HARD_MIN or policy_reasons
+                else "MARGINAL"
+            ),
+            regime=regime.regime, regime_label=regime.rules.label,
             regime_rules=regime.rules,
             quality_filter=QualityFilterResult(
-                False, [f"Confidence {conf_result.confidence:.1f}% < {CONF_HARD_MIN}% minimum"],
-                session, regime.adx, False, False, True, False, False, False),
-            blocked_reasons=[f"Confidence {conf_result.confidence:.1f}% < {CONF_HARD_MIN}%"],
+                False, all_reasons, session, regime.adx, False, False,
+                conf_result.confidence < CONF_HARD_MIN, False, False, False),
+            blocked_reasons=all_reasons,
             reasoning=conf_result.reasoning, trade_params=None,
             smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
             entry_filter=ef,
@@ -293,7 +387,9 @@ def run_decision_engine(
     )
     trade_params = calc_trade_parameters(cap_input)
 
-    # Marginal confidence check
+    # Marginal confidence is intentionally retained only for regimes outside
+    # the trend/range policy. Those regimes are not covered by the adaptive
+    # strict gate above and still retain the legacy R:R safeguard.
     min_conf = regime.rules.min_confidence
     if conf_result.confidence < min_conf:
         if trade_params.risk_reward_ratio < CONF_MARGINAL_RR:

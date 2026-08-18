@@ -78,9 +78,11 @@ services:
         value: "24"
       - key: RISK_PERCENT
         value: "1.0"
-      # DEMO TEST configuration: Guardian remains enabled, but allows up to
-      # 50% daily loss or peak drawdown before pausing new entries. Individual
-      # trade risk remains controlled by RISK_PERCENT above.
+      # Balanced regime-aware entry policy:
+      # Trend: 2 confirmations, regime confidence, borderline PA confirmation,
+      # and no counter-trend entries.
+      # RANGE/HIGH_VOLATILITY: 3 confirmations, mandatory PA, real regime
+      # confidence, and no MARGINAL path.
       - key: MIN_CONFIRMATIONS
         value: "2"
       - key: REQUIRE_PRICE_ACTION
@@ -88,7 +90,7 @@ services:
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
         value: "false"
       - key: CONF_HARD_MIN
-        value: "32"
+        value: "40"
       - key: DAILY_LOSS_LIMIT_PCT
         value: "50.0"
       - key: MAX_DRAWDOWN_PCT
@@ -122,12 +124,16 @@ services:
         value: "0.05"
       - key: TP_STRUCTURE_BUFFER_ATR
         value: "0.15"
-      # TRADE_TIMEFRAMES / QUALITY_ADX_MIN are read by the live engine and
-      # were set on the live service but missing from this manifest.
+      # TRADE_TIMEFRAMES / QUALITY_ADX_MIN / MTF settings are explicit here so
+      # a Render redeploy cannot silently fall back to a different policy.
       - key: TRADE_TIMEFRAMES
         value: "M20,M15,M10,5m"
       - key: QUALITY_ADX_MIN
-        value: "12"
+        value: "15"
+      - key: MTF_ENABLED
+        value: "true"
+      - key: MTF_TIMEFRAME
+        value: "H1"
       - key: PYTHON_VERSION
         value: "3.11.0"
       - key: STATE_FILE

@@ -167,10 +167,9 @@ REQUIRE_PRICE_ACTION = os.getenv("REQUIRE_PRICE_ACTION", "false").strip().lower(
 REQUIRE_SMC_PRICE_ACTION_WYCKOFF = os.getenv(
     "REQUIRE_SMC_PRICE_ACTION_WYCKOFF", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
-# CONF_HARD_MIN=28%: absolute floor after M-2 double-count fix lowered
-# typical PA contribution by ~9pts. Good setups now score 35-50%;
-# garbage stays at 11-13%. 28% cuts noise without blocking solid setups.
-CONF_HARD_MIN     = _float("CONF_HARD_MIN",      28.0, lo=0.0, hi=100.0)
+# CONF_HARD_MIN=40%: balanced absolute floor for live entry quality.
+# Regime-specific thresholds remain higher where the market is less forgiving.
+CONF_HARD_MIN     = _float("CONF_HARD_MIN",      40.0, lo=0.0, hi=100.0)
 # QUALITY_ADX_MIN: minimum ADX value required to confirm trend momentum.
 # Below this threshold the quality filter rejects the signal as "low momentum".
 # 15 is the recommended floor for M5 gold — catches genuine micro-trends
