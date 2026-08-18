@@ -221,10 +221,10 @@ RETEST_MIN_BODY_ATR = _float("RETEST_MIN_BODY_ATR", 0.15, lo=0.0, hi=1.0)
 # computed on H1 regardless of which trade TFs are active, because H1
 # represents the directional context for the whole session.
 #
-# M1 execution profile: "M15,M5,1m" (higher TF context first, M1 entry last).
-# Keeping only these three avoids duplicate signals from too many overlapping
-# timeframes while preserving the higher-timeframe confirmations.
-TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M15,M5,1m")
+# M1 execution profile: "M5,1m" (confirmation first, M1 entry last).
+# H1 supplies the broader directional context; keeping M5 and M1 avoids
+# duplicate signals from too many overlapping entry timeframes.
+TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M5,1m")
 
 
 

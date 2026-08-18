@@ -63,7 +63,7 @@ services:
       # the real reason the robot never opened a trade.
       - key: SYMBOL
         value: XAUUSD
-      # M1 is the execution/entry timeframe. M5 and M15 provide confirmation;
+      # M1 is the execution/entry timeframe. M5 provides confirmation;
       # H1 remains the higher-timeframe directional filter below.
       - key: TIMEFRAME
         value: "1m"
@@ -130,7 +130,7 @@ services:
       # TRADE_TIMEFRAMES / QUALITY_ADX_MIN / MTF settings are explicit here so
       # a Render redeploy cannot silently fall back to a different policy.
       - key: TRADE_TIMEFRAMES
-        value: "M15,M5,1m"
+        value: "M5,1m"
       - key: QUALITY_ADX_MIN
         value: "15"
       - key: MTF_ENABLED
