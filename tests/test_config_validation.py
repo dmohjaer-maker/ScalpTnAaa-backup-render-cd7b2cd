@@ -46,6 +46,12 @@ class TestConfigDefaults:
         cfg = _reload_config({})
         assert cfg.SYMBOL == "XAUUSD"
 
+    def test_timeframe_defaults_to_m5_only(self):
+        cfg = _reload_config({})
+        assert cfg.TIMEFRAME == "5m"
+        assert cfg.TRADE_TIMEFRAMES == ["M5"]
+        assert not any(tf.lower() in {"1m", "m1"} for tf in cfg.TRADE_TIMEFRAMES)
+
     def test_risk_percent_default(self):
         cfg = _reload_config({})
         assert cfg.RISK_PERCENT == 1.0

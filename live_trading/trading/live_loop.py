@@ -579,7 +579,7 @@ class GoldScalperLive:
     # ── Per-bar handler ───────────────────────────────────────────────────────
 
     async def _on_new_bar(self, bar_time: datetime, tf: str = TIMEFRAME) -> None:
-        # 1. Fetch candles for this timeframe (M5 / M10 / M15 / M20)
+        # 1. Fetch candles for this configured timeframe (M5 in production)
         candles = await fetch_candles(SYMBOL, tf, CANDLE_WINDOW)
         if len(candles) < 50:
             log.warning(f"Only {len(candles)} candles returned — skipping bar")
@@ -587,8 +587,8 @@ class GoldScalperLive:
         if tf.lower() == TIMEFRAME.lower():
             self._trail_candles = candles
 
-        # M1 and M5 use separate Range profiles.  M1 is the fast trigger
-        # timeframe; M5 retains the higher-quality confirmation thresholds.
+        # M5 is the active production Range profile. The M1 profile remains
+        # available in the shared strategy code but is not scheduled by Render.
         _is_m1_tf = tf.lower() in {"1m", "m1"}
         _range_min_confidence = (
             M1_RANGE_MIN_CONFIDENCE if _is_m1_tf else M5_RANGE_MIN_CONFIDENCE

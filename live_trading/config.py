@@ -144,10 +144,10 @@ MT5_PASSWORD  = os.getenv("MT5_PASSWORD", "")
 
 # ── Symbol & Timeframe ───────────────────────────────────────────────────────
 SYMBOL        = os.getenv("SYMBOL", "XAUUSD")
-# M1 is the default execution timeframe. M5/M15 can still be enabled through
-# TRADE_TIMEFRAMES for context and confirmation.
-TIMEFRAME     = _timeframe("TIMEFRAME", "1m")
-# 500 bars gives M1 indicator/structure engines enough lookback without making
+# M5 is the default and only execution timeframe. Higher timeframes can still
+# be enabled through TRADE_TIMEFRAMES for context and confirmation.
+TIMEFRAME     = _timeframe("TIMEFRAME", "5m")
+# 500 bars gives the M5 indicator/structure engines enough lookback without making
 # every candle request unnecessarily heavy for the mt5rest bridge.
 CANDLE_WINDOW = _int("CANDLE_WINDOW", 500, lo=50, hi=5000)
 
@@ -165,7 +165,7 @@ MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   2,    lo=1,    hi=10)
 REQUIRE_PRICE_ACTION = os.getenv("REQUIRE_PRICE_ACTION", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
-# Aggressive M1 range profile: RANGE entries may use the configured minimum
+# M5 range profile: RANGE entries may use the configured minimum
 # (normally SMC + one independent confirmation) instead of the stricter
 # three-vote range gate. Confidence, quality, R:R, MTF, retest, and Guardian
 # gates remain active.
@@ -173,8 +173,7 @@ RANGE_MIN_CONFIRMATIONS = _int("RANGE_MIN_CONFIRMATIONS", 2, lo=2, hi=4)
 RANGE_REQUIRE_PRICE_ACTION = os.getenv(
     "RANGE_REQUIRE_PRICE_ACTION", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
-# Per-entry-timeframe Range profiles. M1 is the fast trigger timeframe;
-# M5 retains the higher-quality Range thresholds.
+# Per-entry-timeframe Range profiles. M5 is the active execution profile.
 M1_RANGE_MIN_CONFIDENCE = _float(
     "M1_RANGE_MIN_CONFIDENCE", 55.0, lo=40.0, hi=100.0
 )
@@ -203,9 +202,9 @@ CONF_HARD_MIN     = _float("CONF_HARD_MIN",      40.0, lo=0.0, hi=100.0)
 # 12 is the balanced floor for the combined M5/M1 execution profile.
 QUALITY_ADX_MIN   = _float("QUALITY_ADX_MIN",    12.0, lo=5.0,  hi=40.0)
 # Maximum age of the structure event that can authorize a new entry.
-# The M1 profile uses 60 closed bars (about one hour) so a valid structure
-# does not expire after only a few minutes while the retest gate remains active.
-STRUCTURE_MAX_AGE_BARS = _int("STRUCTURE_MAX_AGE_BARS", 60, lo=3, hi=100)
+# The M5 profile uses 24 closed bars (about two hours) so a valid structure
+# remains actionable while the retest gate remains active.
+STRUCTURE_MAX_AGE_BARS = _int("STRUCTURE_MAX_AGE_BARS", 24, lo=3, hi=100)
 MAX_OPEN_TRADES   = 1
 
 USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() == "true"
@@ -244,15 +243,13 @@ RETEST_MIN_BODY_ATR = _float("RETEST_MIN_BODY_ATR", 0.15, lo=0.0, hi=1.0)
 # computed on H1 regardless of which trade TFs are active, because H1
 # represents the directional context for the whole session.
 #
-# M1 execution profile: "M5,1m" (confirmation first, M1 entry last).
-# H1 supplies the broader directional context; keeping M5 and M1 avoids
-# duplicate signals from too many overlapping entry timeframes.
-TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M5,1m")
-# A dashboard-level TRADE_TIMEFRAMES override previously put the live robot
-# onto an older M20/M15/M10/M5 profile even while TIMEFRAME was still 1m.
-# Keep M1 present whenever the execution profile says M1 is required.
+# M5-only execution profile. H1 supplies the broader directional context.
+TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M5")
+# Kept as an explicit compatibility switch for existing Render environments.
+# It is disabled by the M5-only deployment configuration and cannot add M1
+# unless TIMEFRAME itself is changed back to an M1 value.
 M1_EXECUTION_REQUIRED = os.getenv(
-    "M1_EXECUTION_REQUIRED", "true"
+    "M1_EXECUTION_REQUIRED", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
 if M1_EXECUTION_REQUIRED and TIMEFRAME in {"1m", "M1"} and not any(
     _TF_MINUTES.get(tf) == 1 for tf in TRADE_TIMEFRAMES

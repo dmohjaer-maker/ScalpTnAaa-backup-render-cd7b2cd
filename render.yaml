@@ -63,10 +63,10 @@ services:
       # the real reason the robot never opened a trade.
       - key: SYMBOL
         value: XAUUSD
-      # M1 is the execution/entry timeframe. M5 provides confirmation;
+      # M5 is the only execution/entry timeframe.
       # H1 remains the higher-timeframe directional filter below.
       - key: TIMEFRAME
-        value: "1m"
+        value: "5m"
       - key: CANDLE_WINDOW
         value: "500"
       # PriceHistoryV2 auto-detects broker-local candle time versus UTC.
@@ -75,15 +75,13 @@ services:
       - key: MT5_SERVER_UTC_OFFSET_HOURS
         value: "auto"
       # Option 4: old BOS/CHoCH events cannot authorize live entries.
-      # M1 bars are shorter, so keep a structure actionable for about one hour
-      # instead of using the old M5-specific 24-bar window.
+      # On M5, keep a structure actionable for two hours (24 closed bars).
       - key: STRUCTURE_MAX_AGE_BARS
-        value: "60"
+        value: "24"
       - key: RISK_PERCENT
         value: "1.0"
-      # Aggressive M1 range policy:
-      # RANGE: 2 confirmations are allowed, while confidence, quality, MTF,
-      # retest, R:R, and Guardian gates remain active.
+      # M5 range policy: 2 confirmations are allowed, while confidence,
+      # quality, MTF, retest, R:R, and Guardian gates remain active.
       # HIGH_VOLATILITY remains at 3 confirmations plus Price Action.
       - key: MIN_CONFIRMATIONS
         value: "2"
@@ -93,16 +91,10 @@ services:
         value: "2"
       - key: RANGE_REQUIRE_PRICE_ACTION
         value: "false"
-      - key: M1_RANGE_MIN_CONFIDENCE
-        value: "55"
-      - key: M1_RANGE_MIN_RR
-        value: "1.6"
       - key: M5_RANGE_MIN_CONFIDENCE
         value: "60"
       - key: M5_RANGE_MIN_RR
         value: "2.0"
-      - key: M1_REQUIRE_BREAK_RETEST
-        value: "false"
       - key: M5_REQUIRE_BREAK_RETEST
         value: "true"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
@@ -145,9 +137,9 @@ services:
       # TRADE_TIMEFRAMES / QUALITY_ADX_MIN / MTF settings are explicit here so
       # a Render redeploy cannot silently fall back to a different policy.
       - key: TRADE_TIMEFRAMES
-        value: "M5,1m"
+        value: "M5"
       - key: M1_EXECUTION_REQUIRED
-        value: "true"
+        value: "false"
       - key: QUALITY_ADX_MIN
         value: "12"
       - key: MTF_ENABLED
