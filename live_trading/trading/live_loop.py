@@ -42,6 +42,8 @@ from live_trading.config import (
     TRAIL_STRUCTURE_BUFFER_ATR, TRAIL_REVERSAL_CONFIRMATION_BARS,
     TRAIL_REVERSAL_TIGHTEN_ATR_MULT, TRAIL_SWING_LOOKBACK,
     MTF_ENABLED, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
+    REQUIRE_BREAK_RETEST, RETEST_MAX_BARS, RETEST_ZONE_ATR_MULT,
+    RETEST_CLOSE_BUFFER_ATR, RETEST_MIN_BODY_ATR,
     TRADE_TIMEFRAMES,
 )
 from live_trading.logger import get_logger
@@ -51,6 +53,7 @@ from live_trading.risk.trailing_stop import (
 )
 from live_trading.signals.decision_engine import run_decision_engine, DecisionResult, describe_strategy
 from live_trading.signals.mtf_filter import compute_mtf_bias, mtf_allows_trade, MtfBias
+from live_trading.signals.retest_gate import evaluate_break_retest, RetestResult
 from live_trading.signals.wyckoff_engine import calibrate_wyckoff, set_calibrated_config
 from live_trading.mt5.connector import (
     connect, disconnect, ensure_connected,
@@ -864,6 +867,45 @@ class GoldScalperLive:
                 self._write_state("SCANNING", acc_info, decision, pos, extra=_mtf_extra)
                 return
 
+        # 8b-2. Break-and-retest protection.  A fresh BOS/CHoCH is only a
+        # candidate: the latest closed candle must retest the broken level and
+        # reject it in the trade direction.  This blocks first-break entries
+        # that are vulnerable to liquidity sweeps and false breakouts.
+        _retest_result: RetestResult | None = None
+        if REQUIRE_BREAK_RETEST:
+            _retest_result = evaluate_break_retest(
+                candles,
+                decision.smc,
+                decision.direction,
+                max_bars=RETEST_MAX_BARS,
+                zone_atr_mult=RETEST_ZONE_ATR_MULT,
+                close_buffer_atr=RETEST_CLOSE_BUFFER_ATR,
+                min_body_atr=RETEST_MIN_BODY_ATR,
+            )
+            if not _retest_result.allowed:
+                log.info(
+                    f"⛔ Break-retest gate [{tf}] {decision.direction}: "
+                    f"{_retest_result.reason}  "
+                    f"level={_retest_result.level}  "
+                    f"bars_since_break={_retest_result.bars_since_breakout}"
+                )
+                self._write_state(
+                    "SCANNING",
+                    acc_info,
+                    decision,
+                    pos,
+                    extra={
+                        **self._guardian_extra(gs),
+                        "retest_gate": _retest_result.as_dict(),
+                    },
+                )
+                return
+            log.info(
+                f"✅ Break-retest confirmed [{tf}] {decision.direction}: "
+                f"level={_retest_result.level}  "
+                f"bars_since_break={_retest_result.bars_since_breakout}"
+            )
+
         # 7c. Gate: post-SL cooldown in choppy/range regimes
         # If the last trade was in the same direction and closed (or will close)
         # within 2 bars, the market setup has NOT changed — skip re-entry.
@@ -960,6 +1002,8 @@ class GoldScalperLive:
             self._last_entry_bar_time   = bar_time
             self._last_entry_direction  = decision.direction
             strategy = describe_strategy(decision)
+            if _retest_result is not None:
+                strategy["break_retest"] = _retest_result.as_dict()
             entry_log = {
                 "position_id": result.position_id,
                 "direction":   decision.direction,

@@ -194,6 +194,19 @@ MTF_ENABLED       = os.getenv("MTF_ENABLED",   "true").lower() == "true"
 MTF_TIMEFRAME     = _timeframe("MTF_TIMEFRAME",  "H1")
 MTF_CANDLE_WINDOW = _int("MTF_CANDLE_WINDOW",    300, lo=50, hi=1000)
 
+# ── Break-and-retest entry protection ─────────────────────────────────────────
+# A directional BOS/CHoCH is not enough by itself: the default gate waits for a
+# closed-candle retest and rejection of the broken level before placing an order.
+REQUIRE_BREAK_RETEST = os.getenv(
+    "REQUIRE_BREAK_RETEST", "true"
+).strip().lower() in {"1", "true", "yes", "on"}
+RETEST_MAX_BARS = _int("RETEST_MAX_BARS", 3, lo=1, hi=10)
+RETEST_ZONE_ATR_MULT = _float("RETEST_ZONE_ATR_MULT", 0.20, lo=0.0, hi=2.0)
+RETEST_CLOSE_BUFFER_ATR = _float(
+    "RETEST_CLOSE_BUFFER_ATR", 0.05, lo=0.0, hi=1.0
+)
+RETEST_MIN_BODY_ATR = _float("RETEST_MIN_BODY_ATR", 0.15, lo=0.0, hi=1.0)
+
 # ── Trade Timeframes (Multi-Timeframe entry) ─────────────────────────────────
 # Comma-separated list of timeframes the robot will watch for new bars and
 # generate independent trade signals on.  Sorted automatically highest-first
