@@ -144,8 +144,12 @@ MT5_PASSWORD  = os.getenv("MT5_PASSWORD", "")
 
 # ── Symbol & Timeframe ───────────────────────────────────────────────────────
 SYMBOL        = os.getenv("SYMBOL", "XAUUSD")
-TIMEFRAME     = _timeframe("TIMEFRAME", "5m")
-CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
+# M1 is the default execution timeframe. M5/M15 can still be enabled through
+# TRADE_TIMEFRAMES for context and confirmation.
+TIMEFRAME     = _timeframe("TIMEFRAME", "1m")
+# 500 bars gives M1 indicator/structure engines enough lookback without making
+# every candle request unnecessarily heavy for the mt5rest bridge.
+CANDLE_WINDOW = _int("CANDLE_WINDOW", 500, lo=50, hi=5000)
 
 # ── Risk & Trade Rules ───────────────────────────────────────────────────────
 # Production defaults — override via Render env vars if needed.
@@ -176,9 +180,9 @@ CONF_HARD_MIN     = _float("CONF_HARD_MIN",      40.0, lo=0.0, hi=100.0)
 # without blocking valid moves that ADX=20 would silently filter out.
 QUALITY_ADX_MIN   = _float("QUALITY_ADX_MIN",    15.0, lo=5.0,  hi=40.0)
 # Maximum age of the structure event that can authorize a new entry.
-# 300 bars on M5 is roughly 25 hours and is too permissive for scalping;
-# the default 24 closed bars keeps BOS/CHoCH actionable for about two hours.
-STRUCTURE_MAX_AGE_BARS = _int("STRUCTURE_MAX_AGE_BARS", 24, lo=3, hi=100)
+# The M1 profile uses 60 closed bars (about one hour) so a valid structure
+# does not expire after only a few minutes while the retest gate remains active.
+STRUCTURE_MAX_AGE_BARS = _int("STRUCTURE_MAX_AGE_BARS", 60, lo=3, hi=100)
 MAX_OPEN_TRADES   = 1
 
 USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() == "true"
@@ -217,10 +221,10 @@ RETEST_MIN_BODY_ATR = _float("RETEST_MIN_BODY_ATR", 0.15, lo=0.0, hi=1.0)
 # computed on H1 regardless of which trade TFs are active, because H1
 # represents the directional context for the whole session.
 #
-# Recommended:  "M20,M15,M10,5m"  (4 TFs = ~2-4 entries/day per TF)
-# Conservative: "M15,5m"           (2 TFs = cleaner, fewer signals)
-# Aggressive:   "M20,M15,M10,5m"   (same as recommended)
-TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M20,M15,M10,5m")
+# M1 execution profile: "M15,M5,1m" (higher TF context first, M1 entry last).
+# Keeping only these three avoids duplicate signals from too many overlapping
+# timeframes while preserving the higher-timeframe confirmations.
+TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M15,M5,1m")
 
 
 

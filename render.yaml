@@ -63,19 +63,22 @@ services:
       # the real reason the robot never opened a trade.
       - key: SYMBOL
         value: XAUUSD
-      # FIX: TIMEFRAME and CANDLE_WINDOW are now env-configurable (fix #4).
+      # M1 is the execution/entry timeframe. M5 and M15 provide confirmation;
+      # H1 remains the higher-timeframe directional filter below.
       - key: TIMEFRAME
-        value: "5m"
+        value: "1m"
       - key: CANDLE_WINDOW
-        value: "300"
+        value: "500"
       # PriceHistoryV2 auto-detects broker-local candle time versus UTC.
       # Set a decimal-hour offset here only if the broker's server clock is
       # known and auto-detection is unsuitable (for example, 3.5 or -4).
       - key: MT5_SERVER_UTC_OFFSET_HOURS
         value: "auto"
       # Option 4: old BOS/CHoCH events cannot authorize live entries.
+      # M1 bars are shorter, so keep a structure actionable for about one hour
+      # instead of using the old M5-specific 24-bar window.
       - key: STRUCTURE_MAX_AGE_BARS
-        value: "24"
+        value: "60"
       - key: RISK_PERCENT
         value: "1.0"
       # Balanced regime-aware entry policy:
@@ -127,7 +130,7 @@ services:
       # TRADE_TIMEFRAMES / QUALITY_ADX_MIN / MTF settings are explicit here so
       # a Render redeploy cannot silently fall back to a different policy.
       - key: TRADE_TIMEFRAMES
-        value: "M20,M15,M10,5m"
+        value: "M15,M5,1m"
       - key: QUALITY_ADX_MIN
         value: "15"
       - key: MTF_ENABLED
