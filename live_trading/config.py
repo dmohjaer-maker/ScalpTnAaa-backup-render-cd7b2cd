@@ -205,6 +205,12 @@ QUALITY_ADX_MIN   = _float("QUALITY_ADX_MIN",    12.0, lo=5.0,  hi=40.0)
 # The M5 profile uses 24 closed bars (about two hours) so a valid structure
 # remains actionable while the retest gate remains active.
 STRUCTURE_MAX_AGE_BARS = _int("STRUCTURE_MAX_AGE_BARS", 24, lo=3, hi=100)
+# Do not enter into a nearby confirmed support/resistance obstacle.  This
+# prevents late SELL entries directly above support (and BUY entries directly
+# below resistance) where the remaining price room is too small.
+ENTRY_OBSTACLE_CLEARANCE_ATR = _float(
+    "ENTRY_OBSTACLE_CLEARANCE_ATR", 0.75, lo=0.0, hi=5.0
+)
 MAX_OPEN_TRADES   = 1
 
 USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() == "true"

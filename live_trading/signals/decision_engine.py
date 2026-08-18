@@ -25,6 +25,7 @@ from live_trading.config import (
     RANGE_MIN_CONFIRMATIONS,
     RANGE_REQUIRE_PRICE_ACTION,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
+    ENTRY_OBSTACLE_CLEARANCE_ATR,
 )
 
 # Marginal confidence R:R floor for the few non-trend, non-strict regimes where
@@ -163,6 +164,86 @@ def _candidate_direction(smc: SmcResult) -> str:
     if smc.trend == "BULLISH": return "BUY"
     if smc.trend == "BEARISH": return "SELL"
     return "NEUTRAL"
+
+
+def _entry_obstacle_block_reason(
+    candles: List[OHLCV],
+    smc: SmcResult,
+    direction: str,
+    entry: float,
+    atr: float,
+) -> Optional[str]:
+    """Reject entries with too little room before the next structure level.
+
+    Equal levels and BOS/CHoCH prices are useful but can be absent around a
+    fresh intraday floor. Confirmed five-bar swing pivots and nearby aligned
+    order blocks provide a conservative fallback for the exact failure mode
+    where a SELL is opened directly above support.
+    """
+    if atr <= 0 or ENTRY_OBSTACLE_CLEARANCE_ATR <= 0:
+        return None
+
+    lookback = 5
+    recent_start = max(lookback, len(candles) - 120)
+    supports: List[float] = []
+    resistances: List[float] = []
+
+    for level in smc.equal_lows:
+        if any(index >= recent_start for index in level.bar_indices):
+            supports.append(level.price)
+    for level in smc.equal_highs:
+        if any(index >= recent_start for index in level.bar_indices):
+            resistances.append(level.price)
+
+    for event in [*smc.bos_signals, *smc.choch_signals]:
+        if event.bar_index >= recent_start:
+            (supports if event.price < entry else resistances).append(event.price)
+
+    for ob in smc.order_blocks:
+        if ob.bar_index < recent_start:
+            continue
+        if ob.type == "BULLISH":
+            supports.extend((ob.low, ob.high))
+        else:
+            resistances.extend((ob.low, ob.high))
+
+    # Confirmed pivots require candles on both sides, so the newest unfinished
+    # swing cannot be mistaken for a support/resistance level.
+    for index in range(recent_start, len(candles) - lookback):
+        candle = candles[index]
+        if all(
+            candles[index - offset].low > candle.low
+            and candles[index + offset].low > candle.low
+            for offset in range(1, lookback + 1)
+        ):
+            supports.append(candle.low)
+        if all(
+            candles[index - offset].high < candle.high
+            and candles[index + offset].high < candle.high
+            for offset in range(1, lookback + 1)
+        ):
+            resistances.append(candle.high)
+
+    clearance = atr * ENTRY_OBSTACLE_CLEARANCE_ATR
+    if direction == "SELL":
+        path_levels = [level for level in supports if level < entry]
+        nearest = max(path_levels) if path_levels else None
+        if nearest is not None and entry - nearest < clearance:
+            return (
+                f"SELL blocked: support {nearest:.2f} is only "
+                f"{entry - nearest:.2f} away (< {clearance:.2f}, "
+                f"{ENTRY_OBSTACLE_CLEARANCE_ATR:.2f} ATR)"
+            )
+    elif direction == "BUY":
+        path_levels = [level for level in resistances if level > entry]
+        nearest = min(path_levels) if path_levels else None
+        if nearest is not None and nearest - entry < clearance:
+            return (
+                f"BUY blocked: resistance {nearest:.2f} is only "
+                f"{nearest - entry:.2f} away (< {clearance:.2f}, "
+                f"{ENTRY_OBSTACLE_CLEARANCE_ATR:.2f} ATR)"
+            )
+    return None
 
 
 def _make_neutral(smc, wyckoff, pa, trend, blocked_reasons, reasoning=None) -> DecisionResult:
@@ -391,12 +472,31 @@ def run_decision_engine(
             dxy_signal=dxy_signal,
         )
 
+    entry = last_candle.close
+    obstacle_reason = _entry_obstacle_block_reason(
+        candles, smc, candidate, entry, regime.atr
+    )
+    if obstacle_reason:
+        quality.allowed = False
+        quality.blocked_reasons.append(obstacle_reason)
+        return DecisionResult(
+            allowed=False, direction=candidate,  # type: ignore
+            confidence=conf_result.confidence, components=conf_result.components,
+            grade=conf_result.grade, regime=regime.regime,
+            regime_label=regime.rules.label, regime_rules=effective_rules,
+            quality_filter=quality, blocked_reasons=[obstacle_reason],
+            reasoning=conf_result.reasoning + [obstacle_reason],
+            trade_params=None,
+            smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
+            entry_filter=ef,
+            divergence=divergence,
+            dxy_signal=dxy_signal,
+        )
+
     # Capital manager inputs
     aligned_obs = [ob for ob in smc.order_blocks
                    if ob.type == ("BULLISH" if candidate == "BUY" else "BEARISH")]
     latest_ob = aligned_obs[-1] if aligned_obs else None
-
-    entry = last_candle.close
 
     # H-1 FIX: use most-recent directionally-valid BOS price as the SL anchor,
     # not the global max/min across all time.

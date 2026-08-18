@@ -78,6 +78,10 @@ services:
       # On M5, keep a structure actionable for two hours (24 closed bars).
       - key: STRUCTURE_MAX_AGE_BARS
         value: "24"
+      # Keep entries away from the nearest confirmed support/resistance.
+      # A signal inside 0.75 ATR of the obstacle is rejected.
+      - key: ENTRY_OBSTACLE_CLEARANCE_ATR
+        value: "0.75"
       - key: RISK_PERCENT
         value: "1.0"
       # M5 range policy: 2 confirmations are allowed, while confidence,
