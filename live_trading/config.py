@@ -173,6 +173,22 @@ RANGE_MIN_CONFIRMATIONS = _int("RANGE_MIN_CONFIRMATIONS", 2, lo=2, hi=4)
 RANGE_REQUIRE_PRICE_ACTION = os.getenv(
     "RANGE_REQUIRE_PRICE_ACTION", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
+# Per-entry-timeframe Range profiles. M1 is the fast trigger timeframe;
+# M5 retains the higher-quality Range thresholds.
+M1_RANGE_MIN_CONFIDENCE = _float(
+    "M1_RANGE_MIN_CONFIDENCE", 55.0, lo=40.0, hi=100.0
+)
+M1_RANGE_MIN_RR = _float("M1_RANGE_MIN_RR", 1.6, lo=1.0, hi=10.0)
+M5_RANGE_MIN_CONFIDENCE = _float(
+    "M5_RANGE_MIN_CONFIDENCE", 60.0, lo=40.0, hi=100.0
+)
+M5_RANGE_MIN_RR = _float("M5_RANGE_MIN_RR", 2.0, lo=1.0, hi=10.0)
+M1_REQUIRE_BREAK_RETEST = os.getenv(
+    "M1_REQUIRE_BREAK_RETEST", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+M5_REQUIRE_BREAK_RETEST = os.getenv(
+    "M5_REQUIRE_BREAK_RETEST", "true"
+).strip().lower() in {"1", "true", "yes", "on"}
 # Exact option 1 gate: SMC, Price Action, and Wyckoff must all agree with the
 # candidate direction. EMA remains informational/confirmatory and is not
 # required for entry.
@@ -184,9 +200,8 @@ REQUIRE_SMC_PRICE_ACTION_WYCKOFF = os.getenv(
 CONF_HARD_MIN     = _float("CONF_HARD_MIN",      40.0, lo=0.0, hi=100.0)
 # QUALITY_ADX_MIN: minimum ADX value required to confirm trend momentum.
 # Below this threshold the quality filter rejects the signal as "low momentum".
-# 15 is the recommended floor for M5 gold — catches genuine micro-trends
-# without blocking valid moves that ADX=20 would silently filter out.
-QUALITY_ADX_MIN   = _float("QUALITY_ADX_MIN",    15.0, lo=5.0,  hi=40.0)
+# 12 is the balanced floor for the combined M5/M1 execution profile.
+QUALITY_ADX_MIN   = _float("QUALITY_ADX_MIN",    12.0, lo=5.0,  hi=40.0)
 # Maximum age of the structure event that can authorize a new entry.
 # The M1 profile uses 60 closed bars (about one hour) so a valid structure
 # does not expire after only a few minutes while the retest gate remains active.

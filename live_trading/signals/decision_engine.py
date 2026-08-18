@@ -2,7 +2,7 @@
 Decision Engine — Central orchestrator of all 7 signal engines.
 Ported from decisionEngine.ts
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import List, Literal, Optional
 from live_trading.signals.gold_engine import OHLCV
 from live_trading.signals.smc_engine import (
@@ -196,6 +196,8 @@ def run_decision_engine(
     dxy_signal:        str   = "NEUTRAL",
     require_price_action: bool = False,
     require_smc_price_action_wyckoff: bool = REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
+    range_min_confidence: Optional[float] = None,
+    range_min_rr: Optional[float] = None,
 ) -> DecisionResult:
 
     smc     = analyze_smc_structure(candles)
@@ -217,6 +219,21 @@ def run_decision_engine(
     # configured minimum (normally two confirmations) and relies on the
     # downstream confidence, quality, R:R, MTF, retest, and risk gates.
     regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
+    effective_rules = regime.rules
+    if regime.regime in RANGE_REGIMES:
+        effective_rules = replace(
+            regime.rules,
+            min_confidence=(
+                range_min_confidence
+                if range_min_confidence is not None
+                else regime.rules.min_confidence
+            ),
+            min_rr=(
+                range_min_rr
+                if range_min_rr is not None
+                else regime.rules.min_rr
+            ),
+        )
 
     strict_regime = regime.regime in HIGH_VOLATILITY_REGIMES
     effective_min_confirmations = (
@@ -282,7 +299,7 @@ def run_decision_engine(
 
     policy_reasons = evaluate_regime_entry_policy(
         regime=regime.regime,
-        regime_min_confidence=regime.rules.min_confidence,
+        regime_min_confidence=effective_rules.min_confidence,
         confidence=conf_result.confidence,
         confirmation_count=ef.confirmation_count,
         has_price_action=ef.price_action,
@@ -316,7 +333,7 @@ def run_decision_engine(
                 else "MARGINAL"
             ),
             regime=regime.regime, regime_label=regime.rules.label,
-            regime_rules=regime.rules,
+            regime_rules=effective_rules,
             quality_filter=QualityFilterResult(
                 False, all_reasons, session, regime.adx, False, False,
                 conf_result.confidence < CONF_HARD_MIN, False, False, False),
@@ -339,7 +356,7 @@ def run_decision_engine(
             allowed=False, direction=candidate,  # type: ignore
             confidence=conf_result.confidence, components=conf_result.components,
             grade=conf_result.grade, regime=regime.regime, regime_label=regime.rules.label,
-            regime_rules=regime.rules, quality_filter=quality,
+            regime_rules=effective_rules, quality_filter=quality,
             blocked_reasons=quality.blocked_reasons, reasoning=conf_result.reasoning,
             trade_params=None, smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
             entry_filter=ef,
@@ -428,14 +445,14 @@ def run_decision_engine(
     # Marginal confidence is intentionally retained only for regimes outside
     # the trend/range policy. Those regimes are not covered by the adaptive
     # strict gate above and still retain the legacy R:R safeguard.
-    min_conf = regime.rules.min_confidence
+    min_conf = effective_rules.min_confidence
     if conf_result.confidence < min_conf:
         if trade_params.risk_reward_ratio < CONF_MARGINAL_RR:
             return DecisionResult(
                 allowed=False, direction=candidate,  # type: ignore
                 confidence=conf_result.confidence, components=conf_result.components,
                 grade="MARGINAL", regime=regime.regime, regime_label=regime.rules.label,
-                regime_rules=regime.rules, quality_filter=quality,
+                regime_rules=effective_rules, quality_filter=quality,
                 blocked_reasons=[
                     f"Marginal conf {conf_result.confidence:.1f}% requires R:R ≥ {CONF_MARGINAL_RR} "
                     f"(got {trade_params.risk_reward_ratio:.2f})"
@@ -446,14 +463,14 @@ def run_decision_engine(
             )
 
     # R:R gate
-    if trade_params.risk_reward_ratio < regime.rules.min_rr:
+    if trade_params.risk_reward_ratio < effective_rules.min_rr:
         return DecisionResult(
             allowed=False, direction=candidate,  # type: ignore
             confidence=conf_result.confidence, components=conf_result.components,
             grade=conf_result.grade, regime=regime.regime, regime_label=regime.rules.label,
-            regime_rules=regime.rules, quality_filter=quality,
+            regime_rules=effective_rules, quality_filter=quality,
             blocked_reasons=[
-                f"R:R {trade_params.risk_reward_ratio:.2f} < {regime.rules.min_rr} "
+                f"R:R {trade_params.risk_reward_ratio:.2f} < {effective_rules.min_rr} "
                 f"minimum for {regime.rules.label}"
             ],
             reasoning=conf_result.reasoning, trade_params=None,
@@ -466,7 +483,7 @@ def run_decision_engine(
         allowed=True, direction=candidate,  # type: ignore
         confidence=conf_result.confidence, components=conf_result.components,
         grade=conf_result.grade, regime=regime.regime, regime_label=regime.rules.label,
-        regime_rules=regime.rules, quality_filter=quality,
+        regime_rules=effective_rules, quality_filter=quality,
         blocked_reasons=[], reasoning=conf_result.reasoning,
         trade_params=trade_params,
         smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,

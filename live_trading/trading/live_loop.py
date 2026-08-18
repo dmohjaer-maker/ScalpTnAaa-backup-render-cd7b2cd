@@ -42,9 +42,11 @@ from live_trading.config import (
     TRAIL_STRUCTURE_BUFFER_ATR, TRAIL_REVERSAL_CONFIRMATION_BARS,
     TRAIL_REVERSAL_TIGHTEN_ATR_MULT, TRAIL_SWING_LOOKBACK,
     MTF_ENABLED, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
-    REQUIRE_BREAK_RETEST, RETEST_MAX_BARS, RETEST_ZONE_ATR_MULT,
+    RETEST_MAX_BARS, RETEST_ZONE_ATR_MULT,
     RETEST_CLOSE_BUFFER_ATR, RETEST_MIN_BODY_ATR,
     TRADE_TIMEFRAMES,
+    M1_RANGE_MIN_CONFIDENCE, M1_RANGE_MIN_RR, M1_REQUIRE_BREAK_RETEST,
+    M5_RANGE_MIN_CONFIDENCE, M5_RANGE_MIN_RR, M5_REQUIRE_BREAK_RETEST,
 )
 from live_trading.logger import get_logger
 from live_trading.risk.guardian import RiskGuardian, GuardianStatus
@@ -585,6 +587,17 @@ class GoldScalperLive:
         if tf.lower() == TIMEFRAME.lower():
             self._trail_candles = candles
 
+        # M1 and M5 use separate Range profiles.  M1 is the fast trigger
+        # timeframe; M5 retains the higher-quality confirmation thresholds.
+        _is_m1_tf = tf.lower() in {"1m", "m1"}
+        _range_min_confidence = (
+            M1_RANGE_MIN_CONFIDENCE if _is_m1_tf else M5_RANGE_MIN_CONFIDENCE
+        )
+        _range_min_rr = M1_RANGE_MIN_RR if _is_m1_tf else M5_RANGE_MIN_RR
+        _require_break_retest = (
+            M1_REQUIRE_BREAK_RETEST if _is_m1_tf else M5_REQUIRE_BREAK_RETEST
+        )
+
         # 1b. Fetch HTF candles for Multi-Timeframe filter (fail-safe: skipped on error)
         # HTF bias is computed here — before account / guardian checks — so the
         # fetch latency overlaps with the (slower) account info call that follows.
@@ -736,6 +749,8 @@ class GoldScalperLive:
             use_atr_high_vol=USE_ATR_HIGH_VOL_FILTER,
             require_price_action=REQUIRE_PRICE_ACTION,
             require_smc_price_action_wyckoff=REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
+            range_min_confidence=_range_min_confidence,
+            range_min_rr=_range_min_rr,
         )
         self.last_decision = decision
 
@@ -872,7 +887,7 @@ class GoldScalperLive:
         # reject it in the trade direction.  This blocks first-break entries
         # that are vulnerable to liquidity sweeps and false breakouts.
         _retest_result: RetestResult | None = None
-        if REQUIRE_BREAK_RETEST:
+        if _require_break_retest:
             _retest_result = evaluate_break_retest(
                 candles,
                 decision.smc,

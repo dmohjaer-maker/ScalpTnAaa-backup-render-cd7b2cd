@@ -93,14 +93,26 @@ services:
         value: "2"
       - key: RANGE_REQUIRE_PRICE_ACTION
         value: "false"
+      - key: M1_RANGE_MIN_CONFIDENCE
+        value: "55"
+      - key: M1_RANGE_MIN_RR
+        value: "1.6"
+      - key: M5_RANGE_MIN_CONFIDENCE
+        value: "60"
+      - key: M5_RANGE_MIN_RR
+        value: "2.0"
+      - key: M1_REQUIRE_BREAK_RETEST
+        value: "false"
+      - key: M5_REQUIRE_BREAK_RETEST
+        value: "true"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
         value: "false"
       - key: CONF_HARD_MIN
         value: "40"
       - key: DAILY_LOSS_LIMIT_PCT
-        value: "50.0"
+        value: "3.0"
       - key: MAX_DRAWDOWN_PCT
-        value: "50.0"
+        value: "8.0"
       - key: SLIPPAGE_POINTS
         value: "30"
       # Smart candle-aware trailing stop.  The stop activates at +1.0R,
@@ -137,7 +149,7 @@ services:
       - key: M1_EXECUTION_REQUIRED
         value: "true"
       - key: QUALITY_ADX_MIN
-        value: "15"
+        value: "12"
       - key: MTF_ENABLED
         value: "true"
       - key: MTF_TIMEFRAME
