@@ -26,6 +26,9 @@ from live_trading.config import (
     RANGE_REQUIRE_PRICE_ACTION,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
     ENTRY_OBSTACLE_CLEARANCE_ATR,
+    ENTRY_RECENT_OBSTACLE_LOOKBACK,
+    ENTRY_RECENT_OBSTACLE_TOLERANCE_ATR,
+    ENTRY_RECENT_OBSTACLE_MIN_TOUCHES,
 )
 
 # Marginal confidence R:R floor for the few non-trend, non-strict regimes where
@@ -178,7 +181,10 @@ def _entry_obstacle_block_reason(
     Equal levels and BOS/CHoCH prices are useful but can be absent around a
     fresh intraday floor. Confirmed five-bar swing pivots and nearby aligned
     order blocks provide a conservative fallback for the exact failure mode
-    where a SELL is opened directly above support.
+    where a SELL is opened directly above support. A repeated recent floor or
+    ceiling is also treated as a provisional obstacle: it does not need to be
+    a fully confirmed pivot, but it must have multiple touches inside a tight
+    ATR-scaled zone so a single trend-extending wick cannot block an entry.
     """
     if atr <= 0 or ENTRY_OBSTACLE_CLEARANCE_ATR <= 0:
         return None
@@ -224,9 +230,36 @@ def _entry_obstacle_block_reason(
         ):
             resistances.append(candle.high)
 
+    # Detect a still-forming support/resistance zone near the current price.
+    # The normal pivot scan intentionally excludes the newest five candles;
+    # that is correct for confirmed structure but leaves a blind spot when
+    # price prints two or more defended lows/highs right before a signal.
+    # Repeated touches are required to avoid mistaking a single lower-low or
+    # higher-high for a meaningful obstacle.
+    recent = candles[-ENTRY_RECENT_OBSTACLE_LOOKBACK:]
+    if len(recent) >= ENTRY_RECENT_OBSTACLE_MIN_TOUCHES:
+        zone_tolerance = atr * ENTRY_RECENT_OBSTACLE_TOLERANCE_ATR
+        recent_floor = min(candle.low for candle in recent)
+        recent_floor_touches = sum(
+            abs(candle.low - recent_floor) <= zone_tolerance
+            for candle in recent
+        )
+        if recent_floor_touches >= ENTRY_RECENT_OBSTACLE_MIN_TOUCHES:
+            supports.append(recent_floor)
+
+        recent_ceiling = max(candle.high for candle in recent)
+        recent_ceiling_touches = sum(
+            abs(candle.high - recent_ceiling) <= zone_tolerance
+            for candle in recent
+        )
+        if recent_ceiling_touches >= ENTRY_RECENT_OBSTACLE_MIN_TOUCHES:
+            resistances.append(recent_ceiling)
+
     clearance = atr * ENTRY_OBSTACLE_CLEARANCE_ATR
     if direction == "SELL":
-        path_levels = [level for level in supports if level < entry]
+        # A close exactly on support is the most dangerous case, not a valid
+        # exception. Include equality so the zero-distance obstacle blocks.
+        path_levels = [level for level in supports if level <= entry]
         nearest = max(path_levels) if path_levels else None
         if nearest is not None and entry - nearest < clearance:
             return (
@@ -235,7 +268,8 @@ def _entry_obstacle_block_reason(
                 f"{ENTRY_OBSTACLE_CLEARANCE_ATR:.2f} ATR)"
             )
     elif direction == "BUY":
-        path_levels = [level for level in resistances if level > entry]
+        # Mirror the SELL rule: a close exactly on resistance has no room.
+        path_levels = [level for level in resistances if level >= entry]
         nearest = min(path_levels) if path_levels else None
         if nearest is not None and nearest - entry < clearance:
             return (

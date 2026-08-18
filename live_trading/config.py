@@ -211,6 +211,19 @@ STRUCTURE_MAX_AGE_BARS = _int("STRUCTURE_MAX_AGE_BARS", 24, lo=3, hi=100)
 ENTRY_OBSTACLE_CLEARANCE_ATR = _float(
     "ENTRY_OBSTACLE_CLEARANCE_ATR", 0.75, lo=0.0, hi=5.0
 )
+# A fresh floor/ceiling is not a confirmed swing until candles have formed on
+# both sides of it.  This second, deliberately short lookback catches repeated
+# defended lows/highs during the confirmation gap without treating every new
+# extreme in a one-way trend as an obstacle.
+ENTRY_RECENT_OBSTACLE_LOOKBACK = _int(
+    "ENTRY_RECENT_OBSTACLE_LOOKBACK", 8, lo=5, hi=30
+)
+ENTRY_RECENT_OBSTACLE_TOLERANCE_ATR = _float(
+    "ENTRY_RECENT_OBSTACLE_TOLERANCE_ATR", 0.25, lo=0.05, hi=1.0
+)
+ENTRY_RECENT_OBSTACLE_MIN_TOUCHES = _int(
+    "ENTRY_RECENT_OBSTACLE_MIN_TOUCHES", 2, lo=2, hi=5
+)
 MAX_OPEN_TRADES   = 1
 
 USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() == "true"

@@ -82,6 +82,15 @@ services:
       # A signal inside 0.75 ATR of the obstacle is rejected.
       - key: ENTRY_OBSTACLE_CLEARANCE_ATR
         value: "0.75"
+      # Also detect a provisional floor/ceiling formed by repeated touches in
+      # the newest closed candles. This closes the confirmation gap where a
+      # fresh support is not yet a fully confirmed swing pivot.
+      - key: ENTRY_RECENT_OBSTACLE_LOOKBACK
+        value: "8"
+      - key: ENTRY_RECENT_OBSTACLE_TOLERANCE_ATR
+        value: "0.25"
+      - key: ENTRY_RECENT_OBSTACLE_MIN_TOUCHES
+        value: "2"
       - key: RISK_PERCENT
         value: "1.0"
       # M5 range policy: 2 confirmations are allowed, while confidence,
