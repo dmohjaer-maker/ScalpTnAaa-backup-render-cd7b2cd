@@ -165,6 +165,14 @@ MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   2,    lo=1,    hi=10)
 REQUIRE_PRICE_ACTION = os.getenv("REQUIRE_PRICE_ACTION", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
+# Aggressive M1 range profile: RANGE entries may use the configured minimum
+# (normally SMC + one independent confirmation) instead of the stricter
+# three-vote range gate. Confidence, quality, R:R, MTF, retest, and Guardian
+# gates remain active.
+RANGE_MIN_CONFIRMATIONS = _int("RANGE_MIN_CONFIRMATIONS", 2, lo=2, hi=4)
+RANGE_REQUIRE_PRICE_ACTION = os.getenv(
+    "RANGE_REQUIRE_PRICE_ACTION", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 # Exact option 1 gate: SMC, Price Action, and Wyckoff must all agree with the
 # candidate direction. EMA remains informational/confirmatory and is not
 # required for entry.
@@ -225,6 +233,20 @@ RETEST_MIN_BODY_ATR = _float("RETEST_MIN_BODY_ATR", 0.15, lo=0.0, hi=1.0)
 # H1 supplies the broader directional context; keeping M5 and M1 avoids
 # duplicate signals from too many overlapping entry timeframes.
 TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M5,1m")
+# A dashboard-level TRADE_TIMEFRAMES override previously put the live robot
+# onto an older M20/M15/M10/M5 profile even while TIMEFRAME was still 1m.
+# Keep M1 present whenever the execution profile says M1 is required.
+M1_EXECUTION_REQUIRED = os.getenv(
+    "M1_EXECUTION_REQUIRED", "true"
+).strip().lower() in {"1", "true", "yes", "on"}
+if M1_EXECUTION_REQUIRED and TIMEFRAME in {"1m", "M1"} and not any(
+    _TF_MINUTES.get(tf) == 1 for tf in TRADE_TIMEFRAMES
+):
+    TRADE_TIMEFRAMES = sorted(
+        {*TRADE_TIMEFRAMES, "1m"},
+        key=lambda tf: _TF_MINUTES.get(tf, 0),
+        reverse=True,
+    )
 
 
 

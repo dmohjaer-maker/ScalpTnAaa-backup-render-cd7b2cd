@@ -59,20 +59,33 @@ def test_counter_trend_is_always_rejected():
     assert any("Counter-trend entry blocked" in reason for reason in reasons)
 
 
-def test_range_requires_three_confirmations_price_action_and_regime_confidence():
+def test_aggressive_range_allows_two_confirmations_without_price_action():
     reasons = evaluate_regime_entry_policy(
         regime="RANGE",
-        regime_min_confidence=60,
-        confidence=41.8,
+        regime_min_confidence=40,
+        confidence=52,
         confirmation_count=2,
         has_price_action=False,
         candidate="BUY",
         trend_direction="NEUTRAL",
     )
 
-    assert any("at least 3 confirmations" in reason for reason in reasons)
+    assert reasons == []
+
+
+def test_range_can_still_require_price_action_when_configured():
+    reasons = evaluate_regime_entry_policy(
+        regime="RANGE",
+        regime_min_confidence=40,
+        confidence=52,
+        confirmation_count=2,
+        has_price_action=False,
+        candidate="BUY",
+        trend_direction="NEUTRAL",
+        require_price_action=True,
+    )
+
     assert any("requires Price Action" in reason for reason in reasons)
-    assert any("requires confidence" in reason for reason in reasons)
 
 
 def test_high_volatility_accepts_only_three_confirmations_with_price_action():

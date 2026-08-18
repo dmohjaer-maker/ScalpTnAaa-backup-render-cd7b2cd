@@ -22,6 +22,8 @@ from live_trading.signals.divergence_engine import analyze_divergence, Divergenc
 from live_trading.risk.capital_manager import CapitalInput, CapitalOutput, calc_trade_parameters
 from live_trading.config import (
     CONF_HARD_MIN,
+    RANGE_MIN_CONFIRMATIONS,
+    RANGE_REQUIRE_PRICE_ACTION,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
 )
 
@@ -31,8 +33,9 @@ from live_trading.config import (
 CONF_MARGINAL_RR = 1.3
 CONF_BORDERLINE_MARGIN = 5.0
 
-# Trend regimes preserve the balanced two-confirmation policy. Range and high
-# volatility regimes are structurally less forgiving and use a stricter gate.
+# Trend regimes preserve the balanced two-confirmation policy. High volatility
+# remains strict; the selected aggressive M1 profile allows the configured
+# minimum in RANGE while retaining every downstream quality/risk gate.
 TREND_REGIMES = frozenset({
     "STRONG_TREND_BULL",
     "STRONG_TREND_BEAR",
@@ -41,7 +44,9 @@ TREND_REGIMES = frozenset({
     "PULLBACK_BULL",
     "PULLBACK_BEAR",
 })
-STRICT_ENTRY_REGIMES = frozenset({"RANGE", "HIGH_VOLATILITY"})
+RANGE_REGIMES = frozenset({"RANGE"})
+HIGH_VOLATILITY_REGIMES = frozenset({"HIGH_VOLATILITY"})
+STRICT_ENTRY_REGIMES = HIGH_VOLATILITY_REGIMES
 
 
 def evaluate_regime_entry_policy(
@@ -53,6 +58,8 @@ def evaluate_regime_entry_policy(
     candidate: str,
     trend_direction: str,
     configured_min_confirmations: int = 2,
+    range_min_confirmations: int = RANGE_MIN_CONFIRMATIONS,
+    require_price_action: bool = False,
 ) -> List[str]:
     """Return policy violations before quality/R:R checks are evaluated.
 
@@ -71,7 +78,23 @@ def evaluate_regime_entry_policy(
             f"against SMC direction {candidate}"
         )
 
-    if regime in STRICT_ENTRY_REGIMES:
+    if regime in RANGE_REGIMES:
+        required = max(configured_min_confirmations, range_min_confirmations)
+        if confirmation_count < required:
+            reasons.append(
+                f"{regime} requires at least {required} confirmations "
+                f"(got {confirmation_count})"
+            )
+        if require_price_action and not has_price_action:
+            reasons.append(f"{regime} requires Price Action confirmation")
+        if confidence < regime_min_confidence:
+            reasons.append(
+                f"{regime} requires confidence ≥ {regime_min_confidence:.1f}% "
+                f"(got {confidence:.1f}%)"
+            )
+        return reasons
+
+    if regime in HIGH_VOLATILITY_REGIMES:
         required = max(configured_min_confirmations, 3)
         if confirmation_count < required:
             reasons.append(
@@ -190,13 +213,18 @@ def run_decision_engine(
                  "SELL" if trend.trend == "BEARISH" else "NEUTRAL")
 
     # Detect regime early — needed to set the adaptive confirmation threshold.
-    # RANGE and HIGH_VOLATILITY deliberately raise the bar because two weak
-    # votes are not enough in those regimes.
+    # High volatility remains strict. The aggressive M1 RANGE profile uses the
+    # configured minimum (normally two confirmations) and relies on the
+    # downstream confidence, quality, R:R, MTF, retest, and risk gates.
     regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
 
-    strict_regime = regime.regime in STRICT_ENTRY_REGIMES
+    strict_regime = regime.regime in HIGH_VOLATILITY_REGIMES
     effective_min_confirmations = (
-        max(min_confirmations, 3) if strict_regime else min_confirmations
+        max(min_confirmations, 3)
+        if strict_regime
+        else max(min_confirmations, RANGE_MIN_CONFIRMATIONS)
+        if regime.regime in RANGE_REGIMES
+        else min_confirmations
     )
 
     # Entry filter — minimum N-of-4 vote gate (SMC always required)
@@ -206,7 +234,11 @@ def run_decision_engine(
         pa_signal       = pa.pa_signal,
         wyckoff_signal  = wyckoff.wyckoff_signal,
         min_confirmations = effective_min_confirmations,
-        require_price_action = require_price_action or strict_regime,
+        require_price_action=(
+            require_price_action
+            or RANGE_REQUIRE_PRICE_ACTION
+            or strict_regime
+        ),
         require_smc_price_action_wyckoff = require_smc_price_action_wyckoff,
     )
     if not ef.allowed:
@@ -257,6 +289,12 @@ def run_decision_engine(
         candidate=candidate,
         trend_direction=trend_dir,
         configured_min_confirmations=min_confirmations,
+        range_min_confirmations=RANGE_MIN_CONFIRMATIONS,
+        require_price_action=(
+            require_price_action
+            or RANGE_REQUIRE_PRICE_ACTION
+            or strict_regime
+        ),
     )
     confidence_block_reason = (
         f"Confidence {conf_result.confidence:.1f}% < {CONF_HARD_MIN}% hard minimum"
