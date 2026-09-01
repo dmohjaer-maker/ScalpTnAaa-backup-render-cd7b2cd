@@ -9,6 +9,8 @@ import re
 from telegram import Update
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
+    TypeHandler,
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
@@ -67,6 +69,10 @@ class Router:
     def register(self, app: Application) -> None:
         """Register all handlers with the Telegram Application."""
 
+        # Owner-only admission gate. Group -1 runs before every command,
+        # conversation, message, and callback handler.
+        app.add_handler(TypeHandler(Update, self._auth_gate), group=-1)
+
         # /start command
         app.add_handler(CommandHandler("start", self._cmd_start))
         app.add_handler(CommandHandler("menu", self._cmd_start))
@@ -120,6 +126,14 @@ class Router:
         logger.info("All handlers registered successfully")
 
     # ─── Commands ────────────────────────────────────────────────────────────
+
+    async def _auth_gate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Stop every non-owner update before it can reach a panel handler."""
+        if not update.effective_user:
+            raise ApplicationHandlerStop
+        allowed, _ = await self._auth.is_authorized(update)
+        if not allowed:
+            raise ApplicationHandlerStop
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._rate_check(update):
