@@ -52,11 +52,11 @@ from typing import Optional
 @dataclass
 class TrailingConfig:
     enabled:         bool  = True
-    activation_r:    float = 1.0   # R-multiple that first engages trailing
-    step_r:          float = 0.5   # retained for compatibility and telemetry
-    lock_buffer_r:   float = 0.15  # minimum real profit locked after activation
-    atr_gap_mult:    float = 0.8   # adaptive gap behind the favorable extreme
-    min_step_price:  float = 0.05  # minimum price-unit improvement to bother modifying
+    activation_r:    float = 1.25  # wait for a meaningful move before trailing
+    step_r:          float = 0.75  # retained for compatibility and telemetry
+    lock_buffer_r:   float = 0.20  # modest real profit locked after activation
+    atr_gap_mult:    float = 1.50  # leave room for normal M5 volatility
+    min_step_price:  float = 0.20  # avoid reacting to tiny quote noise
     min_gap_price:   float = 0.05  # absolute floor for symbols with tiny ATR
 
 

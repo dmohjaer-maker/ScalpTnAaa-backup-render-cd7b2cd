@@ -73,6 +73,14 @@ services:
         value: "24"
       - key: RISK_PERCENT
         value: "1.0"
+      # Professional XAUUSD M5 initial-stop calibration. The wider ATR floor
+      # prevents ordinary candle noise from taking out structurally valid entries.
+      - key: SL_ATR_BUFFER_MULT
+        value: "0.50"
+      - key: SL_MIN_ATR_MULT
+        value: "1.00"
+      - key: SL_MAX_ATR_MULT
+        value: "3.50"
       # STABLE v4.0.4 values -- these are the actual settings the bot has been
       # running with in production (verified against the live Render service
       # on 2026-08-10). Earlier revisions of this file had leftover
@@ -100,17 +108,17 @@ services:
       - key: TRAIL_ENABLED
         value: "true"
       - key: TRAIL_ACTIVATION_R
-        value: "0.75"
+        value: "1.25"
       - key: TRAIL_STEP_R
-        value: "0.5"
+        value: "0.75"
       - key: TRAIL_LOCK_BUFFER_R
-        value: "0.15"
+        value: "0.20"
       - key: TRAIL_ATR_GAP_MULT
-        value: "0.8"
+        value: "1.50"
       - key: TRAIL_MIN_STEP_PRICE
-        value: "0.05"
+        value: "0.20"
       - key: TRAIL_CHECK_INTERVAL
-        value: "3.0"
+        value: "5.0"
       # TRADE_TIMEFRAMES / QUALITY_ADX_MIN are read by the live engine and
       # were set on the live service but missing from this manifest.
       - key: TRADE_TIMEFRAMES

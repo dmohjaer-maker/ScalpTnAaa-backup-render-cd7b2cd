@@ -2,13 +2,34 @@
 Capital Manager — Smart SL/TP/LotSize for XAUUSD.
 Ported from capitalManager.ts
 """
+import os
 from dataclasses import dataclass
 from typing import Optional
 
 DEFAULT_RISK_PCT    = 1.0
-ATR_BUFFER_MULT     = 0.25
-MIN_SL_ATR_MULT     = 0.50
-MAX_SL_ATR_MULT     = 3.00
+
+
+def _bounded_env_float(name: str, default: float, lo: float, hi: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number, got {raw!r}") from exc
+    if not lo <= value <= hi:
+        raise ValueError(f"{name} must be between {lo} and {hi}, got {value}")
+    return value
+
+
+# Structure-aware initial stop settings. The old 0.5 ATR floor was too close
+# for normal M5 XAUUSD noise; these are tunable on Render without code edits.
+ATR_BUFFER_MULT     = _bounded_env_float("SL_ATR_BUFFER_MULT", 0.50, 0.10, 1.50)
+MIN_SL_ATR_MULT     = _bounded_env_float("SL_MIN_ATR_MULT",     1.00, 0.50, 2.50)
+MAX_SL_ATR_MULT     = _bounded_env_float("SL_MAX_ATR_MULT",     3.50, 1.50, 6.00)
+if MIN_SL_ATR_MULT > MAX_SL_ATR_MULT:
+    raise ValueError("SL_MIN_ATR_MULT cannot exceed SL_MAX_ATR_MULT")
+
 FIXED_TP_RR         = 2.00
 LOT_DOLLAR_PER_UNIT = 100
 MIN_LOT             = 0.01
