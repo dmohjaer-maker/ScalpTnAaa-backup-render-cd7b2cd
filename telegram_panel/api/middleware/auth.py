@@ -112,6 +112,12 @@ class AuthMiddleware:
         if user is None:
             return False, None
 
+        # The panel is owner-only. Keep this check in the middleware itself
+        # so a non-owner cannot reach a handler that forgets its own check.
+        if tg_user.id != self._owner_id:
+            await self._handle_unauthorized(update, user, "Only the configured owner may use the panel")
+            return False, user
+
         if user.is_blocked():
             await self._handle_unauthorized(update, user, "User is blocked")
             return False, user
