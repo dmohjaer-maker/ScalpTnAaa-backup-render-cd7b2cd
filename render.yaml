@@ -80,11 +80,11 @@ services:
       # candle noise, while preventing a distant historical swing from
       # creating an untradeable stop.
       - key: SL_ATR_BUFFER_MULT
-        value: "0.30"
+        value: "0.50"
       - key: SL_MIN_ATR_MULT
-        value: "1.15"
+        value: "1.80"
       - key: SL_MAX_ATR_MULT
-        value: "2.25"
+        value: "3.50"
       # STABLE v4.0.4 values -- these are the actual settings the bot has been
       # running with in production (verified against the live Render service
       # on 2026-08-10). Earlier revisions of this file had leftover

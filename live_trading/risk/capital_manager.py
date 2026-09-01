@@ -25,10 +25,11 @@ def _bounded_env_float(name: str, default: float, lo: float, hi: float) -> float
 # Structure-aware initial stop settings.  The stop must clear ordinary M5
 # noise, but a distant historical swing must never turn a scalp into a
 # 50-point stop.  The bounds are deliberately tight and remain tunable on
-# Render without changing entry logic.
-ATR_BUFFER_MULT     = _bounded_env_float("SL_ATR_BUFFER_MULT", 0.30, 0.10, 1.00)
-MIN_SL_ATR_MULT     = _bounded_env_float("SL_MIN_ATR_MULT",     1.15, 0.75, 2.50)
-MAX_SL_ATR_MULT     = _bounded_env_float("SL_MAX_ATR_MULT",     2.25, 1.50, 4.00)
+# Render without changing entry logic.  1.80x ATR is intentional: the former
+# 1.15x floor allowed a normal XAUUSD M5 wick to stop trades too easily.
+ATR_BUFFER_MULT     = _bounded_env_float("SL_ATR_BUFFER_MULT", 0.50, 0.10, 1.00)
+MIN_SL_ATR_MULT     = _bounded_env_float("SL_MIN_ATR_MULT",     1.80, 0.75, 2.50)
+MAX_SL_ATR_MULT     = _bounded_env_float("SL_MAX_ATR_MULT",     3.50, 1.50, 4.00)
 if MIN_SL_ATR_MULT > MAX_SL_ATR_MULT:
     raise ValueError("SL_MIN_ATR_MULT cannot exceed SL_MAX_ATR_MULT")
 

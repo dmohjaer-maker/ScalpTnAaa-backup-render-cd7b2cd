@@ -116,7 +116,7 @@ candles (300 M5 bars)
 | Confidence hard minimum | 70% | decisionEngine.ts |
 | Risk per trade | 1% of balance | capitalManager.ts |
 | Take profit | 2R | capitalManager.ts |
-| Initial stop | 1.15R–2.25R of live ATR, structure-aware | capital_manager.py |
+| Initial stop | 1.80R–3.50R of live ATR, structure-aware | capital_manager.py |
 | Trailing protection | activates at 0.90R; ATR/spread-aware high-water ratchet | trailing_stop.py |
 | Min confirmations | 3-of-4 | entryFilter.ts |
 | SMC swing lookback | 5 bars | smcEngine.ts |
