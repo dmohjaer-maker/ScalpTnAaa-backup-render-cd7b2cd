@@ -231,10 +231,13 @@ class BotApplication:
         # meant stop() had no way to signal it — the coroutine blocked forever
         # and SIGTERM could only kill the process by calling loop.stop().
         self._stop_event = asyncio.Event()
+        # Keep updates that arrived during a Render restart.  Dropping them
+        # made a user's /start disappear while the free-tier service was waking.
         await self._app.updater.start_polling(
             allowed_updates=["message", "callback_query"],
-            drop_pending_updates=True,
+            drop_pending_updates=False,
         )
+        logger.info("Telegram polling started; pending updates preserved")
         # Block here until stop() sets the event (SIGTERM / clean shutdown)
         # or until an exception propagates from the updater.
         await self._stop_event.wait()
