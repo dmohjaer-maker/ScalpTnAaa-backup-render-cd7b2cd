@@ -55,7 +55,7 @@ _PANEL_COMMAND_MAP: dict = {
 
 # ── Engine version and uptime tracking ───────────────────────────────────────
 # Version string surfaced to the Telegram panel's dashboard.
-VERSION = "v4.0.3"
+VERSION = "v4.0.4"
 
 # Module-level start time — set on the first write_robot_state() call so that
 # uptime_seconds is accurate from engine start regardless of when the module

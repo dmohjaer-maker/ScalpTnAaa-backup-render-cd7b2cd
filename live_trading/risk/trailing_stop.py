@@ -45,6 +45,7 @@ mt5.executor.modify_position() and is responsible for tracking the
 position's original entry/SL baseline so it survives restarts.
 """
 from dataclasses import dataclass
+from math import isfinite
 from typing import Optional
 
 
@@ -86,10 +87,17 @@ def compute_staircase_sl(
     """
     if not cfg.enabled or risk_distance <= 0 or cfg.step_r <= 0:
         return None
+    if not all(
+        isfinite(float(value))
+        for value in (entry, risk_distance, current_price)
+    ):
+        return None
 
     is_buy = direction.upper() == "BUY"
     profit_distance = (current_price - entry) if is_buy else (entry - current_price)
     extreme = favorable_extreme if favorable_extreme is not None else current_price
+    if not isfinite(float(extreme)):
+        extreme = current_price
     extreme_profit_distance = (
         (extreme - entry) if is_buy else (entry - extreme)
     )
