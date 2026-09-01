@@ -47,8 +47,25 @@ def test_buy_does_not_loosen_after_retracement():
     after_retrace = compute_staircase_sl(
         "BUY", 100, 10, 104, 2, config, favorable_extreme=110
     )
-    assert at_high == after_retrace
+    assert at_high is not None
+    assert after_retrace is None
     assert should_apply("BUY", at_high, after_retrace, config.min_step_price) is False
+
+
+def test_buy_skips_invalid_candidate_after_deep_retracement():
+    config = _config()
+    candidate = compute_staircase_sl(
+        "BUY",
+        entry=100,
+        risk_distance=10,
+        current_price=104,
+        atr=2,
+        cfg=config,
+        favorable_extreme=110,
+    )
+    # The high-water candidate would be above the live bid. Never send an
+    # invalid broker-side stop and never loosen an already-protected trade.
+    assert candidate is None
 
 
 def test_sell_uses_low_water_mark_and_locks_profit():
@@ -62,6 +79,34 @@ def test_sell_uses_low_water_mark_and_locks_profit():
         favorable_extreme=90,
     )
     assert candidate == 91.6
+
+
+def test_spread_is_included_in_execution_gap():
+    candidate = compute_staircase_sl(
+        "BUY",
+        entry=100,
+        risk_distance=10,
+        current_price=112,
+        atr=0.5,
+        cfg=_config(),
+        favorable_extreme=112,
+        spread=1.0,
+    )
+    # 2.5 price units of spread protection dominates the small ATR gap.
+    assert candidate == 109.5
+
+
+def test_profit_lock_curve_increases_protection():
+    config = _config()
+    early = compute_staircase_sl(
+        "BUY", 100, 10, 109, 1, config, favorable_extreme=109
+    )
+    later = compute_staircase_sl(
+        "BUY", 100, 10, 125, 1, config, favorable_extreme=125
+    )
+    assert early is not None and later is not None
+    assert early > 100
+    assert later > early
 
 
 def test_should_apply_only_moves_in_trade_direction():

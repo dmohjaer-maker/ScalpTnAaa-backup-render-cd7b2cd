@@ -116,6 +116,11 @@ Full reference with descriptions: [`live_trading/.env.example`](live_trading/.en
 | `DAILY_LOSS_LIMIT_PCT` | No | `4.0` | Guardian: daily loss halt threshold |
 | `MAX_DRAWDOWN_PCT` | No | `12.0` | Guardian: drawdown halt threshold |
 | `SLIPPAGE_POINTS` | No | `30` | Max fill slippage in broker points |
+| `SL_ATR_BUFFER_MULT` | No | `0.30` | Structure buffer added beyond the selected swing/order-block level |
+| `SL_MIN_ATR_MULT` / `SL_MAX_ATR_MULT` | No | `1.15` / `2.25` | Hard initial-SL volatility envelope for XAUUSD M5 |
+| `TRAIL_ACTIVATION_R` | No | `0.90` | Profit in R required before trailing protection starts |
+| `TRAIL_ATR_GAP_MULT` / `TRAIL_SPREAD_GAP_MULT` | No | `1.10` / `2.50` | Volatility and execution-side room behind the favorable extreme |
+| `TRAIL_MAX_GAP_R` | No | `0.90` | Caps trailing distance so high ATR cannot make protection inactive |
 | `STATE_FILE` / `MT5_SNAPSHOT` / `COMMANDS_FILE` / `GUARDIAN_STATE_FILE` / `LOG_FILE` | No | `/tmp/...` | Local file paths — ephemeral, real cross-restart durability comes from Redis (see Architecture above) |
 
 ### Telegram Panel (`goldscalper-v4-panel`)

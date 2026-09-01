@@ -52,11 +52,15 @@ from typing import Optional
 @dataclass
 class TrailingConfig:
     enabled:         bool  = True
-    activation_r:    float = 1.25  # wait for a meaningful move before trailing
-    step_r:          float = 0.75  # retained for compatibility and telemetry
-    lock_buffer_r:   float = 0.20  # modest real profit locked after activation
-    atr_gap_mult:    float = 1.50  # leave room for normal M5 volatility
-    min_step_price:  float = 0.20  # avoid reacting to tiny quote noise
+    activation_r:    float = 0.90  # protect after a meaningful, not tiny, move
+    step_r:          float = 0.50  # retained for compatibility and telemetry
+    lock_buffer_r:   float = 0.10  # initial real profit locked after activation
+    lock_slope:      float = 0.60  # progressively lock more as profit expands
+    max_lock_r:      float = 2.00  # never lock beyond this through the curve
+    atr_gap_mult:    float = 1.10  # volatility room behind the high/low
+    spread_gap_mult: float = 2.50  # execution-side spread protection
+    max_gap_r:       float = 0.90  # do not let trailing become excessively slow
+    min_step_price:  float = 0.10  # avoid reacting to tiny quote noise
     min_gap_price:   float = 0.05  # absolute floor for symbols with tiny ATR
 
 
@@ -72,6 +76,7 @@ def compute_staircase_sl(
     atr:           float,           # current ATR in price units (0 disables the floor)
     cfg:           TrailingConfig,
     favorable_extreme: Optional[float] = None,
+    spread:         float = 0.0,    # current ask-bid spread in price units
 ) -> Optional[float]:
     """Return an adaptive candidate SL price, or None if not yet triggered.
 
@@ -93,7 +98,10 @@ def compute_staircase_sl(
     ):
         return None
 
-    is_buy = direction.upper() == "BUY"
+    direction = direction.upper()
+    if direction not in {"BUY", "SELL"}:
+        return None
+    is_buy = direction == "BUY"
     profit_distance = (current_price - entry) if is_buy else (entry - current_price)
     extreme = favorable_extreme if favorable_extreme is not None else current_price
     if not isfinite(float(extreme)):
@@ -123,19 +131,36 @@ def compute_staircase_sl(
     if r_multiple < cfg.activation_r:
         return None
 
-    # Keep a meaningful amount of profit at activation and thereafter. The
-    # risk-relative floor prevents a very small ATR from putting the stop
-    # exactly at the entry price, while the ATR component adapts to volatility.
-    lock_floor = cfg.lock_buffer_r * risk_distance
+    # Keep a meaningful amount of profit at activation and increase the
+    # protected amount as the trade proves itself. This is less binary than a
+    # single break-even jump: it protects early profit without choking a
+    # healthy move.
+    locked_r = min(
+        max(cfg.lock_buffer_r, cfg.lock_buffer_r +
+            max(0.0, r_multiple - cfg.activation_r) * cfg.lock_slope),
+        max(cfg.lock_buffer_r, cfg.max_lock_r),
+    )
+    lock_floor = locked_r * risk_distance
     adaptive_gap = max(
         cfg.min_gap_price,
         risk_distance * cfg.lock_buffer_r,
         (atr * cfg.atr_gap_mult) if atr and atr > 0 else 0.0,
+        (spread * cfg.spread_gap_mult) if spread and spread > 0 else 0.0,
     )
+    # A stale or unusually large ATR must not make trailing pointless once the
+    # trade is in profit. This cap is applied after the volatility floor, so
+    # the stop still has room for normal noise.
+    adaptive_gap = min(adaptive_gap, risk_distance * max(cfg.max_gap_r, 0.0))
     if is_buy:
+        # Never submit a BUY SL above the live bid after a sharp retracement.
         candidate = max(entry + lock_floor, extreme - adaptive_gap)
+        if candidate > current_price - adaptive_gap:
+            return None
     else:
+        # Never submit a SELL SL below the live ask after a sharp retracement.
         candidate = min(entry - lock_floor, extreme + adaptive_gap)
+        if candidate < current_price + adaptive_gap:
+            return None
 
     return _r2(candidate)
 

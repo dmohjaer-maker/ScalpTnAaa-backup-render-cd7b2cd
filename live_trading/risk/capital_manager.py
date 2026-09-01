@@ -22,11 +22,13 @@ def _bounded_env_float(name: str, default: float, lo: float, hi: float) -> float
     return value
 
 
-# Structure-aware initial stop settings. The old 0.5 ATR floor was too close
-# for normal M5 XAUUSD noise; these are tunable on Render without code edits.
-ATR_BUFFER_MULT     = _bounded_env_float("SL_ATR_BUFFER_MULT", 0.50, 0.10, 1.50)
-MIN_SL_ATR_MULT     = _bounded_env_float("SL_MIN_ATR_MULT",     1.00, 0.50, 2.50)
-MAX_SL_ATR_MULT     = _bounded_env_float("SL_MAX_ATR_MULT",     3.50, 1.50, 6.00)
+# Structure-aware initial stop settings.  The stop must clear ordinary M5
+# noise, but a distant historical swing must never turn a scalp into a
+# 50-point stop.  The bounds are deliberately tight and remain tunable on
+# Render without changing entry logic.
+ATR_BUFFER_MULT     = _bounded_env_float("SL_ATR_BUFFER_MULT", 0.30, 0.10, 1.00)
+MIN_SL_ATR_MULT     = _bounded_env_float("SL_MIN_ATR_MULT",     1.15, 0.75, 2.50)
+MAX_SL_ATR_MULT     = _bounded_env_float("SL_MAX_ATR_MULT",     2.25, 1.50, 4.00)
 if MIN_SL_ATR_MULT > MAX_SL_ATR_MULT:
     raise ValueError("SL_MIN_ATR_MULT cannot exceed SL_MAX_ATR_MULT")
 
@@ -104,7 +106,9 @@ def _calc_smart_sl(direction: str, entry: float, atr: float, inp: CapitalInput) 
             level  = min(cands)
             raw_sl = entry + (level - entry + buffer)
 
-    fallback  = atr * 1.5
+    # A fallback is still volatility-aware, but stays inside the same bounded
+    # envelope as structure-derived stops.
+    fallback  = atr * 1.35
     sl_dist   = abs(entry - raw_sl) if raw_sl is not None else fallback
     clamped   = _clamp(sl_dist, min_sl, max_sl)
     return _r2(entry - clamped if direction == "BUY" else entry + clamped)
