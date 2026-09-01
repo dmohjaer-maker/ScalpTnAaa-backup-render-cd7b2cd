@@ -1,5 +1,8 @@
 services:
-  # ─── mt5rest Docker bridge ─────────────────────────────────────────────────
+  # ─── Legacy self-hosted mt5rest bridge ─────────────────────────────────────
+  # The robot and panel use the official hosted MTAPI endpoint below. Keep this
+  # service available only for compatibility/rollback; its public image is a
+  # time-limited trial and must not be used as the production connection path.
   - type: web
     name: goldscalper-mtapi
     runtime: docker
@@ -47,9 +50,9 @@ services:
       - key: RENDER_EXTERNAL_URL
         value: "https://goldscalper-v4-robot-zk6i.onrender.com"
       - key: MTAPI_URL
-        value: "https://goldscalper-mtapi-clzt.onrender.com"
+        value: "https://mt5.mtapi.io"
       - key: MTAPI_KEEPALIVE_URL
-        value: "https://goldscalper-mtapi-clzt.onrender.com"
+        value: "https://mt5.mtapi.io"
       - key: MT5_HOST
         value: "AMarkets-Demo"
       - key: MT5_PORT
@@ -182,6 +185,10 @@ services:
         value: "AMarkets-Demo"
       - key: MT5_ACCOUNT_TYPE
         value: "demo"
+      - key: MTAPI_URL
+        value: "https://mt5.mtapi.io"
+      - key: MTAPI_KEEPALIVE_URL
+        value: "https://mt5.mtapi.io"
       - key: LOG_LEVEL
         value: "INFO"
       - key: ROBOT_INTERFACE_MODE

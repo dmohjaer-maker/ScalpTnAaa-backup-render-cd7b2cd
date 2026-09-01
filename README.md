@@ -98,7 +98,7 @@ Full reference with descriptions: [`live_trading/.env.example`](live_trading/.en
 
 | Variable | Required | Current production value | Description |
 |----------|----------|---------|-------------|
-| `MTAPI_URL` | **YES** | `https://goldscalper-mtapi.onrender.com` | URL of the `mtapi-bridge` Docker service |
+| `MTAPI_URL` | **YES** | `https://mt5.mtapi.io` | Official hosted MTAPI endpoint |
 | `MT5_HOST` | **YES** | `AMarkets-Demo` | Broker server name |
 | `MT5_PORT` | **YES** | `443` | Broker TCP port |
 | `MT5_USER` | **YES (secret)** | — | MT5 account login number |
