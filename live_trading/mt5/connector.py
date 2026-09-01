@@ -883,16 +883,26 @@ def mt5_pos_to_dict(pos: dict) -> dict:
     """Normalise a raw mt5rest OpenedOrder dict into the standard internal format."""
     type_map = {0: "BUY", 1: "SELL"}
     raw_type = pos.get("type", pos.get("orderType", 0))
-    try:
-        raw_type = int(raw_type)
-    except (TypeError, ValueError):
-        raw_type = 0
+    if isinstance(raw_type, str):
+        direction = raw_type.strip().upper()
+        if direction in {"BUY", "SELL"}:
+            normalized_type = direction
+        else:
+            try:
+                normalized_type = type_map.get(int(raw_type), "BUY")
+            except (TypeError, ValueError):
+                normalized_type = "BUY"
+    else:
+        try:
+            normalized_type = type_map.get(int(raw_type), "BUY")
+        except (TypeError, ValueError):
+            normalized_type = "BUY"
 
     return {
         "id":         str(pos.get("ticket", pos.get("identifier", ""))),
         "ticket":     pos.get("ticket", pos.get("identifier", 0)),
         "symbol":     pos.get("symbol", ""),
-        "type":       type_map.get(raw_type, "BUY"),
+        "type":       normalized_type,
         "volume":     float(pos.get("volume", pos.get("lots", 0.0))),
         "open_price": float(pos.get("openPrice", pos.get("price_open", 0.0))),
         "sl":         float(pos.get("stopLoss",  pos.get("sl", 0.0))),

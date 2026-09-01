@@ -45,7 +45,6 @@ mt5.executor.modify_position() and is responsible for tracking the
 position's original entry/SL baseline so it survives restarts.
 """
 from dataclasses import dataclass
-from math import floor
 from typing import Optional
 
 
@@ -53,10 +52,11 @@ from typing import Optional
 class TrailingConfig:
     enabled:         bool  = True
     activation_r:    float = 1.0   # R-multiple that first engages trailing
-    step_r:          float = 0.5   # R-multiple per staircase step
-    lock_buffer_r:   float = 0.1   # extra R locked in at every step
-    atr_gap_mult:    float = 0.5   # never place SL closer than this × ATR to price
+    step_r:          float = 0.5   # retained for compatibility and telemetry
+    lock_buffer_r:   float = 0.15  # minimum real profit locked after activation
+    atr_gap_mult:    float = 0.8   # adaptive gap behind the favorable extreme
     min_step_price:  float = 0.05  # minimum price-unit improvement to bother modifying
+    min_gap_price:   float = 0.05  # absolute floor for symbols with tiny ATR
 
 
 def _r2(n: float) -> float:
@@ -70,41 +70,64 @@ def compute_staircase_sl(
     current_price: float,           # current bid (for BUY) / ask (for SELL)
     atr:           float,           # current ATR in price units (0 disables the floor)
     cfg:           TrailingConfig,
+    favorable_extreme: Optional[float] = None,
 ) -> Optional[float]:
-    """Return the staircase's candidate SL price, or None if not yet triggered.
+    """Return an adaptive candidate SL price, or None if not yet triggered.
 
     The caller must still compare the result against the position's live SL
     and only apply it when it is an improvement of at least
     ``cfg.min_step_price`` — this function does not know the current SL, so
     it cannot enforce "never move backwards" on its own.
+
+    ``favorable_extreme`` is the high-water mark for BUY positions or the
+    low-water mark for SELL positions. It is supplied by the live loop and
+    persisted through successful trail events, so a brief price retracement
+    cannot make the stop loosen.
     """
     if not cfg.enabled or risk_distance <= 0 or cfg.step_r <= 0:
         return None
 
     is_buy = direction.upper() == "BUY"
     profit_distance = (current_price - entry) if is_buy else (entry - current_price)
-    if profit_distance <= 0:
+    extreme = favorable_extreme if favorable_extreme is not None else current_price
+    extreme_profit_distance = (
+        (extreme - entry) if is_buy else (entry - extreme)
+    )
+    if profit_distance <= 0 and extreme_profit_distance <= 0:
         return None  # trade is flat or underwater — nothing to protect yet
 
-    r_multiple = profit_distance / risk_distance
+    # Never trust a malformed/stale mark that is on the wrong side of entry.
+    if is_buy:
+        extreme = max(entry, extreme)
+    else:
+        extreme = min(entry, extreme)
+
+    # Use the better of the current quote and the stored extreme. This keeps
+    # the pure function safe when a caller has not restored a high-water mark
+    # yet, while still never allowing the stop to loosen.
+    current_profit_distance = (
+        (current_price - entry) if is_buy else (entry - current_price)
+    )
+    extreme_profit_distance = (
+        (extreme - entry) if is_buy else (entry - extreme)
+    )
+    r_multiple = max(0.0, current_profit_distance, extreme_profit_distance) / risk_distance
     if r_multiple < cfg.activation_r:
         return None
 
-    steps    = floor((r_multiple - cfg.activation_r) / cfg.step_r)
-    locked_r = steps * cfg.step_r + cfg.lock_buffer_r
-    locked_dist = locked_r * risk_distance
-
-    candidate = entry + locked_dist if is_buy else entry - locked_dist
-
-    # Live-ATR safety floor: never let the staircase place the stop closer
-    # to the current price than atr_gap_mult × ATR, so a step that happens
-    # to land right under live price doesn't get shaken out by normal noise.
-    if atr and atr > 0:
-        gap = atr * cfg.atr_gap_mult
-        if is_buy:
-            candidate = min(candidate, current_price - gap)
-        else:
-            candidate = max(candidate, current_price + gap)
+    # Keep a meaningful amount of profit at activation and thereafter. The
+    # risk-relative floor prevents a very small ATR from putting the stop
+    # exactly at the entry price, while the ATR component adapts to volatility.
+    lock_floor = cfg.lock_buffer_r * risk_distance
+    adaptive_gap = max(
+        cfg.min_gap_price,
+        risk_distance * cfg.lock_buffer_r,
+        (atr * cfg.atr_gap_mult) if atr and atr > 0 else 0.0,
+    )
+    if is_buy:
+        candidate = max(entry + lock_floor, extreme - adaptive_gap)
+    else:
+        candidate = min(entry - lock_floor, extreme + adaptive_gap)
 
     return _r2(candidate)
 
@@ -126,6 +149,10 @@ def should_apply(direction: str, current_sl: float, candidate_sl: Optional[float
     """
     if candidate_sl is None:
         return False
+    # Decimal price steps such as 0.05 are not represented exactly by binary
+    # floats; tolerate only the tiny representation error, never a meaningful
+    # price difference.
+    threshold = max(0.0, min_step_price - 1e-9)
     if direction.upper() == "BUY":
-        return (candidate_sl - current_sl) >= min_step_price
-    return (current_sl - candidate_sl) >= min_step_price
+        return (candidate_sl - current_sl) >= threshold
+    return (current_sl - candidate_sl) >= threshold

@@ -233,29 +233,27 @@ DAILY_LOSS_LIMIT_PCT = _float("DAILY_LOSS_LIMIT_PCT", 3.0,  lo=0.1, hi=50.0)
 MAX_DRAWDOWN_PCT     = _float("MAX_DRAWDOWN_PCT",      8.0,  lo=0.1, hi=50.0)
 SLIPPAGE_POINTS      = _int("SLIPPAGE_POINTS",         30,   lo=1,   hi=500)
 
-# ── Staircase Trailing Stop ───────────────────────────────────────────────────
-# The stop loss placed at trade entry never moved automatically before — a
-# trade could run deep into profit and still be stopped out at its original,
-# now far-too-generous level if price reversed. The staircase trailing engine
-# (live_trading/risk/trailing_stop.py) now ratchets the stop forward in
-# discrete steps, measured in multiples of the trade's own original risk (R),
-# as the trade advances — never backwards. All of it is env-configurable so
-# it can be tuned on Render without a code change.
+# ── Adaptive Trailing Stop ────────────────────────────────────────────────────
+# The trailing engine uses the trade's original risk (R), a persisted
+# high-water/low-water mark, and live ATR to ratchet the broker-side stop only
+# in the profitable direction. All values are env-configurable for safe tuning
+# on Render without changing strategy or entry logic.
 TRAIL_ENABLED        = os.getenv("TRAIL_ENABLED", "true").lower() == "true"
 # R-multiple of profit required before the stop first moves off its entry level.
-TRAIL_ACTIVATION_R   = _float("TRAIL_ACTIVATION_R",   1.0,  lo=0.1, hi=10.0)
-# Size, in R-multiples, of each staircase step beyond activation.
+TRAIL_ACTIVATION_R   = _float("TRAIL_ACTIVATION_R",   0.75, lo=0.1, hi=10.0)
+# Kept for compatibility with the panel/configuration. The adaptive engine
+# follows each new favorable extreme instead of waiting for a coarse step.
 TRAIL_STEP_R         = _float("TRAIL_STEP_R",         0.5,  lo=0.05, hi=5.0)
-# Extra R-multiple locked in at every step so the stop locks real profit
-# (covers spread/slippage) instead of landing on exact break-even.
-TRAIL_LOCK_BUFFER_R  = _float("TRAIL_LOCK_BUFFER_R",  0.1,  lo=0.0, hi=2.0)
-# Safety floor: the stop is never placed closer to the live price than this
-# multiple of the current ATR, so a fast move can't ratchet the stop into
-# the middle of normal M5 noise.
-TRAIL_ATR_GAP_MULT   = _float("TRAIL_ATR_GAP_MULT",   0.5,  lo=0.0, hi=5.0)
+# Minimum R-profit kept beyond entry after activation.
+TRAIL_LOCK_BUFFER_R  = _float("TRAIL_LOCK_BUFFER_R",  0.15, lo=0.0, hi=2.0)
+# Adaptive safety gap behind the favorable high/low.
+TRAIL_ATR_GAP_MULT   = _float("TRAIL_ATR_GAP_MULT",   0.8,  lo=0.0, hi=5.0)
 # Minimum price-unit improvement required before sending a modify request —
 # avoids spamming OrderModifySafe with no-op / sub-cent adjustments.
 TRAIL_MIN_STEP_PRICE = _float("TRAIL_MIN_STEP_PRICE", 0.05, lo=0.0, hi=100.0)
+# Independent quote/position polling interval. It is intentionally separate
+# from BAR_CHECK_INTERVAL so faster protection cannot alter signal timing.
+TRAIL_CHECK_INTERVAL = _float("TRAIL_CHECK_INTERVAL", 3.0, lo=1.0, hi=60.0)
 
 # ── Wyckoff Calibration ──────────────────────────────────────────────────────
 WYCKOFF_MAX_RANGE_PCT = 0.01163

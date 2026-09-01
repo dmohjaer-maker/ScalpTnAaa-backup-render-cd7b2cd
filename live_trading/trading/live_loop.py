@@ -38,6 +38,7 @@ from live_trading.config import (
     STATE_FILE, GUARDIAN_STATE_FILE,
     TRAIL_ENABLED, TRAIL_ACTIVATION_R, TRAIL_STEP_R,
     TRAIL_LOCK_BUFFER_R, TRAIL_ATR_GAP_MULT, TRAIL_MIN_STEP_PRICE,
+    TRAIL_CHECK_INTERVAL,
     MTF_ENABLED, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
     TRADE_TIMEFRAMES,
 )
@@ -134,6 +135,7 @@ class GoldScalperLive:
 
         # Handle for the MTAPI keepalive background task (cancelled on stop)
         self._keepalive_task: Optional[asyncio.Task] = None
+        self._trailing_task: Optional[asyncio.Task] = None
 
         # ── Staircase Trailing Stop ──────────────────────────────────────────
         # Toggleable at runtime via the Telegram panel's "Auto Trail" switch
@@ -159,7 +161,7 @@ class GoldScalperLive:
         # every other open position's SL sat frozen at its entry level
         # forever, no matter how far price ran in its favour. Keying by
         # ticket lets every open position get its own independent staircase.
-        self._trail_baselines: dict = {}  # {str(ticket): {"id", "direction", "entry", "risk_distance"}}
+        self._trail_baselines: dict = {}  # {str(ticket): baseline + favorable_extreme}
         self._last_trailing_statuses: dict = {}  # {str(ticket): status-dict}, for panel telemetry
         # Cached ATR (price units) from the last completed bar — reused by the
         # trailing engine between bars so it doesn't need its own candle fetch.
@@ -337,6 +339,12 @@ class GoldScalperLive:
             # Write RUNNING state immediately after connect with real account data
             # so the panel shows live balance before the first bar fires.
             self._write_state("RUNNING", self._last_acc_info)
+            # Price protection runs independently of signal/bar processing. This
+            # keeps the stop responsive and means a paused robot still protects
+            # positions already open at the broker.
+            self._trailing_task = asyncio.create_task(
+                self._trailing_loop(), name="adaptive_trailing_stop"
+            )
             await self._run_loop()
         finally:
             # Cancel the keepalive task if it is still running.  _run_loop()'s
@@ -351,6 +359,13 @@ class GoldScalperLive:
                 except asyncio.CancelledError:
                     pass
                 log.debug("MTAPI keepalive task cancelled in start() finally.")
+            if self._trailing_task and not self._trailing_task.done():
+                self._trailing_task.cancel()
+                try:
+                    await self._trailing_task
+                except asyncio.CancelledError:
+                    pass
+                log.debug("Adaptive trailing task cancelled in start() finally.")
 
     # ── Wyckoff calibration ───────────────────────────────────────────────────
 
@@ -378,6 +393,30 @@ class GoldScalperLive:
                 await keepalive_mtapi()
             except Exception:
                 pass
+
+    async def _trailing_loop(self) -> None:
+        """Continuously protect open positions independently of bar processing.
+
+        Entry signals intentionally remain on their existing schedule. Trailing
+        protection is a separate, low-latency loop so a price reversal between
+        candle checks cannot give back a large unrealised profit. It also keeps
+        running while the robot is paused because pause must not remove
+        protection from a position that is already open.
+        """
+        log.info(
+            f"Adaptive trailing protection active — polling every "
+            f"{TRAIL_CHECK_INTERVAL:.1f}s"
+        )
+        while self.running:
+            try:
+                await self._manage_trailing_stop()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # A transient quote/bridge error must not kill the protection
+                # task permanently; the next cycle will retry.
+                log.warning(f"Adaptive trailing cycle failed: {exc}")
+            await asyncio.sleep(TRAIL_CHECK_INTERVAL)
 
     async def _run_loop(self) -> None:
         log.info(
@@ -425,12 +464,6 @@ class GoldScalperLive:
                         f"✅ Reconnected after {self._reconnect_attempts} attempt(s)"
                     )
                     self._reconnect_attempts = 0
-
-                # Staircase trailing stop — checked every tick (not just on
-                # candle close) so it reacts within seconds of price crossing
-                # a step, not up to 5 minutes late.
-                await self._manage_trailing_stop()
-                _checkpoint(f"loop#{self.loop_count} trailing stop managed")
 
                 # Reset the within-tick trade guard before processing this
                 # tick's bars.  All _on_new_bar() calls that share this tick
@@ -975,10 +1008,11 @@ class GoldScalperLive:
             # always measures its R-multiples from here, never from wherever
             # the stop has since been trailed to.
             self._trail_baselines[str(result.position_id)] = {
-                "id":            result.position_id,
-                "direction":     decision.direction,
-                "entry":         tp_params.entry_price,
-                "risk_distance": abs(tp_params.entry_price - tp_params.stop_loss),
+                "id":                result.position_id,
+                "direction":         decision.direction,
+                "entry":             tp_params.entry_price,
+                "risk_distance":     abs(tp_params.entry_price - tp_params.stop_loss),
+                "favorable_extreme": tp_params.entry_price,
             }
             # Build a synthetic position so the Telegram panel reflects the
             # newly opened trade immediately rather than waiting up to 5 min
@@ -1034,19 +1068,43 @@ class GoldScalperLive:
         safe, just slightly more conservative.
         """
         pos_id = pos.get("id")
+        original_entry: Optional[float] = None
+        original_risk: Optional[float] = None
+        original_direction = pos.get("type", "BUY")
+        favorable_extreme: Optional[float] = None
+
+        # The first open-trade record contains the immutable entry/initial SL.
+        # A later TRAIL_SL record can additionally restore the last known
+        # high-water/low-water mark after a Render restart.
         for entry in reversed(self.trade_history):
             if not isinstance(entry, dict):
                 continue
             if str(entry.get("position_id")) == str(pos_id) and "sl" in entry and "entry" in entry:
-                risk = abs(float(entry["entry"]) - float(entry["sl"]))
-                if risk > 0:
-                    return {
-                        "id":            pos_id,
-                        "direction":     entry.get("direction", pos.get("type", "BUY")),
-                        "entry":         float(entry["entry"]),
-                        "risk_distance": risk,
-                    }
+                original_entry = float(entry["entry"])
+                original_risk = abs(original_entry - float(entry["sl"]))
+                original_direction = entry.get("direction", original_direction)
                 break
+
+        if original_entry is not None and original_risk and original_risk > 0:
+            for event in self.trade_history:
+                if (
+                    isinstance(event, dict)
+                    and str(event.get("position_id")) == str(pos_id)
+                    and event.get("action") == "TRAIL_SL"
+                    and event.get("favorable_extreme") is not None
+                ):
+                    try:
+                        favorable_extreme = float(event["favorable_extreme"])
+                    except (TypeError, ValueError):
+                        continue
+            return {
+                "id":                 pos_id,
+                "direction":          original_direction,
+                "entry":              original_entry,
+                "risk_distance":      original_risk,
+                "favorable_extreme":  favorable_extreme or original_entry,
+            }
+
         # Fallback: derive from the position's live snapshot.
         risk = abs(float(pos.get("open_price", 0.0)) - float(pos.get("sl", 0.0)))
         if risk > 0:
@@ -1059,6 +1117,7 @@ class GoldScalperLive:
                 "direction":     pos.get("type", "BUY"),
                 "entry":         float(pos.get("open_price", 0.0)),
                 "risk_distance": risk,
+                "favorable_extreme": float(pos.get("open_price", 0.0)),
             }
         return None
 
@@ -1123,6 +1182,18 @@ class GoldScalperLive:
             # a SELL exits at the ask — trailing off the wrong side would
             # trail too aggressively by the full spread.
             current_price = quote["bid"] if direction.upper() == "BUY" else quote["ask"]
+            entry_price = float(baseline["entry"])
+            previous_extreme = float(
+                baseline.get("favorable_extreme", entry_price)
+            )
+            if direction.upper() == "BUY":
+                baseline["favorable_extreme"] = max(
+                    entry_price, previous_extreme, current_price
+                )
+            else:
+                baseline["favorable_extreme"] = min(
+                    entry_price, previous_extreme, current_price
+                )
 
             candidate_sl = compute_staircase_sl(
                 direction=direction,
@@ -1131,6 +1202,7 @@ class GoldScalperLive:
                 current_price=current_price,
                 atr=self._last_atr,
                 cfg=self._trailing_cfg,
+                favorable_extreme=baseline["favorable_extreme"],
             )
 
             r_now = r_multiple_of(
@@ -1141,6 +1213,7 @@ class GoldScalperLive:
                 "r_multiple":   r_now,
                 "current_sl":   pos["sl"],
                 "candidate_sl": candidate_sl,
+                "favorable_extreme": baseline["favorable_extreme"],
             }
 
             if not should_apply(direction, pos["sl"], candidate_sl, self._trailing_cfg.min_step_price):
@@ -1159,6 +1232,7 @@ class GoldScalperLive:
                     "r_multiple":  r_now,
                     "old_sl":      pos["sl"],
                     "new_sl":      candidate_sl,
+                    "favorable_extreme": baseline["favorable_extreme"],
                 })
             else:
                 log.warning(

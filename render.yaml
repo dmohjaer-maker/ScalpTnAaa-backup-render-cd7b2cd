@@ -94,6 +94,23 @@ services:
         value: "12.0"
       - key: SLIPPAGE_POINTS
         value: "30"
+      # Adaptive high-water trailing protection. These values are explicit in
+      # the deployment manifest so a fresh Render sync preserves the same
+      # behavior as the robot code.
+      - key: TRAIL_ENABLED
+        value: "true"
+      - key: TRAIL_ACTIVATION_R
+        value: "0.75"
+      - key: TRAIL_STEP_R
+        value: "0.5"
+      - key: TRAIL_LOCK_BUFFER_R
+        value: "0.15"
+      - key: TRAIL_ATR_GAP_MULT
+        value: "0.8"
+      - key: TRAIL_MIN_STEP_PRICE
+        value: "0.05"
+      - key: TRAIL_CHECK_INTERVAL
+        value: "3.0"
       # TRADE_TIMEFRAMES / QUALITY_ADX_MIN are read by the live engine and
       # were set on the live service but missing from this manifest.
       - key: TRADE_TIMEFRAMES
