@@ -76,15 +76,27 @@ services:
         value: "24"
       - key: RISK_PERCENT
         value: "1.0"
+      - key: MAX_OPEN_TRADES
+        value: "3"
       # Bounded XAUUSD M5 initial-stop calibration: enough room for normal
       # candle noise, while preventing a distant historical swing from
       # creating an untradeable stop.
       - key: SL_ATR_BUFFER_MULT
-        value: "0.25"
+        value: "0.15"
       - key: SL_MIN_ATR_MULT
-        value: "0.90"
+        value: "0.55"
       - key: SL_MAX_ATR_MULT
-        value: "2.25"
+        value: "1.50"
+      - key: SL_SPREAD_BUFFER_MULT
+        value: "1.50"
+      - key: TP_RR
+        value: "1.50"
+      - key: TP_MIN_RR
+        value: "1.20"
+      - key: TP_MAX_RR
+        value: "2.00"
+      - key: TP_APPROACH_ATR_MULT
+        value: "0.15"
       # STABLE v4.0.4 values -- these are the actual settings the bot has been
       # running with in production (verified against the live Render service
       # on 2026-08-10). Earlier revisions of this file had leftover
