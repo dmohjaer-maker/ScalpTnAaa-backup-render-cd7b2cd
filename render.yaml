@@ -74,6 +74,7 @@ services:
       # Option 4: old BOS/CHoCH events cannot authorize live entries.
       - key: STRUCTURE_MAX_AGE_BARS
         value: "24"
+      # Redeploy trigger: flexible entry mode is the intended production default.
       # Flexible advanced entry mode: keep safety/risk controls while avoiding
       # hard rejection of uncertain MTF, stale-trigger, spread, and drift cases.
       - key: STRICT_ENTRY_MODE
