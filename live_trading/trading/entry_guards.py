@@ -11,6 +11,7 @@ def validate_entry_quote(
     atr: float,
     max_spread_atr: float,
     max_drift_atr: float,
+    enforce_limits: bool = True,
 ) -> tuple[bool, str, float]:
     """Validate the live quote and return the correct executable entry price."""
     if direction == "BUY":
@@ -28,12 +29,17 @@ def validate_entry_quote(
 
     spread = ask - bid
     spread_limit = atr * max_spread_atr
-    if spread > spread_limit:
-        return False, f"spread {spread:.2f} exceeds limit {spread_limit:.2f}", market_entry
-
     drift = abs(market_entry - signal_close)
     drift_limit = atr * max_drift_atr
-    if drift > drift_limit:
+
+    if enforce_limits and spread > spread_limit:
+        return False, f"spread {spread:.2f} exceeds limit {spread_limit:.2f}", market_entry
+    if enforce_limits and drift > drift_limit:
         return False, f"price drift {drift:.2f} exceeds limit {drift_limit:.2f}", market_entry
 
-    return True, "", market_entry
+    warnings = []
+    if spread > spread_limit:
+        warnings.append(f"spread {spread:.2f} above soft limit {spread_limit:.2f}")
+    if drift > drift_limit:
+        warnings.append(f"price drift {drift:.2f} above soft limit {drift_limit:.2f}")
+    return True, "; ".join(warnings), market_entry
