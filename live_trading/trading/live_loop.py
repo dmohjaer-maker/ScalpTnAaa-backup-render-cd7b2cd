@@ -42,7 +42,7 @@ from live_trading.config import (
     TRAIL_CHECK_INTERVAL,
     MTF_ENABLED, MTF_REQUIRE_ALIGNMENT, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
     TRADE_TIMEFRAMES,
-    MAX_ENTRY_DRIFT_ATR, MAX_SPREAD_ATR,
+    MAX_ENTRY_DRIFT_ATR, MAX_SPREAD_ATR, STRICT_ENTRY_MODE,
 )
 from live_trading.logger import get_logger
 from live_trading.signals.gold_engine import calc_atr
@@ -953,12 +953,17 @@ class GoldScalperLive:
         _quote_ok, _quote_reason, _market_entry = validate_entry_quote(
             decision.direction, _bid, _ask, _signal_close, _entry_atr,
             MAX_SPREAD_ATR, MAX_ENTRY_DRIFT_ATR,
+            enforce_limits=STRICT_ENTRY_MODE,
         )
         if not _quote_ok:
             log.info(f"[{tf}] Skipping entry — {_quote_reason}")
+            
             self._write_state("WAITING", acc_info, decision, pos,
                               extra=self._guardian_extra(gs))
             return
+
+        if _quote_reason:
+            log.info(f"[{tf}] Flexible quote warning — {_quote_reason}")
 
         _live_decision = run_decision_engine(
             candles,
