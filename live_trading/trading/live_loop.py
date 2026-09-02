@@ -933,7 +933,11 @@ class GoldScalperLive:
         # 8c. Price-formation gate: the candle close is the signal reference,
         # but the order will fill at the live ask/bid. Re-price SL/TP from that
         # executable quote and reject fast moves or abnormal spreads.
-        _quote = await get_current_quote(SYMBOL)
+        try:
+            _quote = await get_current_quote(SYMBOL)
+        except Exception as exc:
+            log.warning(f"[{tf}] Skipping entry — live quote unavailable: {exc}")
+            _quote = {}
         try:
             _bid = float(_quote.get("bid", 0.0))
             _ask = float(_quote.get("ask", 0.0))
