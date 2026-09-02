@@ -58,6 +58,28 @@ def _recent_micro_levels(candles: List[OHLCV], lookback: int = 12) -> tuple[Opti
     return (highs[-1] if highs else None, lows[-1] if lows else None)
 
 
+def _has_fresh_entry_trigger(
+    smc: SmcResult,
+    pa_signal: str,
+    candidate: str,
+    current_bar_index: int,
+    max_age_bars: int,
+) -> bool:
+    """Return True only when the closed-candle setup has a fresh trigger."""
+    latest_structure = get_latest_structure_event(smc)
+    structure_trigger = (
+        latest_structure is not None
+        and latest_structure.type == candidate
+        and 0 <= current_bar_index - latest_structure.bar_index <= max_age_bars
+    )
+    sweep_type = "BULLISH" if candidate == "BUY" else "BEARISH"
+    sweep_trigger = any(
+        sweep.type == sweep_type and sweep.bar_index == current_bar_index
+        for sweep in smc.liquidity_sweeps
+    )
+    return structure_trigger or sweep_trigger or pa_signal == candidate
+
+
 @dataclass
 class DecisionResult:
     allowed:         bool
@@ -200,20 +222,9 @@ def run_decision_engine(
     # Exact entry trigger: a fresh setup must be confirmed by the latest
     # closed candle. This prevents a stale BOS plus static confirmations from
     # opening a market order many bars after the actual opportunity passed.
-    latest_structure = get_latest_structure_event(smc)
-    current_bar_index = len(candles) - 1
-    structure_trigger = (
-        latest_structure is not None
-        and latest_structure.type == candidate
-        and 0 <= current_bar_index - latest_structure.bar_index <= ENTRY_TRIGGER_MAX_AGE_BARS
-    )
-    sweep_type = "BULLISH" if candidate == "BUY" else "BEARISH"
-    sweep_trigger = any(
-        sweep.type == sweep_type and sweep.bar_index == current_bar_index
-        for sweep in smc.liquidity_sweeps
-    )
-    pa_trigger = pa.pa_signal == candidate
-    if not (structure_trigger or sweep_trigger or pa_trigger):
+    if not _has_fresh_entry_trigger(
+        smc, pa.pa_signal, candidate, len(candles) - 1, ENTRY_TRIGGER_MAX_AGE_BARS
+    ):
         reason = (
             f"Entry trigger missing: no fresh {candidate} structure/sweep/price-action "
             f"trigger within {ENTRY_TRIGGER_MAX_AGE_BARS} bars"
