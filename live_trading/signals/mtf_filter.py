@@ -239,9 +239,12 @@ def mtf_allows_trade(
     if m5_direction == bias.direction:
         return True, ""
 
-    # Any confirmed directional HTF bias is a hard veto for the opposite
-    # direction. Passing counter-trend trades through on MODERATE bias made
-    # the higher-timeframe filter informational instead of protective.
+    # Flexible mode allows uncertain counter-trend setups through. A clearly
+    # opposing strong HTF bias remains a meaningful protection against
+    # trading directly into a confirmed higher-timeframe move.
+    if bias.strength != "STRONG":
+        return True, ""
+
     reason = (
         f"MTF BLOCK: M5 wants {m5_direction} but HTF is STRONGLY {bias.direction} "
         f"[trend={bias.trend}, SMC={bias.smc_signal}, "
