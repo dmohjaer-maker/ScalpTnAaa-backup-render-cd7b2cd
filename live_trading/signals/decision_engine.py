@@ -24,6 +24,7 @@ from live_trading.config import (
     CONF_HARD_MIN,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
     ENTRY_TRIGGER_MAX_AGE_BARS,
+    STRICT_ENTRY_MODE,
 )
 
 # Marginal confidence R:R floor: trades with confidence between CONF_HARD_MIN
@@ -222,7 +223,7 @@ def run_decision_engine(
     # Exact entry trigger: a fresh setup must be confirmed by the latest
     # closed candle. This prevents a stale BOS plus static confirmations from
     # opening a market order many bars after the actual opportunity passed.
-    if not _has_fresh_entry_trigger(
+    if STRICT_ENTRY_MODE and not _has_fresh_entry_trigger(
         smc, pa.pa_signal, candidate, len(candles) - 1, ENTRY_TRIGGER_MAX_AGE_BARS
     ):
         reason = (
