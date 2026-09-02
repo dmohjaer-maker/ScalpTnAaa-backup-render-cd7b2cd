@@ -23,6 +23,7 @@ from live_trading.risk.capital_manager import CapitalInput, CapitalOutput, calc_
 from live_trading.config import (
     CONF_HARD_MIN,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
+    ENTRY_TRIGGER_MAX_AGE_BARS,
 )
 
 # Marginal confidence R:R floor: trades with confidence between CONF_HARD_MIN
@@ -127,6 +128,8 @@ def run_decision_engine(
     dxy_signal:        str   = "NEUTRAL",
     require_price_action: bool = False,
     require_smc_price_action_wyckoff: bool = REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
+    entry_price_override: Optional[float] = None,
+    spread: float = 0.0,
 ) -> DecisionResult:
 
     smc     = analyze_smc_structure(candles)
@@ -192,6 +195,29 @@ def run_decision_engine(
         else:
             reason = (f"Entry filter: only {ef.confirmation_count}/{effective_min_confirmations} "
                       f"confirmations — {votes}  [regime={regime.regime}]")
+        return _make_neutral(smc, wyckoff, pa, trend, [reason], [reason])
+
+    # Exact entry trigger: a fresh setup must be confirmed by the latest
+    # closed candle. This prevents a stale BOS plus static confirmations from
+    # opening a market order many bars after the actual opportunity passed.
+    latest_structure = get_latest_structure_event(smc)
+    current_bar_index = len(candles) - 1
+    structure_trigger = (
+        latest_structure is not None
+        and latest_structure.type == candidate
+        and 0 <= current_bar_index - latest_structure.bar_index <= ENTRY_TRIGGER_MAX_AGE_BARS
+    )
+    sweep_type = "BULLISH" if candidate == "BUY" else "BEARISH"
+    sweep_trigger = any(
+        sweep.type == sweep_type and sweep.bar_index == current_bar_index
+        for sweep in smc.liquidity_sweeps
+    )
+    pa_trigger = pa.pa_signal == candidate
+    if not (structure_trigger or sweep_trigger or pa_trigger):
+        reason = (
+            f"Entry trigger missing: no fresh {candidate} structure/sweep/price-action "
+            f"trigger within {ENTRY_TRIGGER_MAX_AGE_BARS} bars"
+        )
         return _make_neutral(smc, wyckoff, pa, trend, [reason], [reason])
 
     if candidate == "BUY"  and not regime.rules.allow_long:
@@ -280,7 +306,8 @@ def run_decision_engine(
                    if ob.type == ("BULLISH" if candidate == "BUY" else "BEARISH")]
     latest_ob = aligned_obs[-1] if aligned_obs else None
 
-    entry = last_candle.close
+    entry = (float(entry_price_override)
+             if entry_price_override is not None else last_candle.close)
     micro_high, micro_low = _recent_micro_levels(candles)
 
     # H-1 FIX: use most-recent directionally-valid BOS price as the SL anchor,
@@ -310,6 +337,7 @@ def run_decision_engine(
         support_level=eq_support,
         resistance_level=eq_resistance,
         atr_mean=regime.atr_mean,
+        spread=spread,
         micro_swing_high=micro_high,
         micro_swing_low=micro_low,
     )

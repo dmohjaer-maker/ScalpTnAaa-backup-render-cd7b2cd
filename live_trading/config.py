@@ -180,6 +180,13 @@ QUALITY_ADX_MIN   = _float("QUALITY_ADX_MIN",    15.0, lo=5.0,  hi=40.0)
 # 300 bars on M5 is roughly 25 hours and is too permissive for scalping;
 # the default 24 closed bars keeps BOS/CHoCH actionable for about two hours.
 STRUCTURE_MAX_AGE_BARS = _int("STRUCTURE_MAX_AGE_BARS", 24, lo=3, hi=100)
+# A valid setup is not enough by itself: the latest closed candle must also
+# contain a fresh trigger (structure break, liquidity sweep, or PA pattern).
+ENTRY_TRIGGER_MAX_AGE_BARS = _int("ENTRY_TRIGGER_MAX_AGE_BARS", 2, lo=0, hi=10)
+# Market orders are priced from the live bid/ask, not from a stale candle close.
+# These guards reject entries after a fast move or during an abnormal spread.
+MAX_ENTRY_DRIFT_ATR = _float("MAX_ENTRY_DRIFT_ATR", 0.20, lo=0.0, hi=2.0)
+MAX_SPREAD_ATR = _float("MAX_SPREAD_ATR", 0.20, lo=0.0, hi=2.0)
 # Hard ceiling is three simultaneous positions; Render may lower it but not
 # raise it beyond the requested scalp limit.
 MAX_OPEN_TRADES   = _int("MAX_OPEN_TRADES", 3, lo=1, hi=3)
@@ -194,6 +201,9 @@ USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() 
 # MTF_CANDLE_WINDOW : number of HTF bars to fetch (needs ≥ 210 for EMA-200).
 #                     300 gives a comfortable margin without excessive latency.
 MTF_ENABLED       = os.getenv("MTF_ENABLED",   "true").lower() == "true"
+# When enabled, no trade is allowed unless the higher timeframe has a
+# directional bias. Neutral or unavailable HTF data is treated as no-trade.
+MTF_REQUIRE_ALIGNMENT = os.getenv("MTF_REQUIRE_ALIGNMENT", "true").lower() == "true"
 MTF_TIMEFRAME     = _timeframe("MTF_TIMEFRAME",  "H1")
 MTF_CANDLE_WINDOW = _int("MTF_CANDLE_WINDOW",    300, lo=50, hi=1000)
 

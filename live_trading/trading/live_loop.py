@@ -40,10 +40,12 @@ from live_trading.config import (
     TRAIL_LOCK_BUFFER_R, TRAIL_ATR_GAP_MULT, TRAIL_SPREAD_GAP_MULT,
     TRAIL_MAX_GAP_R, TRAIL_MIN_STEP_PRICE,
     TRAIL_CHECK_INTERVAL,
-    MTF_ENABLED, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
+    MTF_ENABLED, MTF_REQUIRE_ALIGNMENT, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
     TRADE_TIMEFRAMES,
+    MAX_ENTRY_DRIFT_ATR, MAX_SPREAD_ATR,
 )
 from live_trading.logger import get_logger
+from live_trading.signals.gold_engine import calc_atr
 from live_trading.risk.guardian import RiskGuardian, GuardianStatus
 from live_trading.risk.trailing_stop import (
     TrailingConfig, compute_staircase_sl, should_apply, r_multiple_of,
@@ -863,16 +865,23 @@ class GoldScalperLive:
             return
 
         # 8b. Gate: Multi-Timeframe alignment
-        # Only runs when decision.allowed=True (we never block an already-rejected
-        # trade with extra noise).  mtf_allows_trade() is a pure function that
-        # never raises and returns (True, "") when htf_bias is None or NEUTRAL.
-        if MTF_ENABLED and htf_bias is not None:
-            _mtf_ok, _mtf_reason = mtf_allows_trade(htf_bias, decision.direction)
+        # A professional entry needs a usable, directional HTF context.
+        # Fetch/analysis failure, insufficient data, or a neutral HTF is a
+        # no-trade condition when MTF_REQUIRE_ALIGNMENT is enabled.
+        if MTF_ENABLED and MTF_REQUIRE_ALIGNMENT:
+            _mtf_ok = htf_bias is not None and htf_bias.direction != "NEUTRAL"
+            _mtf_reason = (
+                "MTF unavailable — no trade" if htf_bias is None else
+                "MTF neutral — no directional context, no trade"
+                if htf_bias.direction == "NEUTRAL" else ""
+            )
+            if _mtf_ok:
+                _mtf_ok, _mtf_reason = mtf_allows_trade(htf_bias, decision.direction)
             if not _mtf_ok:
                 log.info(f"⛔  {_mtf_reason}")
                 _mtf_extra = {
                     **self._guardian_extra(gs),
-                    "htf_bias": {
+                    "htf_bias": ({
                         "direction": htf_bias.direction,
                         "trend":     htf_bias.trend,
                         "smc":       htf_bias.smc_signal,
@@ -880,9 +889,20 @@ class GoldScalperLive:
                         "strength":  htf_bias.strength,
                         "reasoning": htf_bias.reasoning,
                         "blocked":   _mtf_reason,
-                    },
+                    } if htf_bias is not None else {
+                        "direction": "NEUTRAL",
+                        "reasoning": [_mtf_reason],
+                        "blocked": _mtf_reason,
+                    }),
                 }
                 self._write_state("SCANNING", acc_info, decision, pos, extra=_mtf_extra)
+                return
+        elif MTF_ENABLED and htf_bias is not None:
+            _mtf_ok, _mtf_reason = mtf_allows_trade(htf_bias, decision.direction)
+            if not _mtf_ok:
+                log.info(f"⛔  {_mtf_reason}")
+                self._write_state("SCANNING", acc_info, decision, pos,
+                                  extra=self._guardian_extra(gs))
                 return
 
         # 7c. Gate: post-SL cooldown in choppy/range regimes
@@ -909,6 +929,67 @@ class GoldScalperLive:
                 self._write_state("WAITING", acc_info, decision, pos,
                                   extra=self._guardian_extra(gs))
                 return
+
+        # 8c. Price-formation gate: the candle close is the signal reference,
+        # but the order will fill at the live ask/bid. Re-price SL/TP from that
+        # executable quote and reject fast moves or abnormal spreads.
+        _quote = await get_current_quote(SYMBOL)
+        try:
+            _bid = float(_quote.get("bid", 0.0))
+            _ask = float(_quote.get("ask", 0.0))
+            _signal_close = float(candles[-1].close)
+            _entry_atr = max(float(calc_atr(candles, 14)), 0.01)
+            _spread = _ask - _bid
+            _market_entry = _ask if decision.direction == "BUY" else _bid
+        except (AttributeError, TypeError, ValueError):
+            _bid = _ask = _spread = _market_entry = 0.0
+            _entry_atr = 0.0
+
+        if (_bid <= 0 or _ask <= 0 or _ask <= _bid or _entry_atr <= 0):
+            log.warning(f"[{tf}] Skipping entry — invalid live quote")
+            self._write_state("WAITING", acc_info, decision, pos,
+                              extra=self._guardian_extra(gs))
+            return
+        if _spread > _entry_atr * MAX_SPREAD_ATR:
+            log.info(
+                f"[{tf}] Skipping entry — spread {_spread:.2f} exceeds "
+                f"{MAX_SPREAD_ATR:.2f} ATR ({_entry_atr * MAX_SPREAD_ATR:.2f})"
+            )
+            self._write_state("WAITING", acc_info, decision, pos,
+                              extra=self._guardian_extra(gs))
+            return
+        _drift = abs(_market_entry - _signal_close)
+        if _drift > _entry_atr * MAX_ENTRY_DRIFT_ATR:
+            log.info(
+                f"[{tf}] Skipping entry — live price drift {_drift:.2f} exceeds "
+                f"{MAX_ENTRY_DRIFT_ATR:.2f} ATR ({_entry_atr * MAX_ENTRY_DRIFT_ATR:.2f})"
+            )
+            self._write_state("WAITING", acc_info, decision, pos,
+                              extra=self._guardian_extra(gs))
+            return
+
+        _live_decision = run_decision_engine(
+            candles,
+            balance,
+            risk_percent=RISK_PERCENT,
+            min_confirmations=MIN_CONFIRMATIONS,
+            use_atr_high_vol=USE_ATR_HIGH_VOL_FILTER,
+            require_price_action=REQUIRE_PRICE_ACTION,
+            require_smc_price_action_wyckoff=REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
+            entry_price_override=_market_entry,
+            spread=_spread,
+        )
+        if (not _live_decision.allowed
+                or _live_decision.direction != decision.direction):
+            log.info(
+                f"[{tf}] Skipping entry — live-quote recalculation invalidated "
+                f"the signal: {_live_decision.blocked_reasons or ['direction changed']}"
+            )
+            self._write_state("SCANNING", acc_info, _live_decision, pos,
+                              extra=self._guardian_extra(gs))
+            return
+        decision = _live_decision
+        self.last_decision = decision
 
         # 8c. Safety re-check: confirm we are still flat immediately before
         # sending the order.
