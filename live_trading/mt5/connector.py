@@ -746,9 +746,28 @@ def _parse_open_positions_response(
 # (which iterates every row matching a newly-seen ticket) fires a second
 # "TRADE OPENED" notification for the same trade with fabricated size/price.
 # A retail gold position this bot ever opens is a few lots at most, so
-# anything above this cap is unambiguously corrupted bridge output, not a
-# real fill — it is dropped rather than guessed at.
+# anything above this cap is unambiguously corrupted bridge output unless
+# another independent lot field in the same row is sane.
 _MAX_SANE_VOLUME_LOTS = 100.0
+
+
+def _sane_volume_from_row(row: dict) -> float:
+    """Return a plausible lot value from an mt5rest position row.
+
+    The bridge has returned rows where ``volume`` is corrupted (for example
+    1,000,000) while the parallel ``lots`` field still contains the real
+    broker volume (for example 0.01). Prefer the independent ``lots`` field
+    and never expose an implausible value to the trading or panel layers.
+    """
+    for key in ("lots", "volume", "closeLots"):
+        raw = row.get(key)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if 0.0 < value <= _MAX_SANE_VOLUME_LOTS:
+            return value
+    return 0.0
 
 
 def _dedupe_positions(
@@ -783,8 +802,10 @@ def _dedupe_positions(
     built from this robot's own trade log) and the corrupted ticket is a
     known one, repair only the volume/type fields from our own record instead
     of dropping the row — the ticket/openPrice from mt5rest are kept as-is.
-    An unknown ticket (never opened by this robot) is still dropped exactly
-    as before; this only rescues positions we can independently verify.
+    An unknown ticket with no independent sane lot field is still dropped
+    exactly as before. A sane ``lots``/``closeLots`` field is independent
+    evidence that the row is a real open position, so it is preserved even
+    when the primary ``volume`` field is corrupted.
     """
     known_positions = known_positions or {}
     by_ticket: "dict[object, List[dict]]" = {}
@@ -804,8 +825,9 @@ def _dedupe_positions(
         group = by_ticket[ticket]
         if len(group) == 1:
             row = group[0]
-            vol = float(row.get("volume", row.get("lots", 0.0)) or 0.0)
-            if vol > _MAX_SANE_VOLUME_LOTS:
+            vol = _sane_volume_from_row(row)
+            raw_volume = row.get("volume")
+            if vol <= 0:
                 known = known_positions.get(str(ticket))
                 if known is not None:
                     # Ticket is one we opened ourselves and mt5rest still
@@ -818,7 +840,7 @@ def _dedupe_positions(
                     repaired["type"] = known["direction"]
                     log.warning(
                         f"mt5rest returned ticket {ticket!r} with a corrupted "
-                        f"volume ({vol:.0f}L) and type={row.get('type')} — "
+                        f"volume ({raw_volume!r}) and type={row.get('type')} — "
                         f"repaired from this robot's own trade log "
                         f"(volume={known['volume']}, direction={known['direction']}) "
                         f"instead of dropping a position known to be open."
@@ -834,18 +856,31 @@ def _dedupe_positions(
                     # it could be a real ticket we just don't recognise yet.
                     log.warning(
                         f"mt5rest returned a lone row for ticket {ticket!r} "
-                        f"with an insane volume ({vol:.0f}L > {_MAX_SANE_VOLUME_LOTS}L limit) "
+                        f"without a sane lot value (volume={raw_volume!r}, "
+                        f"lots={row.get('lots')!r}) "
                         f"— dropping phantom row (direction={row.get('type')}, "
                         f"openPrice={row.get('openPrice', row.get('price_open'))})"
                     )
                     dropped_unknown.append(str(ticket))
             else:
+                # Keep the full row so direction/price/SL/TP remain
+                # available, while making the recovery visible when the
+                # independent lots field rescued a corrupted volume.
+                try:
+                    if raw_volume is not None and float(raw_volume) > _MAX_SANE_VOLUME_LOTS:
+                        log.warning(
+                            f"mt5rest returned ticket {ticket!r} with a corrupted "
+                            f"volume ({raw_volume!r}); using independent "
+                            f"lots={vol:g} instead."
+                        )
+                except (TypeError, ValueError):
+                    pass
                 result.append(row)
             continue
 
         sane = [
             row for row in group
-            if 0 < float(row.get("volume", row.get("lots", 0.0)) or 0.0) <= _MAX_SANE_VOLUME_LOTS
+            if _sane_volume_from_row(row) > 0
         ]
         if len(sane) == 1:
             log.warning(
@@ -882,28 +917,46 @@ async def get_last_completed_bar_time(
 def mt5_pos_to_dict(pos: dict) -> dict:
     """Normalise a raw mt5rest OpenedOrder dict into the standard internal format."""
     type_map = {0: "BUY", 1: "SELL"}
-    raw_type = pos.get("type", pos.get("orderType", 0))
-    if isinstance(raw_type, str):
-        direction = raw_type.strip().upper()
-        if direction in {"BUY", "SELL"}:
-            normalized_type = direction
-        else:
+
+    def _normalise_direction(value: object) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            token = value.strip().upper()
+            if token in {"BUY", "SELL"}:
+                return token
+            # mt5rest commonly returns values such as "DealSell" and
+            # "OrderBuy" in the parallel direction fields.
+            if "SELL" in token:
+                return "SELL"
+            if "BUY" in token:
+                return "BUY"
             try:
-                normalized_type = type_map.get(int(raw_type), "BUY")
+                return type_map.get(int(token))
             except (TypeError, ValueError):
-                normalized_type = "BUY"
-    else:
+                return None
         try:
-            normalized_type = type_map.get(int(raw_type), "BUY")
+            return type_map.get(int(value))
         except (TypeError, ValueError):
-            normalized_type = "BUY"
+            return None
+
+    # An explicitly present null ``type`` must not hide a valid ``orderType``
+    # or ``dealType`` field from the same bridge response.
+    normalized_type = next(
+        (
+            direction
+            for key in ("type", "orderType", "dealType", "direction")
+            if (direction := _normalise_direction(pos.get(key))) is not None
+        ),
+        "BUY",
+    )
 
     return {
         "id":         str(pos.get("ticket", pos.get("identifier", ""))),
         "ticket":     pos.get("ticket", pos.get("identifier", 0)),
         "symbol":     pos.get("symbol", ""),
         "type":       normalized_type,
-        "volume":     float(pos.get("volume", pos.get("lots", 0.0))),
+        "volume":     _sane_volume_from_row(pos),
         "open_price": float(pos.get("openPrice", pos.get("price_open", 0.0))),
         "sl":         float(pos.get("stopLoss",  pos.get("sl", 0.0))),
         "tp":         float(pos.get("takeProfit", pos.get("tp", 0.0))),
