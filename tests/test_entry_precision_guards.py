@@ -35,10 +35,10 @@ def test_recent_structure_is_an_entry_trigger():
     assert _has_fresh_entry_trigger(_smc([recent_bos]), "NEUTRAL", "BUY", 20, 2) is True
 
 
-def test_moderate_opposing_htf_bias_blocks_counter_trend_trade():
+def test_moderate_opposing_htf_bias_is_not_a_hard_block():
     allowed, reason = mtf_allows_trade(_htf("BUY", "MODERATE"), "SELL")
-    assert allowed is False
-    assert "HTF bias is BUY" in reason
+    assert allowed is True
+    assert reason == ""
 
 
 def test_aligned_htf_bias_allows_trade():
@@ -53,6 +53,12 @@ def test_buy_uses_ask_and_sell_uses_bid():
 def test_abnormal_spread_blocks_entry():
     allowed, reason, _ = validate_entry_quote("BUY", 100.00, 100.50, 100.05, 1.0, 0.20, 0.20)
     assert allowed is False
+    assert "spread" in reason
+
+
+def test_soft_quote_limits_are_diagnostic_in_flexible_mode():
+    allowed, reason, _ = validate_entry_quote("BUY", 100.00, 100.50, 100.05, 1.0, 0.20, 0.20, enforce_limits=False)
+    assert allowed is True
     assert "spread" in reason
 
 
