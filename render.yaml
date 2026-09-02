@@ -75,9 +75,11 @@ services:
       - key: STRUCTURE_MAX_AGE_BARS
         value: "24"
       # Redeploy trigger: flexible entry mode is the intended production default.
-      # Flexible advanced entry mode: keep safety/risk controls while avoiding
-      # hard rejection of uncertain MTF, stale-trigger, spread, and drift cases.
+      # Entry filters disabled by request: preserve only technical quote validity
+      # and core risk controls; do not use MTF alignment as an entry gate.
       - key: STRICT_ENTRY_MODE
+        value: "false"
+      - key: MTF_ENABLED
         value: "false"
       - key: MTF_REQUIRE_ALIGNMENT
         value: "false"
