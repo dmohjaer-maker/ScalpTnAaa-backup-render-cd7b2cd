@@ -27,9 +27,9 @@ def _bounded_env_float(name: str, default: float, lo: float, hi: float) -> float
 
 # Initial SL envelope.  These remain Render-configurable using the existing
 # names so deployment settings stay backward compatible.
-ATR_BUFFER_MULT = _bounded_env_float("SL_ATR_BUFFER_MULT", 0.50, 0.10, 1.00)
-MIN_SL_ATR_MULT = _bounded_env_float("SL_MIN_ATR_MULT", 1.80, 0.75, 2.50)
-MAX_SL_ATR_MULT = _bounded_env_float("SL_MAX_ATR_MULT", 3.50, 1.50, 4.00)
+ATR_BUFFER_MULT = _bounded_env_float("SL_ATR_BUFFER_MULT", 0.25, 0.10, 1.00)
+MIN_SL_ATR_MULT = _bounded_env_float("SL_MIN_ATR_MULT", 0.90, 0.50, 2.50)
+MAX_SL_ATR_MULT = _bounded_env_float("SL_MAX_ATR_MULT", 2.25, 1.25, 4.00)
 if MIN_SL_ATR_MULT > MAX_SL_ATR_MULT:
     raise ValueError("SL_MIN_ATR_MULT cannot exceed SL_MAX_ATR_MULT")
 
