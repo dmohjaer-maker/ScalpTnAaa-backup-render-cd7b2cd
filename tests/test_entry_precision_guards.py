@@ -2,6 +2,7 @@
 
 from live_trading.signals.decision_engine import _has_fresh_entry_trigger
 from live_trading.signals.mtf_filter import MtfBias, mtf_allows_trade
+from live_trading.trading.entry_guards import validate_entry_quote
 from live_trading.signals.smc_engine import SmcBos, SmcResult
 
 
@@ -42,3 +43,20 @@ def test_moderate_opposing_htf_bias_blocks_counter_trend_trade():
 
 def test_aligned_htf_bias_allows_trade():
     assert mtf_allows_trade(_htf("SELL", "WEAK"), "SELL") == (True, "")
+
+
+def test_buy_uses_ask_and_sell_uses_bid():
+    assert validate_entry_quote("BUY", 100.00, 100.10, 100.05, 1.0, 0.20, 0.20)[2] == 100.10
+    assert validate_entry_quote("SELL", 100.00, 100.10, 100.05, 1.0, 0.20, 0.20)[2] == 100.00
+
+
+def test_abnormal_spread_blocks_entry():
+    allowed, reason, _ = validate_entry_quote("BUY", 100.00, 100.50, 100.05, 1.0, 0.20, 0.20)
+    assert allowed is False
+    assert "spread" in reason
+
+
+def test_price_drift_blocks_entry():
+    allowed, reason, _ = validate_entry_quote("SELL", 98.00, 98.05, 100.00, 1.0, 0.20, 0.20)
+    assert allowed is False
+    assert "drift" in reason

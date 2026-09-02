@@ -46,6 +46,7 @@ from live_trading.config import (
 )
 from live_trading.logger import get_logger
 from live_trading.signals.gold_engine import calc_atr
+from live_trading.trading.entry_guards import validate_entry_quote
 from live_trading.risk.guardian import RiskGuardian, GuardianStatus
 from live_trading.risk.trailing_stop import (
     TrailingConfig, compute_staircase_sl, should_apply, r_multiple_of,
@@ -949,25 +950,12 @@ class GoldScalperLive:
             _bid = _ask = _spread = _market_entry = 0.0
             _entry_atr = 0.0
 
-        if (_bid <= 0 or _ask <= 0 or _ask <= _bid or _entry_atr <= 0):
-            log.warning(f"[{tf}] Skipping entry — invalid live quote")
-            self._write_state("WAITING", acc_info, decision, pos,
-                              extra=self._guardian_extra(gs))
-            return
-        if _spread > _entry_atr * MAX_SPREAD_ATR:
-            log.info(
-                f"[{tf}] Skipping entry — spread {_spread:.2f} exceeds "
-                f"{MAX_SPREAD_ATR:.2f} ATR ({_entry_atr * MAX_SPREAD_ATR:.2f})"
-            )
-            self._write_state("WAITING", acc_info, decision, pos,
-                              extra=self._guardian_extra(gs))
-            return
-        _drift = abs(_market_entry - _signal_close)
-        if _drift > _entry_atr * MAX_ENTRY_DRIFT_ATR:
-            log.info(
-                f"[{tf}] Skipping entry — live price drift {_drift:.2f} exceeds "
-                f"{MAX_ENTRY_DRIFT_ATR:.2f} ATR ({_entry_atr * MAX_ENTRY_DRIFT_ATR:.2f})"
-            )
+        _quote_ok, _quote_reason, _market_entry = validate_entry_quote(
+            decision.direction, _bid, _ask, _signal_close, _entry_atr,
+            MAX_SPREAD_ATR, MAX_ENTRY_DRIFT_ATR,
+        )
+        if not _quote_ok:
+            log.info(f"[{tf}] Skipping entry — {_quote_reason}")
             self._write_state("WAITING", acc_info, decision, pos,
                               extra=self._guardian_extra(gs))
             return
