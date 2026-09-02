@@ -74,6 +74,18 @@ services:
       # Option 4: old BOS/CHoCH events cannot authorize live entries.
       - key: STRUCTURE_MAX_AGE_BARS
         value: "24"
+      # Flexible advanced entry mode: keep safety/risk controls while avoiding
+      # hard rejection of uncertain MTF, stale-trigger, spread, and drift cases.
+      - key: STRICT_ENTRY_MODE
+        value: "false"
+      - key: MTF_REQUIRE_ALIGNMENT
+        value: "false"
+      - key: ENTRY_TRIGGER_MAX_AGE_BARS
+        value: "4"
+      - key: MAX_ENTRY_DRIFT_ATR
+        value: "0.50"
+      - key: MAX_SPREAD_ATR
+        value: "0.50"
       - key: RISK_PERCENT
         value: "1.0"
       - key: MAX_OPEN_TRADES
