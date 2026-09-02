@@ -27,19 +27,23 @@ def _bounded_env_float(name: str, default: float, lo: float, hi: float) -> float
 
 # Initial SL envelope.  These remain Render-configurable using the existing
 # names so deployment settings stay backward compatible.
-ATR_BUFFER_MULT = _bounded_env_float("SL_ATR_BUFFER_MULT", 0.25, 0.10, 1.00)
-MIN_SL_ATR_MULT = _bounded_env_float("SL_MIN_ATR_MULT", 0.90, 0.50, 2.50)
-MAX_SL_ATR_MULT = _bounded_env_float("SL_MAX_ATR_MULT", 2.25, 1.25, 4.00)
+# Tight, structure-first envelope for M1/M5 scalping. A distant historical
+# level is rejected instead of creating an oversized stop.
+ATR_BUFFER_MULT = _bounded_env_float("SL_ATR_BUFFER_MULT", 0.15, 0.10, 0.75)
+MIN_SL_ATR_MULT = _bounded_env_float("SL_MIN_ATR_MULT", 0.55, 0.50, 2.50)
+MAX_SL_ATR_MULT = _bounded_env_float("SL_MAX_ATR_MULT", 1.50, 1.00, 4.00)
 if MIN_SL_ATR_MULT > MAX_SL_ATR_MULT:
     raise ValueError("SL_MIN_ATR_MULT cannot exceed SL_MAX_ATR_MULT")
 
 # Optional advanced sizing knobs.  They have safe defaults and do not require
 # any Render environment change.
-SPREAD_BUFFER_MULT = _bounded_env_float("SL_SPREAD_BUFFER_MULT", 2.50, 0.50, 6.00)
-FIXED_TP_RR = _bounded_env_float("TP_RR", 2.50, 1.50, 6.00)
-TP_MIN_RR = _bounded_env_float("TP_MIN_RR", 1.50, 1.00, 4.00)
-TP_MAX_RR = _bounded_env_float("TP_MAX_RR", 4.00, 1.50, 8.00)
-TP_APPROACH_ATR_MULT = _bounded_env_float("TP_APPROACH_ATR_MULT", 0.25, 0.00, 1.00)
+SPREAD_BUFFER_MULT = _bounded_env_float("SL_SPREAD_BUFFER_MULT", 1.50, 0.50, 6.00)
+# Short, reachable scalp targets. Structure is preferred; these bounds prevent
+# a distant level from turning into a long-duration swing target.
+FIXED_TP_RR = _bounded_env_float("TP_RR", 1.50, 0.80, 6.00)
+TP_MIN_RR = _bounded_env_float("TP_MIN_RR", 1.20, 0.80, 4.00)
+TP_MAX_RR = _bounded_env_float("TP_MAX_RR", 2.00, 1.00, 8.00)
+TP_APPROACH_ATR_MULT = _bounded_env_float("TP_APPROACH_ATR_MULT", 0.15, 0.00, 1.00)
 if TP_MIN_RR > TP_MAX_RR:
     raise ValueError("TP_MIN_RR cannot exceed TP_MAX_RR")
 
@@ -64,6 +68,9 @@ class CapitalInput:
     # Optional live context. Existing callers need not provide these.
     atr_mean: Optional[float] = None
     spread: float = 0.0
+    # Latest confirmed local pivots; preferred over distant BOS levels for scalps.
+    micro_swing_high: Optional[float] = None
+    micro_swing_low: Optional[float] = None
 
 
 @dataclass
@@ -112,13 +119,15 @@ def _select_sl_level(direction: str, entry: float, inp: CapitalInput) -> Optiona
     if direction == "BUY":
         candidates = [
             value for value in (
-                inp.order_block_bottom, inp.swing_low, inp.support_level,
+                inp.micro_swing_low, inp.order_block_bottom, inp.swing_low,
+                inp.support_level,
             ) if value is not None and isfinite(value) and value < entry
         ]
         return max(candidates) if candidates else None
     candidates = [
         value for value in (
-            inp.order_block_top, inp.swing_high, inp.resistance_level,
+            inp.micro_swing_high, inp.order_block_top, inp.swing_high,
+            inp.resistance_level,
         ) if value is not None and isfinite(value) and value > entry
     ]
     return min(candidates) if candidates else None
@@ -128,13 +137,15 @@ def _select_tp_level(direction: str, entry: float, inp: CapitalInput) -> Optiona
     if direction == "BUY":
         candidates = [
             value for value in (
-                inp.order_block_top, inp.swing_high, inp.resistance_level,
+                inp.micro_swing_high, inp.order_block_top, inp.swing_high,
+                inp.resistance_level,
             ) if value is not None and isfinite(value) and value > entry
         ]
         return min(candidates) if candidates else None
     candidates = [
         value for value in (
-            inp.order_block_bottom, inp.swing_low, inp.support_level,
+            inp.micro_swing_low, inp.order_block_bottom, inp.swing_low,
+            inp.support_level,
         ) if value is not None and isfinite(value) and value < entry
     ]
     return max(candidates) if candidates else None
@@ -152,7 +163,7 @@ def _calc_smart_sl(direction: str, entry: float, atr: float, inp: CapitalInput) 
         minimum_distance,
         safe_atr * _clamp(
             MAX_SL_ATR_MULT - 0.50 + max(volatility_ratio - 1.0, 0.0) * 0.50,
-            2.0,
+            MIN_SL_ATR_MULT,
             MAX_SL_ATR_MULT,
         ),
     )
