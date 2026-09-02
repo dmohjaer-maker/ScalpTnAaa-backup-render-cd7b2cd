@@ -941,13 +941,25 @@ class GoldScalperLive:
             self._write_state("WAITING", acc_info, decision, pos,
                                extra=self._guardian_extra(gs))
             return
-        if _confirm_positions:
+        # Re-check the cap, but do not treat every existing position as a
+        # duplicate: up to MAX_OPEN_TRADES independent scalp positions are
+        # intentional. Only a newly appeared position while the earlier scan
+        # was flat is treated as a bridge race and blocks this entry.
+        if len(_confirm_positions) >= MAX_OPEN_TRADES:
+            log.info(
+                f"Pre-order safety re-check reached max positions "
+                f"({MAX_OPEN_TRADES}) — aborting entry"
+            )
+            _confirm_pos = mt5_pos_to_dict(_confirm_positions[0])
+            self._write_state("HOLDING", acc_info, decision, _confirm_pos,
+                               extra=self._guardian_extra(gs))
+            return
+        if not raw_positions and _confirm_positions:
             _confirm_pos = mt5_pos_to_dict(_confirm_positions[0])
             log.warning(
                 f"Pre-order safety re-check found position "
                 f"{_confirm_pos.get('id')} that was missing from the earlier "
-                f"scan this bar (likely a transient mt5rest reporting glitch) "
-                f"— aborting this entry to avoid stacking a duplicate position."
+                f"flat scan — aborting entry to avoid a bridge-race duplicate."
             )
             self._write_state("HOLDING", acc_info, decision, _confirm_pos,
                                extra=self._guardian_extra(gs))
