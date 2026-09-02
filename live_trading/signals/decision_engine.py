@@ -31,6 +31,32 @@ from live_trading.config import (
 CONF_MARGINAL_RR = 1.3
 
 
+def _recent_micro_levels(candles: List[OHLCV], lookback: int = 12) -> tuple[Optional[float], Optional[float]]:
+    """Return the latest confirmed short-term swing high/low.
+
+    Two candles on each side confirm a pivot. The fallback uses only the last
+    six completed candles, so a stale historical swing cannot widen a scalp.
+    """
+    if len(candles) < 5:
+        return None, None
+    last = len(candles) - 1
+    start = max(2, last - lookback)
+    end = last - 2
+    highs: List[float] = []
+    lows: List[float] = []
+    for i in range(start, end + 1):
+        window = candles[i - 2:i + 3]
+        if candles[i].high >= max(c.high for c in window):
+            highs.append(candles[i].high)
+        if candles[i].low <= min(c.low for c in window):
+            lows.append(candles[i].low)
+    if not highs:
+        highs = [c.high for c in candles[max(0, last - 6):last]]
+    if not lows:
+        lows = [c.low for c in candles[max(0, last - 6):last]]
+    return (highs[-1] if highs else None, lows[-1] if lows else None)
+
+
 @dataclass
 class DecisionResult:
     allowed:         bool
@@ -255,6 +281,7 @@ def run_decision_engine(
     latest_ob = aligned_obs[-1] if aligned_obs else None
 
     entry = last_candle.close
+    micro_high, micro_low = _recent_micro_levels(candles)
 
     # H-1 FIX: use most-recent directionally-valid BOS price as the SL anchor,
     # not the global max/min across all time.
@@ -282,6 +309,9 @@ def run_decision_engine(
         swing_low=sell_bos_below[-1]  if sell_bos_below else None,
         support_level=eq_support,
         resistance_level=eq_resistance,
+        atr_mean=regime.atr_mean,
+        micro_swing_high=micro_high,
+        micro_swing_low=micro_low,
     )
     trade_params = calc_trade_parameters(cap_input)
 
