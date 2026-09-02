@@ -7,11 +7,11 @@ The live loop uses this bias as an additional trade gate:
 
   • Only BUY entries allowed when HTF bias is BUY.
   • Only SELL entries allowed when HTF bias is SELL.
-  • NEUTRAL bias → no filter applied (both directions pass through).
+  • NEUTRAL bias → the live loop treats it as no-trade by default.
 
 Design principles:
-  • Zero risk: any fetch/analysis error → NEUTRAL → trade is NOT blocked.
-    MTF failure can never stop a valid M5 trade; it only ever blocks bad ones.
+  • Fail-closed live execution: fetch/analysis error → NEUTRAL → no trade
+    in the live loop when MTF_REQUIRE_ALIGNMENT is enabled.
   • Additive: zero changes to any existing signal engine or decision logic.
     This module is a pure add-on — it imports from the existing engines but
     never modifies them.
@@ -21,7 +21,8 @@ Design principles:
     without the EMA anchor).
   • Conflict suppression: if Trend and SMC actively disagree, bias = NEUTRAL.
     A conflicted HTF means the market is transitioning — we do not filter.
-  • Configurable: MTF_ENABLED / MTF_TIMEFRAME / MTF_CANDLE_WINDOW env vars.
+  • Configurable: MTF_ENABLED / MTF_REQUIRE_ALIGNMENT / MTF_TIMEFRAME /
+    MTF_CANDLE_WINDOW env vars.
   • Transparent: all reasoning is recorded in MtfBias.reasoning for logging
     and panel display.
 
@@ -54,8 +55,8 @@ class MtfBias:
     HTF directional bias produced by compute_mtf_bias().
 
     direction : BUY | SELL | NEUTRAL
-        The bias to apply.  NEUTRAL means "no filter" — both M5 directions
-        are allowed.  Never treat NEUTRAL as bearish.
+        The bias to apply.  NEUTRAL means "no directional context".  The
+        live loop can treat it as no-trade; never treat it as bearish.
 
     trend     : HTF EMA trend string (BULLISH / BEARISH / NEUTRAL).
     smc_signal: HTF SMC signal       (BUY / SELL / NEUTRAL).
@@ -212,7 +213,8 @@ def mtf_allows_trade(
     Parameters
     ----------
     bias          : MtfBias | None
-        The result of compute_mtf_bias().  None is treated as NEUTRAL.
+        The result of compute_mtf_bias().  None is treated as NEUTRAL by this
+        pure helper; the live loop may fail closed before calling it.
     m5_direction  : str
         The M5 decision engine's proposed direction: "BUY", "SELL",
         or "NEUTRAL".
@@ -237,13 +239,9 @@ def mtf_allows_trade(
     if m5_direction == bias.direction:
         return True, ""
 
-    # Only block when the opposing HTF bias is STRONG.
-    # A MODERATE or WEAK opposing bias means the HTF is transitioning or
-    # uncertain — blocking in that case eliminates valid M5 setups.
-    # A STRONG opposing bias means HTF trend is clearly against the trade.
-    if bias.strength != "STRONG":
-        return True, ""   # MODERATE / WEAK opposing → pass through
-
+    # Any confirmed directional HTF bias is a hard veto for the opposite
+    # direction. Passing counter-trend trades through on MODERATE bias made
+    # the higher-timeframe filter informational instead of protective.
     reason = (
         f"MTF BLOCK: M5 wants {m5_direction} but HTF is STRONGLY {bias.direction} "
         f"[trend={bias.trend}, SMC={bias.smc_signal}, "
