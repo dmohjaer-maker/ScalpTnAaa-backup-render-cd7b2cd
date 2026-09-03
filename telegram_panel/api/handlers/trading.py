@@ -6,10 +6,11 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler
 from .base import BaseHandler
-from ..keyboards.inline import Keyboards
+from ..keyboards.inline import Keyboards, panel_button
 from ..formatters.messages import MessageFormatter
 
 logger = logging.getLogger(__name__)
+InlineKeyboardButton = panel_button
 
 # States for entering values
 ASK_LOTS, ASK_PRICE, ASK_TRAIL_DIST = range(3)
@@ -181,7 +182,7 @@ class TradingHandler(BaseHandler):
         ok, _ = await self._auth.check_permission(update, "can_manage_trades")
         if not ok:
             return
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        from telegram import InlineKeyboardMarkup
         positions = await self._trades.get_open_positions()
         pos = next((p for p in positions if p.ticket == ticket), None)
         if not pos:
@@ -190,11 +191,11 @@ class TradingHandler(BaseHandler):
         lots = pos.volume
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"25%  ({round(lots*0.25,2):.2f}L)", callback_data=f"trading:partial_exec:{ticket}:25"),
-                InlineKeyboardButton(f"50%  ({round(lots*0.50,2):.2f}L)", callback_data=f"trading:partial_exec:{ticket}:50"),
+                InlineKeyboardButton(f"🟦 25%  ({round(lots*0.25,2):.2f}L)", callback_data=f"trading:partial_exec:{ticket}:25"),
+                InlineKeyboardButton(f"🟦 50%  ({round(lots*0.50,2):.2f}L)", callback_data=f"trading:partial_exec:{ticket}:50"),
             ],
-            [InlineKeyboardButton(f"75%  ({round(lots*0.75,2):.2f}L)", callback_data=f"trading:partial_exec:{ticket}:75")],
-            [InlineKeyboardButton("← Back", callback_data=f"trading:position_detail:{ticket}")],
+            [InlineKeyboardButton(f"🟦 75%  ({round(lots*0.75,2):.2f}L)", callback_data=f"trading:partial_exec:{ticket}:75")],
+            [InlineKeyboardButton("↩️ Back to Position", callback_data=f"trading:position_detail:{ticket}")],
         ])
         await self.edit_or_reply(
             update, context,
@@ -235,7 +236,7 @@ class TradingHandler(BaseHandler):
         ok, _ = await self._auth.check_permission(update, "can_manage_trades")
         if not ok:
             return
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        from telegram import InlineKeyboardMarkup
         positions = await self._trades.get_open_positions()
         pos = next((p for p in positions if p.ticket == ticket), None)
         if not pos:
@@ -244,16 +245,16 @@ class TradingHandler(BaseHandler):
         sl_text = f"{pos.stop_loss:.2f}" if pos.stop_loss else "None"
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("−50 pts", callback_data=f"trading:sl_exec:{ticket}:-50"),
-                InlineKeyboardButton("−20 pts", callback_data=f"trading:sl_exec:{ticket}:-20"),
-                InlineKeyboardButton("−10 pts", callback_data=f"trading:sl_exec:{ticket}:-10"),
+                InlineKeyboardButton("🔻 −50 pts", callback_data=f"trading:sl_exec:{ticket}:-50"),
+                InlineKeyboardButton("🔻 −20 pts", callback_data=f"trading:sl_exec:{ticket}:-20"),
+                InlineKeyboardButton("🔻 −10 pts", callback_data=f"trading:sl_exec:{ticket}:-10"),
             ],
             [
-                InlineKeyboardButton("+10 pts", callback_data=f"trading:sl_exec:{ticket}:10"),
-                InlineKeyboardButton("+20 pts", callback_data=f"trading:sl_exec:{ticket}:20"),
-                InlineKeyboardButton("+50 pts", callback_data=f"trading:sl_exec:{ticket}:50"),
+                InlineKeyboardButton("🔺 +10 pts", callback_data=f"trading:sl_exec:{ticket}:10"),
+                InlineKeyboardButton("🔺 +20 pts", callback_data=f"trading:sl_exec:{ticket}:20"),
+                InlineKeyboardButton("🔺 +50 pts", callback_data=f"trading:sl_exec:{ticket}:50"),
             ],
-            [InlineKeyboardButton("← Back", callback_data=f"trading:position_detail:{ticket}")],
+            [InlineKeyboardButton("↩️ Back to Position", callback_data=f"trading:position_detail:{ticket}")],
         ])
         await self.edit_or_reply(
             update, context,
@@ -295,7 +296,7 @@ class TradingHandler(BaseHandler):
         ok, _ = await self._auth.check_permission(update, "can_manage_trades")
         if not ok:
             return
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        from telegram import InlineKeyboardMarkup
         positions = await self._trades.get_open_positions()
         pos = next((p for p in positions if p.ticket == ticket), None)
         if not pos:
@@ -304,16 +305,16 @@ class TradingHandler(BaseHandler):
         tp_text = f"{pos.take_profit:.2f}" if pos.take_profit else "None"
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("−50 pts", callback_data=f"trading:tp_exec:{ticket}:-50"),
-                InlineKeyboardButton("−20 pts", callback_data=f"trading:tp_exec:{ticket}:-20"),
-                InlineKeyboardButton("−10 pts", callback_data=f"trading:tp_exec:{ticket}:-10"),
+                InlineKeyboardButton("🔻 −50 pts", callback_data=f"trading:tp_exec:{ticket}:-50"),
+                InlineKeyboardButton("🔻 −20 pts", callback_data=f"trading:tp_exec:{ticket}:-20"),
+                InlineKeyboardButton("🔻 −10 pts", callback_data=f"trading:tp_exec:{ticket}:-10"),
             ],
             [
-                InlineKeyboardButton("+10 pts", callback_data=f"trading:tp_exec:{ticket}:10"),
-                InlineKeyboardButton("+20 pts", callback_data=f"trading:tp_exec:{ticket}:20"),
-                InlineKeyboardButton("+50 pts", callback_data=f"trading:tp_exec:{ticket}:50"),
+                InlineKeyboardButton("🔺 +10 pts", callback_data=f"trading:tp_exec:{ticket}:10"),
+                InlineKeyboardButton("🔺 +20 pts", callback_data=f"trading:tp_exec:{ticket}:20"),
+                InlineKeyboardButton("🔺 +50 pts", callback_data=f"trading:tp_exec:{ticket}:50"),
             ],
-            [InlineKeyboardButton("← Back", callback_data=f"trading:position_detail:{ticket}")],
+            [InlineKeyboardButton("↩️ Back to Position", callback_data=f"trading:position_detail:{ticket}")],
         ])
         await self.edit_or_reply(
             update, context,
@@ -355,18 +356,18 @@ class TradingHandler(BaseHandler):
         ok, _ = await self._auth.check_permission(update, "can_manage_trades")
         if not ok:
             return
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        from telegram import InlineKeyboardMarkup
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("30 pts",  callback_data=f"trading:trail_exec:{ticket}:30"),
-                InlineKeyboardButton("50 pts",  callback_data=f"trading:trail_exec:{ticket}:50"),
-                InlineKeyboardButton("80 pts",  callback_data=f"trading:trail_exec:{ticket}:80"),
+                InlineKeyboardButton("📐 30 pts",  callback_data=f"trading:trail_exec:{ticket}:30"),
+                InlineKeyboardButton("📐 50 pts",  callback_data=f"trading:trail_exec:{ticket}:50"),
+                InlineKeyboardButton("📐 80 pts",  callback_data=f"trading:trail_exec:{ticket}:80"),
             ],
             [
-                InlineKeyboardButton("100 pts", callback_data=f"trading:trail_exec:{ticket}:100"),
-                InlineKeyboardButton("150 pts", callback_data=f"trading:trail_exec:{ticket}:150"),
+                InlineKeyboardButton("📐 100 pts", callback_data=f"trading:trail_exec:{ticket}:100"),
+                InlineKeyboardButton("📐 150 pts", callback_data=f"trading:trail_exec:{ticket}:150"),
             ],
-            [InlineKeyboardButton("← Back", callback_data=f"trading:position_detail:{ticket}")],
+            [InlineKeyboardButton("↩️ Back to Position", callback_data=f"trading:position_detail:{ticket}")],
         ])
         await self.edit_or_reply(
             update, context,
@@ -406,23 +407,23 @@ class TradingHandler(BaseHandler):
         if not ok:
             return
         from ..formatters.messages import MessageFormatter
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        from telegram import InlineKeyboardMarkup
         try:
             trades = await self._trades.get_recent_trades(limit)
         except Exception as exc:
             await self.edit_or_reply(
                 update, context,
                 MessageFormatter.error(f"Could not fetch trade history: {exc}"),
-                InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data="nav:trading")]]),
+                InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back to Trading", callback_data="nav:trading")]]),
             )
             return
         text = MessageFormatter.trade_history(trades)
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("🔄 Refresh",  callback_data="trading:history"),
-                InlineKeyboardButton("📋 Last 50",  callback_data="trading:history:50"),
+                InlineKeyboardButton("🔄 Refresh History",  callback_data="trading:history"),
+                InlineKeyboardButton("📋 Show Last 50",  callback_data="trading:history:50"),
             ],
-            [InlineKeyboardButton("← Back", callback_data="nav:trading")],
+            [InlineKeyboardButton("↩️ Back to Trading", callback_data="nav:trading")],
         ])
         await self.edit_or_reply(update, context, text, kb)
         if update.callback_query:

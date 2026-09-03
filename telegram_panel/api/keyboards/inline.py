@@ -9,6 +9,69 @@ from ...models.account import Account
 from ...models.trade import Position, PendingOrder
 
 
+_TelegramInlineKeyboardButton = InlineKeyboardButton
+
+
+def _button_style(text: str, callback_data: str | None = None) -> str:
+    """Map panel actions to Telegram's supported button color styles."""
+    action = f"{text} {callback_data or ''}".casefold()
+
+    if any(
+        word in action
+        for word in (
+            "emergency",
+            "safe stop",
+            "shutdown",
+            "delete",
+            "close_loss",
+            "all_off",
+            "disable",
+            "block",
+            "cancel",
+            "❌",
+            "🚨",
+        )
+    ):
+        return "danger"
+
+    if any(
+        word in action
+        for word in (
+            "start",
+            "resume",
+            "enable",
+            "confirm",
+            "close_profit",
+            "close_buy",
+            "all_on",
+            "reconnect",
+            "test connection",
+            "✅",
+            "▶️",
+            "🟢",
+        )
+    ):
+        return "success"
+
+    return "primary"
+
+
+def panel_button(
+    text: str,
+    callback_data: str | None = None,
+    *,
+    style: str | None = None,
+    **kwargs,
+) -> InlineKeyboardButton:
+    """Create a Telegram button with a safe, consistent visual style."""
+    return _TelegramInlineKeyboardButton(
+        text=text,
+        callback_data=callback_data,
+        style=style or _button_style(text, callback_data),
+        **kwargs,
+    )
+
+
 class Keyboards:
     """
     Factory for all InlineKeyboardMarkup layouts.
@@ -21,27 +84,27 @@ class Keyboards:
     def main_menu() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"{ICONS['dashboard']} Dashboard", callback_data="nav:dashboard"),
-                InlineKeyboardButton(f"{ICONS['account']} Accounts", callback_data="nav:accounts"),
+                InlineKeyboardButton("📊 Dashboard", callback_data="nav:dashboard"),
+                InlineKeyboardButton("💼 Accounts", callback_data="nav:accounts"),
             ],
             [
-                InlineKeyboardButton(f"{ICONS['trading']} Trading", callback_data="nav:trading"),
-                InlineKeyboardButton(f"{ICONS['risk']} Risk", callback_data="nav:risk"),
+                InlineKeyboardButton("💱 Trading", callback_data="nav:trading"),
+                InlineKeyboardButton("🛡️ Risk Control", callback_data="nav:risk"),
             ],
             [
-                InlineKeyboardButton(f"{ICONS['strategy']} Strategy", callback_data="nav:strategy"),
-                InlineKeyboardButton(f"{ICONS['news']} News", callback_data="nav:news"),
+                InlineKeyboardButton("🧠 Strategy", callback_data="nav:strategy"),
+                InlineKeyboardButton("📰 News", callback_data="nav:news"),
             ],
             [
-                InlineKeyboardButton(f"{ICONS['reports']} Reports", callback_data="nav:reports"),
-                InlineKeyboardButton(f"{ICONS['notifications']} Notify", callback_data="nav:notifications"),
+                InlineKeyboardButton("📈 Reports", callback_data="nav:reports"),
+                InlineKeyboardButton("🔔 Notifications", callback_data="nav:notifications"),
             ],
             [
-                InlineKeyboardButton(f"{ICONS['settings']} Settings", callback_data="nav:settings"),
-                InlineKeyboardButton(f"{ICONS['system']} System", callback_data="nav:system"),
+                InlineKeyboardButton("⚙️ Settings", callback_data="nav:settings"),
+                InlineKeyboardButton("🖥️ System", callback_data="nav:system"),
             ],
             [
-                InlineKeyboardButton(f"{ICONS['refresh']} Refresh", callback_data="nav:refresh_home"),
+                InlineKeyboardButton("🔄 Refresh Panel", callback_data="nav:refresh_home"),
             ],
         ])
 
@@ -51,16 +114,16 @@ class Keyboards:
     def dashboard() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"{ICONS['refresh']} Refresh", callback_data="dashboard:refresh"),
-                InlineKeyboardButton(f"{ICONS['play']} Start", callback_data="robot:start"),
-                InlineKeyboardButton(f"{ICONS['pause']} Pause", callback_data="robot:pause"),
+                InlineKeyboardButton("🔄 Refresh Status", callback_data="dashboard:refresh"),
+                InlineKeyboardButton("▶️ Start Bot", callback_data="robot:start"),
+                InlineKeyboardButton("⏸️ Pause Bot", callback_data="robot:pause"),
             ],
             [
-                InlineKeyboardButton(f"{ICONS['stop']} Stop", callback_data="robot:stop_confirm"),
-                InlineKeyboardButton(f"{ICONS['emergency']} Emergency", callback_data="robot:emergency_confirm"),
+                InlineKeyboardButton("⏹️ Safe Stop", callback_data="robot:stop_confirm"),
+                InlineKeyboardButton("🚨 Emergency Stop", callback_data="robot:emergency_confirm"),
             ],
             [
-                InlineKeyboardButton(f"{ICONS['arrow_back']} Back", callback_data="nav:home"),
+                InlineKeyboardButton("↩️ Back to Home", callback_data="nav:home"),
             ],
         ])
 
@@ -70,26 +133,26 @@ class Keyboards:
     def robot_control() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"▶️ Start Robot", callback_data="robot:start"),
-                InlineKeyboardButton(f"⏸️ Pause Robot", callback_data="robot:pause"),
+                InlineKeyboardButton("▶️ Start Bot", callback_data="robot:start"),
+                InlineKeyboardButton("⏸️ Pause Bot", callback_data="robot:pause"),
             ],
             [
-                InlineKeyboardButton(f"▶️ Resume Robot", callback_data="robot:resume"),
-                InlineKeyboardButton(f"⏹️ Safe Stop", callback_data="robot:stop_confirm"),
+                InlineKeyboardButton("▶️ Resume Bot", callback_data="robot:resume"),
+                InlineKeyboardButton("⏹️ Safe Stop", callback_data="robot:stop_confirm"),
             ],
             [
-                InlineKeyboardButton(f"🚨 Emergency Stop", callback_data="robot:emergency_confirm"),
+                InlineKeyboardButton("🚨 Emergency Stop", callback_data="robot:emergency_confirm"),
             ],
             [
-                InlineKeyboardButton(f"🔄 Restart Engine", callback_data="robot:restart_engine_confirm"),
-                InlineKeyboardButton(f"📡 Restart MT5", callback_data="robot:restart_mt5_confirm"),
+                InlineKeyboardButton("🔄 Restart Engine", callback_data="robot:restart_engine_confirm"),
+                InlineKeyboardButton("📡 Restart MT5", callback_data="robot:restart_mt5_confirm"),
             ],
             [
-                InlineKeyboardButton(f"🤖 Restart Telegram", callback_data="robot:restart_telegram_confirm"),
-                InlineKeyboardButton(f"🛑 Safe Shutdown", callback_data="robot:shutdown_confirm"),
+                InlineKeyboardButton("🤖 Restart Telegram", callback_data="robot:restart_telegram_confirm"),
+                InlineKeyboardButton("🛑 Safe Shutdown", callback_data="robot:shutdown_confirm"),
             ],
             [
-                InlineKeyboardButton(f"{ICONS['arrow_back']} Back", callback_data="nav:home"),
+                InlineKeyboardButton("↩️ Back to Home", callback_data="nav:home"),
             ],
         ])
 
@@ -108,11 +171,11 @@ class Keyboards:
     def accounts_menu() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"{ICONS['add']} Add Account", callback_data="accounts:add"),
-                InlineKeyboardButton(f"📋 List Accounts", callback_data="accounts:list"),
+                InlineKeyboardButton("➕ Add Account", callback_data="accounts:add"),
+                InlineKeyboardButton("📋 Account List", callback_data="accounts:list"),
             ],
             [
-                InlineKeyboardButton(f"{ICONS['arrow_back']} Back", callback_data="nav:home"),
+                InlineKeyboardButton("↩️ Back to Home", callback_data="nav:home"),
             ],
         ])
 
@@ -126,8 +189,8 @@ class Keyboards:
                     callback_data=f"accounts:detail:{acc.id}",
                 )
             ])
-        rows.append([InlineKeyboardButton(f"{ICONS['add']} Add Account", callback_data="accounts:add")])
-        rows.append([InlineKeyboardButton(f"{ICONS['arrow_back']} Back", callback_data="nav:home")])
+        rows.append([InlineKeyboardButton("➕ Add Account", callback_data="accounts:add")])
+        rows.append([InlineKeyboardButton("↩️ Back to Home", callback_data="nav:home")])
         return InlineKeyboardMarkup(rows)
 
     @staticmethod
@@ -141,7 +204,7 @@ class Keyboards:
                     callback_data=f"accounts:{status_action}:{account.id}",
                 ),
                 InlineKeyboardButton(
-                    f"⭐ Switch Active",
+                    f"⭐ Set Active",
                     callback_data=f"accounts:switch:{account.id}",
                 ),
             ],
@@ -157,12 +220,12 @@ class Keyboards:
             ],
             [
                 InlineKeyboardButton(
-                    f"{ICONS['trash']} Delete",
+                    f"🗑️ Delete Account",
                     callback_data=f"accounts:delete_confirm:{account.id}",
                 ),
             ],
             [
-                InlineKeyboardButton(f"{ICONS['arrow_back']} Back", callback_data="accounts:list"),
+                InlineKeyboardButton("↩️ Back to Accounts", callback_data="accounts:list"),
             ],
         ])
 
@@ -172,7 +235,7 @@ class Keyboards:
             [InlineKeyboardButton("💰 Real", callback_data="accounts:type:real")],
             [InlineKeyboardButton("🎓 Demo", callback_data="accounts:type:demo")],
             [InlineKeyboardButton("🏆 Prop Firm", callback_data="accounts:type:prop_firm")],
-            [InlineKeyboardButton(f"{ICONS['arrow_back']} Cancel", callback_data="accounts:cancel_add")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="accounts:cancel_add")],
         ])
 
     # ─── Trading ────────────────────────────────────────────────────────────
@@ -181,23 +244,23 @@ class Keyboards:
     def trading_menu() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"📈 Open Positions", callback_data="trading:positions"),
-                InlineKeyboardButton(f"⏳ Pending Orders", callback_data="trading:pending"),
+                InlineKeyboardButton("📈 Open Positions", callback_data="trading:positions"),
+                InlineKeyboardButton("⏳ Pending Orders", callback_data="trading:pending"),
             ],
             [
-                InlineKeyboardButton(f"📋 Trade History", callback_data="trading:history"),
+                InlineKeyboardButton("📜 Trade History", callback_data="trading:history"),
             ],
             [
                 InlineKeyboardButton(f"🔴 Close All", callback_data="trading:close_all_confirm"),
-                InlineKeyboardButton(f"🟢 Close Buy", callback_data="trading:close_buy_confirm"),
-                InlineKeyboardButton(f"🔴 Close Sell", callback_data="trading:close_sell_confirm"),
+                InlineKeyboardButton(f"🟢 Close BUY", callback_data="trading:close_buy_confirm"),
+                InlineKeyboardButton(f"🔴 Close SELL", callback_data="trading:close_sell_confirm"),
             ],
             [
                 InlineKeyboardButton(f"💰 Close Profits", callback_data="trading:close_profit_confirm"),
                 InlineKeyboardButton(f"🔻 Close Losses", callback_data="trading:close_loss_confirm"),
             ],
             [
-                InlineKeyboardButton(f"{ICONS['arrow_back']} Back", callback_data="nav:home"),
+                InlineKeyboardButton("↩️ Back to Home", callback_data="nav:home"),
             ],
         ])
 
@@ -212,14 +275,14 @@ class Keyboards:
                     callback_data=f"trading:position_detail:{pos.ticket}",
                 )
             ])
-        rows.append([InlineKeyboardButton(f"{ICONS['arrow_back']} Back", callback_data="trading:menu")])
+        rows.append([InlineKeyboardButton("↩️ Back to Trading", callback_data="trading:menu")])
         return InlineKeyboardMarkup(rows)
 
     @staticmethod
     def position_detail(ticket: int) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"❌ Close", callback_data=f"trading:close_confirm:{ticket}"),
+                InlineKeyboardButton(f"❌ Close Position", callback_data=f"trading:close_confirm:{ticket}"),
                 InlineKeyboardButton(f"🔄 Partial Close", callback_data=f"trading:partial_close:{ticket}"),
             ],
             [
@@ -227,11 +290,11 @@ class Keyboards:
                 InlineKeyboardButton(f"🎯 Move TP", callback_data=f"trading:move_tp:{ticket}"),
             ],
             [
-                InlineKeyboardButton(f"⚖️ Break Even", callback_data=f"trading:breakeven:{ticket}"),
-                InlineKeyboardButton(f"📐 Trail Stop", callback_data=f"trading:trail:{ticket}"),
+                InlineKeyboardButton(f"⚖️ Move to Break-Even", callback_data=f"trading:breakeven:{ticket}"),
+                InlineKeyboardButton(f"📐 Trailing Stop", callback_data=f"trading:trail:{ticket}"),
             ],
             [
-                InlineKeyboardButton(f"{ICONS['arrow_back']} Back", callback_data="trading:positions"),
+                InlineKeyboardButton("↩️ Back to Positions", callback_data="trading:positions"),
             ],
         ])
 
@@ -240,30 +303,30 @@ class Keyboards:
     @staticmethod
     def risk_menu() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"📊 View Configuration", callback_data="risk:view")],
+            [InlineKeyboardButton(f"📊 View Risk Configuration", callback_data="risk:view")],
             [
                 InlineKeyboardButton(f"💹 Risk %", callback_data="risk:edit:risk_percent"),
                 InlineKeyboardButton(f"📦 Lot Size", callback_data="risk:edit:lot_size"),
             ],
             [
-                InlineKeyboardButton(f"📉 Daily Loss", callback_data="risk:edit:daily_loss_limit"),
-                InlineKeyboardButton(f"🔢 Max Trades", callback_data="risk:edit:max_concurrent_trades"),
+                InlineKeyboardButton(f"📉 Daily Loss Limit", callback_data="risk:edit:daily_loss_limit"),
+                InlineKeyboardButton(f"🔢 Max Open Trades", callback_data="risk:edit:max_concurrent_trades"),
             ],
             [
                 InlineKeyboardButton(f"📡 Max Spread", callback_data="risk:edit:max_spread_pips"),
-                InlineKeyboardButton(f"📉 Max DD", callback_data="risk:edit:max_drawdown_percent"),
+                InlineKeyboardButton(f"📉 Max Drawdown", callback_data="risk:edit:max_drawdown_percent"),
             ],
             [
-                InlineKeyboardButton(f"⚖️ R:R Ratio", callback_data="risk:edit:rr_ratio"),
-                InlineKeyboardButton(f"🛑 SL Pips", callback_data="risk:edit:default_sl_pips"),
-                InlineKeyboardButton(f"🎯 TP Pips", callback_data="risk:edit:default_tp_pips"),
+                InlineKeyboardButton(f"⚖️ Risk / Reward", callback_data="risk:edit:rr_ratio"),
+                InlineKeyboardButton(f"🛑 Stop Loss", callback_data="risk:edit:default_sl_pips"),
+                InlineKeyboardButton(f"🎯 Take Profit", callback_data="risk:edit:default_tp_pips"),
             ],
             [
-                InlineKeyboardButton(f"⚖️ Auto BE", callback_data="risk:toggle:auto_breakeven"),
-                InlineKeyboardButton(f"📐 Auto Trail", callback_data="risk:toggle:auto_trailing"),
+                InlineKeyboardButton(f"⚖️ Auto Break-Even", callback_data="risk:toggle:auto_breakeven"),
+                InlineKeyboardButton(f"📐 Auto Trailing", callback_data="risk:toggle:auto_trailing"),
             ],
             [
-                InlineKeyboardButton(f"{ICONS['arrow_back']} Back", callback_data="nav:home"),
+                InlineKeyboardButton("↩️ Back to Home", callback_data="nav:home"),
             ],
         ])
 
@@ -424,3 +487,8 @@ class Keyboards:
                 InlineKeyboardButton("❌ Cancel", callback_data=cancel_data),
             ],
         ])
+
+
+# Keep the existing keyboard layouts readable while routing every button
+# through the shared style/color policy above.
+InlineKeyboardButton = panel_button

@@ -5,15 +5,15 @@
 # Install:
 #   pip install -r telegram_panel/requirements.txt
 #
-# Audit date: 2026-07-19 — pinned from production-verified versions.
+# Audit date: 2026-09-03 — pinned for Telegram button styles.
 # Review and re-pin at minimum every 90 days.
 
 # ── Telegram Bot Framework ─────────────────────────────────────────────────────
 # job-queue extra requires APScheduler — pinned separately below.
-python-telegram-bot[job-queue]==21.6
+python-telegram-bot[job-queue]==22.7
 
 # ── Job Scheduler — required by python-telegram-bot[job-queue] ───────────────
-# python-telegram-bot 21.6 requires APScheduler>=3.10.4,<3.11
+# python-telegram-bot 22.7 requires APScheduler>=3.10.4,<3.11
 APScheduler==3.10.4
 
 # ── Async SQLite ───────────────────────────────────────────────────────────────
