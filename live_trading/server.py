@@ -288,6 +288,12 @@ def _build_snapshot_from_state(state: dict, signal_snap: dict | None = None) -> 
             ),
         },
     }
+    # Surface the latest external market-filter results written by the live
+    # loop so operators can verify News/DXY are active from /snapshot and
+    # /status instead of relying only on process logs.
+    for filter_name in ("news_filter", "dxy_filter"):
+        if filter_name in state:
+            result[filter_name] = state[filter_name]
     # Merge per-bar signal fields from the snapshot key when available
     if signal_snap:
         for k in ("price", "regime", "adx", "atr", "smc_signal", "trend",
