@@ -35,8 +35,8 @@ class QualityFilterResult:
     is_fake_breakout: bool
     is_weak_volume: bool
     is_low_momentum: bool
-    # Retained for state/panel compatibility. News is intentionally inactive
-    # on the live entry path.
+    # News blackout status is exposed to the panel and enforced when callers
+    # provide a NewsFilterResult.
     is_news_blocked: bool = False
 
 
@@ -154,10 +154,10 @@ def apply_quality_filter(
     reasons = []
     last_candle = candles[-1]
 
-    # Option 3: News Filter is intentionally not evaluated on the entry path.
-    # Keep these legacy parameters so older callers remain source-compatible;
-    # the values are deliberately ignored. The news module remains available
-    # for non-entry telemetry/UI use.
+    if news_blocked:
+        reasons.append(
+            news_reason or "High-impact USD news blackout is active"
+        )
 
     # C-2 FIX: respect BLOCKED sessions — do not override to MODERATE.
     # BLOCKED hours represent illiquid periods where slippage and false
@@ -203,4 +203,5 @@ def apply_quality_filter(
         is_fake_breakout=False,
         is_weak_volume=weak_vol,
         is_low_momentum=low_mom,
+        is_news_blocked=news_blocked,
     )
