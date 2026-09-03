@@ -105,9 +105,9 @@ services:
       - key: SL_SPREAD_BUFFER_MULT
         value: "1.50"
       - key: TP_RR
-        value: "1.50"
+        value: "2.00"
       - key: TP_MIN_RR
-        value: "1.20"
+        value: "2.00"
       - key: TP_MAX_RR
         value: "2.00"
       - key: TP_APPROACH_ATR_MULT
