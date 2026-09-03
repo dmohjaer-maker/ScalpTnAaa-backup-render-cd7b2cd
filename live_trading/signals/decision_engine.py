@@ -19,7 +19,9 @@ from live_trading.signals.confidence_engine import ConfidenceResult, ConfidenceC
 from live_trading.signals.quality_filter import QualityFilterResult, apply_quality_filter, get_session_quality
 from live_trading.signals.entry_filter import apply_entry_filter, EntryFilterResult
 from live_trading.signals.divergence_engine import analyze_divergence, DivergenceResult
-from live_trading.risk.capital_manager import CapitalInput, CapitalOutput, calc_trade_parameters
+from live_trading.risk.capital_manager import (
+    CapitalInput, CapitalOutput, REQUIRED_ENTRY_RR, calc_trade_parameters,
+)
 from live_trading.config import (
     CONF_HARD_MIN,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
@@ -372,6 +374,25 @@ def run_decision_engine(
         micro_swing_low=micro_low,
     )
     trade_params = calc_trade_parameters(cap_input)
+
+    # Non-negotiable operator rule: never send a trade below 1:2 R:R, even if
+    # a stale Render env or a future structural-target change allows a lower
+    # ratio inside the capital manager.
+    if trade_params.risk_reward_ratio < REQUIRED_ENTRY_RR:
+        rr_reason = (
+            f"R:R {trade_params.risk_reward_ratio:.2f} < required "
+            f"{REQUIRED_ENTRY_RR:.2f} — entry blocked"
+        )
+        return DecisionResult(
+            allowed=False, direction=candidate,  # type: ignore
+            confidence=conf_result.confidence, components=conf_result.components,
+            grade="REJECTED", regime=regime.regime,
+            regime_label=regime.rules.label, regime_rules=regime.rules,
+            quality_filter=quality, blocked_reasons=[rr_reason],
+            reasoning=conf_result.reasoning + [rr_reason],
+            trade_params=None, smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
+            entry_filter=ef, divergence=divergence, dxy_signal=dxy_signal,
+        )
 
     # Marginal confidence check
     min_conf = regime.rules.min_confidence
