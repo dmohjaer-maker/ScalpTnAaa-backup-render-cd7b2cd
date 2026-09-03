@@ -48,10 +48,11 @@ if MIN_SL_ATR_MULT > MAX_SL_ATR_MULT:
 # Optional advanced sizing knobs.  They have safe defaults and do not require
 # any Render environment change.
 SPREAD_BUFFER_MULT = _bounded_env_float("SL_SPREAD_BUFFER_MULT", 1.50, 0.50, 6.00)
-# Short, reachable scalp targets. Structure is preferred; these bounds prevent
-# a distant level from turning into a long-duration swing target.
-FIXED_TP_RR = _bounded_env_float("TP_RR", 1.50, 0.80, 6.00)
-TP_MIN_RR = _bounded_env_float("TP_MIN_RR", 1.20, 0.80, 4.00)
+# Every accepted entry must target exactly 2R. Structure is still preferred
+# when it produces that ratio; otherwise the fixed 2R target is used.
+REQUIRED_ENTRY_RR = 2.0
+FIXED_TP_RR = _bounded_env_float("TP_RR", REQUIRED_ENTRY_RR, 0.80, 6.00)
+TP_MIN_RR = _bounded_env_float("TP_MIN_RR", REQUIRED_ENTRY_RR, 0.80, 4.00)
 TP_MAX_RR = _bounded_env_float("TP_MAX_RR", 2.00, 1.00, 8.00)
 TP_APPROACH_ATR_MULT = _bounded_env_float("TP_APPROACH_ATR_MULT", 0.15, 0.00, 1.00)
 if TP_MIN_RR > TP_MAX_RR:
