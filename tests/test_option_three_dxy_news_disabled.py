@@ -1,4 +1,4 @@
-"""Option 3: DXY and News Filter must not affect entry decisions."""
+"""Regression tests for the active DXY and News filters."""
 
 from live_trading.signals.confidence_engine import calc_confidence
 from live_trading.signals.gold_engine import OHLCV
@@ -31,7 +31,7 @@ def _candles(count: int = 80) -> list[OHLCV]:
     return candles
 
 
-def test_dxy_signal_does_not_change_confidence_or_components():
+def test_dxy_signal_changes_confidence_and_components():
     candles = _candles()
     smc = analyze_smc_structure(candles)
     wyckoff = analyze_wyckoff(candles)
@@ -48,12 +48,12 @@ def test_dxy_signal_does_not_change_confidence_or_components():
         dxy_signal="BULLISH_DXY",
     )
 
-    assert opposing.confidence == neutral.confidence
-    assert opposing.components.dxy_score == 0.0
-    assert "DXY rising — headwind against gold BUY" not in opposing.reasoning
+    assert opposing.confidence == neutral.confidence - 5.0
+    assert opposing.components.dxy_score == -5.0
+    assert "DXY rising — headwind against gold BUY" in opposing.reasoning
 
 
-def test_news_block_does_not_change_quality_filter_entry_result():
+def test_news_block_rejects_quality_filter_entry():
     candles = _candles()
     without_news = apply_quality_filter(
         candles, "BUY", 80.0, None, adx=30.0, news_blocked=False
@@ -63,6 +63,7 @@ def test_news_block_does_not_change_quality_filter_entry_result():
         news_blocked=True, news_reason="test blackout",
     )
 
-    assert with_news.allowed == without_news.allowed
-    assert with_news.is_news_blocked is False
-    assert "test blackout" not in with_news.blocked_reasons
+    assert without_news.allowed is True
+    assert with_news.allowed is False
+    assert with_news.is_news_blocked is True
+    assert "test blackout" in with_news.blocked_reasons
