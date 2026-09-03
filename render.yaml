@@ -99,9 +99,9 @@ services:
       - key: SL_ATR_BUFFER_MULT
         value: "0.15"
       - key: SL_MIN_ATR_MULT
-        value: "0.55"
+        value: "1.80"
       - key: SL_MAX_ATR_MULT
-        value: "1.50"
+        value: "3.50"
       - key: SL_SPREAD_BUFFER_MULT
         value: "1.50"
       - key: TP_RR

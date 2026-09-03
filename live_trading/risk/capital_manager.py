@@ -25,13 +25,23 @@ def _bounded_env_float(name: str, default: float, lo: float, hi: float) -> float
     return value
 
 
-# Initial SL envelope.  These remain Render-configurable using the existing
-# names so deployment settings stay backward compatible.
-# Tight, structure-first envelope for M1/M5 scalping. A distant historical
-# level is rejected instead of creating an oversized stop.
+# Initial SL envelope. These remain Render-configurable using the existing
+# names so deployment settings stay backward compatible. The effective floor
+# is intentionally hard-clamped: an old Render value cannot recreate the
+# tiny stops that this manager is responsible for preventing.
 ATR_BUFFER_MULT = _bounded_env_float("SL_ATR_BUFFER_MULT", 0.15, 0.10, 0.75)
-MIN_SL_ATR_MULT = _bounded_env_float("SL_MIN_ATR_MULT", 0.55, 0.50, 2.50)
-MAX_SL_ATR_MULT = _bounded_env_float("SL_MAX_ATR_MULT", 1.50, 1.00, 4.00)
+_configured_min_sl_atr_mult = _bounded_env_float(
+    "SL_MIN_ATR_MULT", 1.80, 0.50, 4.00
+)
+_configured_max_sl_atr_mult = _bounded_env_float(
+    "SL_MAX_ATR_MULT", 3.50, 1.00, 6.00
+)
+# 1.80 ATR is the non-negotiable protection floor for XAUUSD scalps. Keeping
+# the environment range backward-compatible lets an existing Render service
+# boot while still making its legacy 0.55 value harmless.
+HARD_MIN_SL_ATR_MULT = 1.80
+MIN_SL_ATR_MULT = max(_configured_min_sl_atr_mult, HARD_MIN_SL_ATR_MULT)
+MAX_SL_ATR_MULT = max(_configured_max_sl_atr_mult, MIN_SL_ATR_MULT)
 if MIN_SL_ATR_MULT > MAX_SL_ATR_MULT:
     raise ValueError("SL_MIN_ATR_MULT cannot exceed SL_MAX_ATR_MULT")
 
@@ -110,8 +120,9 @@ def _dynamic_buffer(atr: float, atr_mean: Optional[float], spread: float) -> tup
     else:
         volatility_factor = _clamp(0.90 + 0.20 * (volatility_ratio - 1.0), 0.70, 0.90)
     atr_buffer = atr * ATR_BUFFER_MULT * volatility_factor
-    spread_buffer = max(spread, 0.0) * SPREAD_BUFFER_MULT
-    minimum_component = max(atr * 0.12, max(spread, 0.0) * 2.0)
+    safe_spread = spread if isfinite(spread) and spread > 0 else 0.0
+    spread_buffer = safe_spread * SPREAD_BUFFER_MULT
+    minimum_component = max(atr * 0.12, safe_spread * 2.0)
     return max(atr_buffer, spread_buffer, minimum_component), volatility_ratio
 
 
@@ -155,15 +166,25 @@ def _calc_smart_sl(direction: str, entry: float, atr: float, inp: CapitalInput) 
     # A failed/zero ATR must never collapse SL onto the entry price.
     safe_atr = atr if isfinite(atr) and atr > 0 else max(entry * 0.001, 0.01)
     buffer, volatility_ratio = _dynamic_buffer(safe_atr, inp.atr_mean, inp.spread)
+    safe_spread = inp.spread if isfinite(inp.spread) and inp.spread > 0 else 0.0
+
+    # In elevated volatility, give the stop progressively more breathing room
+    # while never reducing it below the hard safety floor. This protects the
+    # trade from ordinary XAUUSD wick noise without changing the entry.
+    adaptive_min_multiplier = _clamp(
+        MIN_SL_ATR_MULT + max(volatility_ratio - 1.0, 0.0) * 0.35,
+        MIN_SL_ATR_MULT,
+        MAX_SL_ATR_MULT,
+    )
     minimum_distance = max(
-        safe_atr * MIN_SL_ATR_MULT,
-        max(inp.spread, 0.0) * SPREAD_BUFFER_MULT * 1.5,
+        safe_atr * adaptive_min_multiplier,
+        safe_spread * SPREAD_BUFFER_MULT * 1.5,
     )
     maximum_distance = max(
         minimum_distance,
         safe_atr * _clamp(
-            MAX_SL_ATR_MULT - 0.50 + max(volatility_ratio - 1.0, 0.0) * 0.50,
-            MIN_SL_ATR_MULT,
+            MAX_SL_ATR_MULT + max(volatility_ratio - 1.0, 0.0) * 0.50,
+            adaptive_min_multiplier,
             MAX_SL_ATR_MULT,
         ),
     )
@@ -174,7 +195,9 @@ def _calc_smart_sl(direction: str, entry: float, atr: float, inp: CapitalInput) 
     # Do not pull a stop inside a distant structural invalidation level. If it
     # is beyond the current volatility envelope, use a volatility fallback.
     if level is None or structure_distance > maximum_distance:
-        distance = max(minimum_distance, buffer)
+        # No usable nearby structure: use the upper end of the volatility
+        # envelope rather than falling back to a fragile minimum stop.
+        distance = maximum_distance
     else:
         distance = _clamp(
             max(structure_distance + buffer, minimum_distance),

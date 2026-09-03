@@ -17,8 +17,8 @@ def _input(**overrides):
 def test_initial_sell_stop_clears_normal_m5_noise():
     result = calc_trade_parameters(_input())
 
-    # The old 1.15 ATR floor would have produced about 1.86 USD here, which
-    # matches the live screenshot and is too close for ordinary XAUUSD noise.
+    # The hard 1.80 ATR floor keeps ordinary XAUUSD M5 noise from taking out
+    # a newly opened position.
     assert result.sl_distance_usd >= 1.62 * 1.80
     assert result.stop_loss > result.entry_price
 
@@ -41,7 +41,48 @@ def test_structure_buffer_is_outside_selected_sell_resistance():
         _input(resistance_level=4332.00),
     )
 
-    # Structure-derived distance is resistance-to-entry plus the new 0.50 ATR
-    # buffer, but still obeys the volatility envelope.
-    assert result.stop_loss == 4332.81
-    assert result.sl_distance_usd == 4.20
+    # A valid resistance anchor remains outside the structure, but the
+    # minimum envelope still applies if the structure is too close.
+    assert result.stop_loss > 4332.00
+    assert result.sl_distance_usd >= 1.62 * 1.80
+
+
+def test_nearby_structure_cannot_collapse_stop():
+    result = calc_trade_parameters(
+        _input(
+            entry_price=4402.79,
+            atr=0.40,
+            micro_swing_high=4402.95,
+            spread=0.08,
+        ),
+    )
+
+    assert result.stop_loss > result.entry_price
+    assert result.sl_distance_usd >= round(0.40 * 1.80, 2)
+
+
+def test_buy_stop_has_the_same_floor():
+    result = calc_trade_parameters(
+        _input(
+            direction="BUY",
+            entry_price=4402.31,
+            atr=1.10,
+            micro_swing_low=4402.10,
+        ),
+    )
+
+    assert result.stop_loss < result.entry_price
+    assert result.sl_distance_usd >= round(1.10 * 1.80, 2)
+
+
+def test_high_volatility_expands_floor_without_changing_entry():
+    result = calc_trade_parameters(
+        _input(
+            entry_price=4402.79,
+            atr=2.40,
+            atr_mean=1.20,
+        ),
+    )
+
+    assert result.entry_price == 4402.79
+    assert result.sl_distance_usd >= round(2.40 * 2.15, 2)
