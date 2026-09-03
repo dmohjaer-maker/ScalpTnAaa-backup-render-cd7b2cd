@@ -76,9 +76,12 @@ async def _get_events() -> List[dict]:
     async with _cache_lock:
         if _cache_expires is None or now >= _cache_expires:
             fresh = await _fetch_calendar()
+            # Expire failed/empty fetches too. This preserves the last good
+            # cache while preventing a feed outage from causing a network
+            # request on every trading bar.
+            _cache_expires = now + timedelta(seconds=_CACHE_TTL_S)
             if fresh:  # only overwrite on success
                 _cache_events  = fresh
-                _cache_expires = now + timedelta(seconds=_CACHE_TTL_S)
                 log.info(f"[news_filter] Calendar refreshed — {len(fresh)} events this week")
     return _cache_events
 
