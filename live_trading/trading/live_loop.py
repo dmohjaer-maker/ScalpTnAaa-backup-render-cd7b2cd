@@ -53,6 +53,8 @@ from live_trading.risk.trailing_stop import (
 )
 from live_trading.signals.decision_engine import run_decision_engine, DecisionResult, describe_strategy
 from live_trading.signals.mtf_filter import compute_mtf_bias, mtf_allows_trade, MtfBias
+from live_trading.signals.news_filter import check_news_filter
+from live_trading.signals.dxy_filter import get_dxy_signal
 from live_trading.signals.wyckoff_engine import calibrate_wyckoff, set_calibrated_config
 from live_trading.mt5.connector import (
     connect, disconnect, ensure_connected,
@@ -117,6 +119,8 @@ class GoldScalperLive:
         self._last_entry_direction: str = ""
         self.trade_history: List[dict] = []
         self.last_decision: Optional[DecisionResult] = None
+        self._last_news_filter: Optional[dict] = None
+        self._last_dxy_filter: Optional[dict] = None
 
         # Risk Guardian — initialized after mt5rest bridge connects
         self.guardian = RiskGuardian(
@@ -709,6 +713,36 @@ class GoldScalperLive:
             )
             return
 
+        # External market filters. Both calls are cached by their modules:
+        # news refreshes hourly and DXY refreshes every five minutes.
+        # News is a hard blackout; DXY is passed into the decision engine for
+        # confidence telemetry and opposing-direction veto.
+        news_result, dxy_result = await asyncio.gather(
+            check_news_filter(),
+            get_dxy_signal(),
+        )
+        self._last_news_filter = {
+            "blocked": news_result.blocked,
+            "reason": news_result.reason,
+            "event_name": news_result.event_name,
+            "event_time_utc": news_result.event_time_utc,
+        }
+        self._last_dxy_filter = {
+            "signal": dxy_result.signal,
+            "dxy_close": dxy_result.dxy_close,
+            "ema20": dxy_result.ema20,
+            "ema50": dxy_result.ema50,
+        }
+
+        if news_result.blocked:
+            log.warning(f"📰 NEWS BLACKOUT — no trade this bar: {news_result.reason}")
+            self._write_state(
+                "WAITING",
+                acc_info,
+                extra={"external_filters": self._external_filter_extra()},
+            )
+            return
+
         # 4. Check open positions (live MT5 — prevents duplicate entry on restart)
         # get_open_positions() raises RuntimeError if mt5rest returns an error
         # response.  Treat that as a missing position check — skip trade entry
@@ -755,6 +789,7 @@ class GoldScalperLive:
             risk_percent=RISK_PERCENT,
             min_confirmations=MIN_CONFIRMATIONS,
             use_atr_high_vol=USE_ATR_HIGH_VOL_FILTER,
+            dxy_signal=dxy_result.signal,
             require_price_action=REQUIRE_PRICE_ACTION,
             require_smc_price_action_wyckoff=REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
         )
@@ -971,6 +1006,7 @@ class GoldScalperLive:
             risk_percent=RISK_PERCENT,
             min_confirmations=MIN_CONFIRMATIONS,
             use_atr_high_vol=USE_ATR_HIGH_VOL_FILTER,
+            dxy_signal=dxy_result.signal,
             require_price_action=REQUIRE_PRICE_ACTION,
             require_smc_price_action_wyckoff=REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
             entry_price_override=_market_entry,
@@ -1644,6 +1680,15 @@ class GoldScalperLive:
 
     # ── State writer ──────────────────────────────────────────────────────────
 
+    def _external_filter_extra(self) -> dict:
+        """Return the latest News/DXY results for panel and state telemetry."""
+        extra = {}
+        if self._last_news_filter is not None:
+            extra["news_filter"] = dict(self._last_news_filter)
+        if self._last_dxy_filter is not None:
+            extra["dxy_filter"] = dict(self._last_dxy_filter)
+        return extra
+
     def _write_state(
         self,
         status: str,
@@ -1665,6 +1710,7 @@ class GoldScalperLive:
                 # open position's own staircase progress, not just one.
                 "positions": dict(self._last_trailing_statuses),
             }
+        merged_extra.update(self._external_filter_extra())
         if extra:
             merged_extra.update(extra)
 
