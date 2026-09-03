@@ -22,8 +22,8 @@ class ConfidenceComponents:
     volatility_score: float   # 0–5
     total:            float   # 0–100
     divergence_score: float = 0.0  # 0–10 bonus (RSI/MACD divergence)
-    # Retained for panel/backward-compatible payloads. DXY is intentionally
-    # inactive in entry confidence scoring.
+    # DXY correlation contribution. Kept as a separate component so the panel
+    # can show whether the dollar supported or opposed the gold setup.
     dxy_score:        float = 0.0
 
 
@@ -251,10 +251,10 @@ def calc_confidence(
     vol_s,  vol_r  = _calc_volatility_score(regime, session)
 
     div_s, div_r = _calc_divergence_score(divergence_signal, candidate)
-    # Option 3: DXY must not influence entry confidence in either direction.
-    # Keep the argument for compatibility with existing callers and telemetry,
-    # but deliberately do not evaluate it here.
-    dxy_s, dxy_r = 0.0, []
+    # DXY is an active correlation filter. A hard opposing-direction veto is
+    # applied by the decision engine; this score records the aligned/neutral
+    # contribution for confidence telemetry.
+    dxy_s, dxy_r = _calc_dxy_score(dxy_signal, candidate)
 
     raw_total  = smc_s + tr_s + pa_s + wy_s + liq_s + vol_s + div_s + dxy_s
     total_capped = round(min(100.0, max(0.0, raw_total)), 1)
