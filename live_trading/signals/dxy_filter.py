@@ -135,7 +135,9 @@ async def get_dxy_signal() -> DxyFilterResult:
         log.debug(
             f"[dxy_filter] Only {len(closes)} DXY bars — returning NEUTRAL"
         )
-        return DxyFilterResult("NEUTRAL")
+        _cache_result = DxyFilterResult("NEUTRAL")
+        _cache_expires = now + timedelta(seconds=_CACHE_TTL_S)
+        return _cache_result
 
     ema20 = _ema(closes, 20)
     ema50 = _ema(closes, min(50, len(closes)))
