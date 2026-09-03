@@ -120,7 +120,10 @@ def _candidate_direction(smc: SmcResult) -> str:
     return "NEUTRAL"
 
 
-def _make_neutral(smc, wyckoff, pa, trend, blocked_reasons, reasoning=None) -> DecisionResult:
+def _make_neutral(
+    smc, wyckoff, pa, trend, blocked_reasons, reasoning=None,
+    dxy_signal: str = "NEUTRAL",
+) -> DecisionResult:
     from live_trading.signals.market_regime import REGIME_RULES
     rules = REGIME_RULES["RANGE"]
     return DecisionResult(
@@ -139,6 +142,7 @@ def _make_neutral(smc, wyckoff, pa, trend, blocked_reasons, reasoning=None) -> D
         reasoning=reasoning or [],
         trade_params=None,
         smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
+        dxy_signal=dxy_signal,
     )
 
 
@@ -175,6 +179,21 @@ def run_decision_engine(
     # PA and Wyckoff signals by design, so we lower the bar to 2 in those
     # regimes. Trending regimes keep the stricter operator-configured value.
     regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
+
+    # DXY is an active hard directional veto for gold. The feed fails open to
+    # NEUTRAL, so an outage never blocks trading; only a confirmed opposing
+    # dollar trend blocks the corresponding gold direction.
+    if (
+        (candidate == "BUY" and dxy_signal == "BULLISH_DXY")
+        or (candidate == "SELL" and dxy_signal == "BEARISH_DXY")
+    ):
+        dxy_reason = (
+            f"DXY filter: {dxy_signal} opposes gold {candidate} — entry blocked"
+        )
+        return _make_neutral(
+            smc, wyckoff, pa, trend, [dxy_reason], [dxy_reason],
+            dxy_signal=dxy_signal,
+        )
 
     _RANGE_REGIMES = {"RANGE", "ACCUMULATION", "DISTRIBUTION", "HIGH_VOLATILITY"}
     if _counter_trend:
@@ -242,12 +261,10 @@ def run_decision_engine(
     last_candle  = candles[-1]
     session      = get_session_quality(last_candle.time)
     divergence   = analyze_divergence(candles)
-    # Option 3: DXY is retained as telemetry only and cannot affect entry
-    # confidence or the decision. The confidence engine explicitly ignores
-    # this legacy compatibility argument.
     conf_result  = calc_confidence(
         smc, wyckoff, pa, trend, regime, session, candidate,
         divergence_signal=divergence.signal,
+        dxy_signal=dxy_signal,
     )
 
     if conf_result.confidence < CONF_HARD_MIN:
@@ -263,6 +280,7 @@ def run_decision_engine(
             reasoning=conf_result.reasoning, trade_params=None,
             smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
             entry_filter=ef,
+            dxy_signal=dxy_signal,
         )
         return n
 
