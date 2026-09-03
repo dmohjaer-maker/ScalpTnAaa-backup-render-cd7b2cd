@@ -160,6 +160,14 @@ services:
         value: "M20,M15,M10,5m"
       - key: QUALITY_ADX_MIN
         value: "12"
+      # External market filters: high-impact USD news blackout and DXY
+      # correlation data are evaluated on every bar (with module-level cache).
+      - key: NEWS_BLOCK_BEFORE_MIN
+        value: "15"
+      - key: NEWS_BLOCK_AFTER_MIN
+        value: "30"
+      - key: DXY_CACHE_TTL_S
+        value: "300"
       - key: PYTHON_VERSION
         value: "3.11.0"
       - key: STATE_FILE
