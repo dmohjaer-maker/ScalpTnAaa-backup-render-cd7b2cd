@@ -86,3 +86,10 @@ def test_high_volatility_expands_floor_without_changing_entry():
 
     assert result.entry_price == 4402.79
     assert result.sl_distance_usd >= round(2.40 * 2.15, 2)
+
+
+def test_every_fallback_target_is_exactly_two_r():
+    result = calc_trade_parameters(_input())
+
+    assert result.risk_reward_ratio == 2.0
+    assert result.take_profit < result.entry_price
