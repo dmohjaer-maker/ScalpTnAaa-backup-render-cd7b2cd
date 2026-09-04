@@ -7,7 +7,8 @@ The live loop uses this bias as an additional trade gate:
 
   • Only BUY entries allowed when HTF bias is BUY.
   • Only SELL entries allowed when HTF bias is SELL.
-  • NEUTRAL bias → the live loop treats it as no-trade by default.
+   • NEUTRAL bias → no directional veto by itself; the live loop may require
+     a non-neutral bias in strict alignment mode.
 
 Design principles:
   • Fail-closed live execution: fetch/analysis error → NEUTRAL → no trade
@@ -228,7 +229,8 @@ def mtf_allows_trade(
 
     This function NEVER raises.
     """
-    # Fail-safe: no bias or NEUTRAL bias → always pass through
+    # No directional bias cannot be classified as counter-trend. Strict mode
+    # in the live loop separately decides whether neutral context is no-trade.
     if bias is None or bias.direction == "NEUTRAL":
         return True, ""
 
@@ -239,14 +241,8 @@ def mtf_allows_trade(
     if m5_direction == bias.direction:
         return True, ""
 
-    # Flexible mode allows uncertain counter-trend setups through. A clearly
-    # opposing strong HTF bias remains a meaningful protection against
-    # trading directly into a confirmed higher-timeframe move.
-    if bias.strength != "STRONG":
-        return True, ""
-
     reason = (
-        f"MTF BLOCK: M5 wants {m5_direction} but HTF is STRONGLY {bias.direction} "
+        f"MTF BLOCK: M5 wants {m5_direction} but HTF is {bias.direction} "
         f"[trend={bias.trend}, SMC={bias.smc_signal}, "
         f"regime={bias.regime}, strength={bias.strength}]"
     )

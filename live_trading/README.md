@@ -98,7 +98,7 @@ candles (300 M5 bars)
    ├─► Price Action      → Engulf, Pin Bar, Breakout
    ├─► Wyckoff Engine    → Phase, Spring, Upthrust
    │
-   ├─► Entry Filter      → minimum confirmations (SMC advisory)
+   ├─► Entry Filter      → minimum confirmations + global counter-trend veto
    ├─► Market Regime     → 11 regimes + ADX + rules per regime
    ├─► Confidence Engine → 0–100 score (6 weighted bands)
    ├─► Quality Filter    → Session / ADX / late-entry / volume gate

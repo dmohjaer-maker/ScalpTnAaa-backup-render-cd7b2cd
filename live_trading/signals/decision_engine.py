@@ -22,6 +22,7 @@ from live_trading.signals.confidence_engine import ConfidenceResult, ConfidenceC
 from live_trading.signals.quality_filter import QualityFilterResult, apply_quality_filter, get_session_quality
 from live_trading.signals.entry_filter import apply_entry_filter, EntryFilterResult
 from live_trading.signals.divergence_engine import analyze_divergence, DivergenceResult
+from live_trading.trading.entry_guards import validate_directional_alignment
 from live_trading.risk.capital_manager import (
     CapitalInput, CapitalOutput, REQUIRED_ENTRY_RR, calc_trade_parameters,
 )
@@ -447,9 +448,9 @@ def _candidate_direction(
 ) -> str:
     """Choose direction from non-SMC context first, with SMC as a fallback.
 
-    SMC is advisory now. A neutral or conflicting SMC result must not suppress
-    a setup supported by the local EMA trend and other confirmations. Trend is
-    preferred because it remains the hard anti-counter-trend safety gate.
+    SMC is used as a fallback for candidate selection. Neutral SMC does not
+    suppress a setup supported by the local EMA trend and other confirmations,
+    while the directional alignment guard below vetoes conflicting SMC context.
     """
     if trend is not None:
         if trend.trend == "BULLISH":
@@ -575,6 +576,21 @@ def run_decision_engine(
             smc, wyckoff, pa, trend, [trend_reason], [trend_reason]
         )
 
+    # SMC is a hard directional veto. It remains optional when neutral, but a
+    # confirmed opposing structure or composite signal is never allowed to
+    # authorize a counter-trend entry.
+    _alignment_ok, _alignment_reason = validate_directional_alignment(
+        candidate,
+        local_trend=trend.trend,
+        smc_trend=smc.trend,
+        smc_signal=smc.smc_signal,
+    )
+    if not _alignment_ok:
+        return _make_neutral(
+            smc, wyckoff, pa, trend,
+            [_alignment_reason], [_alignment_reason],
+        )
+
     # Detect regime early — needed to set the adaptive confirmation threshold.
     # RANGE / ACCUMULATION / DISTRIBUTION / HIGH_VOLATILITY markets suppress
     # PA and Wyckoff signals by design, so we lower the bar to 2 in those
@@ -630,7 +646,7 @@ def run_decision_engine(
         ):
             reason = (
                 "Entry filter: strict mode requires Price Action + Wyckoff "
-                "(SMC is advisory) — "
+                "(SMC is optional when neutral) — "
                 f"{votes}  [regime={regime.regime}]"
             )
         elif require_price_action and not ef.price_action:

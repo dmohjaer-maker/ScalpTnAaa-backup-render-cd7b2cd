@@ -171,8 +171,9 @@ CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 
 # ── Risk & Trade Rules ───────────────────────────────────────────────────────
 # Production defaults — override via Render env vars if needed.
-# MIN_CONFIRMATIONS: minimum confirmations that must agree. SMC is advisory;
-# Trend, Price Action, and Wyckoff provide the independent entry confirmations.
+# MIN_CONFIRMATIONS: minimum confirmations that must agree. SMC is optional
+# when neutral, but any opposing SMC structure/composite is a hard veto.
+# Trend, Price Action, and Wyckoff provide the independent confirmations.
 # CONF_HARD_MIN: trades below this confidence % are always rejected.
 RISK_PERCENT      = _float("RISK_PERCENT",      1.0,  lo=0.01, hi=10.0)
 # MIN_CONFIRMATIONS=2: normally Trend + one additional confirmation.
@@ -183,9 +184,10 @@ MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   2,    lo=1,    hi=10)
 REQUIRE_PRICE_ACTION = os.getenv("REQUIRE_PRICE_ACTION", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
-# Deprecated compatibility flag. SMC is advisory and is never a mandatory
-# authorization gate; the decision engine keeps the flag only for callers that
-# still provide the old environment variable.
+# Deprecated compatibility flag. SMC is not required to be directional, but
+# an opposing SMC context is always rejected by the global trend guard. The
+# decision engine keeps this flag for callers that still provide the old
+# environment variable.
 REQUIRE_SMC_PRICE_ACTION_WYCKOFF = os.getenv(
     "REQUIRE_SMC_PRICE_ACTION_WYCKOFF", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -228,8 +230,8 @@ USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() 
 # MTF_CANDLE_WINDOW : number of HTF bars to fetch (needs ≥ 210 for EMA-200).
 #                     300 gives a comfortable margin without excessive latency.
 MTF_ENABLED       = os.getenv("MTF_ENABLED",   "true").lower() == "true"
-# Strict mode can require a directional higher-timeframe bias. Flexible mode
-# keeps MTF context active but only blocks a clearly opposing strong bias.
+# Strict mode can require a directional higher-timeframe bias. Even in
+# flexible mode, a known opposing HTF bias is always blocked.
 MTF_REQUIRE_ALIGNMENT = os.getenv(
     "MTF_REQUIRE_ALIGNMENT", "true" if STRICT_ENTRY_MODE else "false"
 ).strip().lower() in {"1", "true", "yes", "on"}

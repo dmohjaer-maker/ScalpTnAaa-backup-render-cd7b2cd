@@ -3,6 +3,42 @@
 from math import isfinite
 
 
+def validate_directional_alignment(
+    direction: str,
+    *,
+    local_trend: str = "NEUTRAL",
+    smc_trend: str = "NEUTRAL",
+    smc_signal: str = "NEUTRAL",
+    htf_direction: str = "NEUTRAL",
+) -> tuple[bool, str]:
+    """Reject an entry that opposes any confirmed directional context.
+
+    This is intentionally a pure, fail-closed guard that can be reused by the
+    decision engine and by the final pre-order barrier.  Neutral context does
+    not count as a counter-trend signal; a known opposing EMA, SMC structure,
+    SMC composite, or HTF bias always blocks the entry.
+    """
+    if direction not in {"BUY", "SELL"}:
+        return False, "invalid trade direction"
+
+    contexts = (
+        ("local EMA trend", local_trend, {"BULLISH": "BUY", "BEARISH": "SELL"}),
+        ("SMC structure", smc_trend, {"BULLISH": "BUY", "BEARISH": "SELL"}),
+        ("SMC composite", smc_signal, {"BUY": "BUY", "SELL": "SELL"}),
+        ("higher-timeframe bias", htf_direction, {"BUY": "BUY", "SELL": "SELL"}),
+    )
+    for label, value, direction_map in contexts:
+        expected_direction = direction_map.get(str(value).upper())
+        if expected_direction and expected_direction != direction:
+            return (
+                False,
+                f"Counter-trend blocked: {direction} conflicts with "
+                f"{label} {str(value).upper()}",
+            )
+
+    return True, ""
+
+
 def validate_entry_quote(
     direction: str,
     bid: float,

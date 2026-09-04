@@ -47,7 +47,8 @@ from live_trading.config import (
 from live_trading.logger import get_logger
 from live_trading.signals.gold_engine import calc_atr
 from live_trading.trading.entry_guards import (
-    validate_entry_quote, validate_protection_levels,
+    validate_directional_alignment, validate_entry_quote,
+    validate_protection_levels,
 )
 from live_trading.risk.guardian import RiskGuardian, GuardianStatus
 from live_trading.risk.capital_manager import REQUIRED_ENTRY_RR
@@ -1073,6 +1074,33 @@ class GoldScalperLive:
             )
             self._write_state("SCANNING", acc_info, decision, pos,
                               extra=self._guardian_extra(gs))
+            return
+
+        # FINAL DIRECTIONAL SAFETY: no signal engine or stale decision may
+        # bypass the counter-trend policy. This is deliberately placed after
+        # all recalculation and protection checks, immediately before the
+        # broker API call.
+        _direction_ok, _direction_reason = validate_directional_alignment(
+            decision.direction,
+            local_trend=decision.trend.trend,
+            smc_trend=decision.smc.trend,
+            smc_signal=decision.smc.smc_signal,
+            htf_direction=(
+                htf_bias.direction if htf_bias is not None else "NEUTRAL"
+            ),
+        )
+        if not _direction_ok:
+            log.warning(f"[{tf}] FINAL COUNTER-TREND BLOCK — {_direction_reason}")
+            self._write_state(
+                "SCANNING",
+                acc_info,
+                decision,
+                pos,
+                extra={
+                    **self._guardian_extra(gs),
+                    "counter_trend_block": _direction_reason,
+                },
+            )
             return
 
         # 8c. Safety re-check: confirm we are still flat immediately before

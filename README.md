@@ -110,7 +110,7 @@ Full reference with descriptions: [`live_trading/.env.example`](live_trading/.en
 | `TRADE_TIMEFRAMES` | No | `M20,M15,M10,5m` | Multi-timeframe scan order, highest first |
 | `CANDLE_WINDOW` | No | `300` | Bars fetched per candle request |
 | `RISK_PERCENT` | No | `1.0` | Risk per trade (% of balance) |
-| `MIN_CONFIRMATIONS` | No | `2` | Min signal confirmations; SMC is advisory, not a hard gate |
+| `MIN_CONFIRMATIONS` | No | `2` | Min signal confirmations; neutral SMC is optional, but opposing SMC is a hard veto |
 | `CONF_HARD_MIN` | No | `32` | Confidence-engine hard floor |
 | `QUALITY_ADX_MIN` | No | `12` | Quality filter ADX floor |
 | `DAILY_LOSS_LIMIT_PCT` | No | `4.0` | Guardian: daily loss halt threshold |

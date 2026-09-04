@@ -84,13 +84,14 @@ services:
       # Option 4: old BOS/CHoCH events cannot authorize live entries.
       - key: STRUCTURE_MAX_AGE_BARS
         value: "24"
-      # Redeploy trigger: flexible entry mode is the intended production default.
-      # Entry filters disabled by request: preserve only technical quote validity
-      # and core risk controls; do not use MTF alignment as an entry gate.
+      # Redeploy trigger: flexible entry mode remains the production default.
+      # The global counter-trend guard is always active. Keep the HTF context
+      # active so a known opposing higher-timeframe bias is also blocked, while
+      # neutral HTF context may still pass in flexible mode.
       - key: STRICT_ENTRY_MODE
         value: "false"
       - key: MTF_ENABLED
-        value: "false"
+        value: "true"
       - key: MTF_REQUIRE_ALIGNMENT
         value: "false"
       - key: ENTRY_TRIGGER_MAX_AGE_BARS

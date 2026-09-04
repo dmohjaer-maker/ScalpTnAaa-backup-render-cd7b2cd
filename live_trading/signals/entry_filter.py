@@ -50,7 +50,8 @@ def apply_entry_filter(
                   "SELL" if ema_trend == "BEARISH" else "NEUTRAL")
 
     # SMC is a real vote only when it explicitly agrees with the candidate.
-    # NEUTRAL and opposing SMC are advisory negatives, never hard vetoes.
+    # The decision engine applies the global hard veto for opposing SMC; this
+    # helper remains a confirmation counter and supports neutral SMC.
     smc_ok   = smc_signal == direction
     trend_ok = trend_vote     == direction
     pa_ok    = pa_signal      == direction
@@ -62,8 +63,8 @@ def apply_entry_filter(
     if require_trend_alignment and not trend_ok:
         allowed = False
     elif require_smc_price_action_wyckoff:
-        # Backward-compatible option name. SMC is no longer mandatory; this
-        # legacy strict mode now requires the two non-SMC confirmations.
+        # Backward-compatible option name. SMC is optional when neutral; this
+        # legacy strict mode requires the two non-SMC confirmations.
         allowed = pa_ok and wyc_ok
     else:
         allowed = count >= min_confirmations and (

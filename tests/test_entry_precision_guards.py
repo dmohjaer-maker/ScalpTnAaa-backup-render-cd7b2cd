@@ -37,10 +37,10 @@ def test_recent_structure_is_an_entry_trigger():
     assert _has_fresh_entry_trigger(_smc([recent_bos]), "NEUTRAL", "BUY", 20, 2) is True
 
 
-def test_moderate_opposing_htf_bias_is_not_a_hard_block():
+def test_moderate_opposing_htf_bias_is_a_hard_block():
     allowed, reason = mtf_allows_trade(_htf("BUY", "MODERATE"), "SELL")
-    assert allowed is True
-    assert reason == ""
+    assert allowed is False
+    assert "MTF BLOCK" in reason
 
 
 def test_aligned_htf_bias_allows_trade():
