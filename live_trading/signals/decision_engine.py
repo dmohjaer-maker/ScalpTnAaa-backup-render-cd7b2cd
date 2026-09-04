@@ -308,6 +308,40 @@ def _breakout_follow_through_reason(
     )
 
 
+def _weak_volume_breakout_reason(
+    candles: List[OHLCV],
+    smc: SmcResult,
+    pa: PriceActionResult,
+    candidate: str,
+    is_weak_volume: bool,
+) -> Optional[str]:
+    """Block only breakout setups when current volume is exceptionally weak."""
+    if not is_weak_volume or candidate not in {"BUY", "SELL"}:
+        return None
+
+    pa_breakout = (
+        candidate == "BUY" and pa.valid_bull_breakout
+    ) or (
+        candidate == "SELL" and pa.valid_bear_breakout
+    )
+
+    latest_structure = get_latest_structure_event(smc)
+    current_index = len(candles) - 1
+    bos_breakout = (
+        isinstance(latest_structure, SmcBos)
+        and latest_structure.type == candidate
+        and 0 <= current_index - latest_structure.bar_index <= 3
+    )
+
+    if not pa_breakout and not bos_breakout:
+        return None
+
+    return (
+        f"Very weak volume on {candidate} breakout — current volume is "
+        "below 35% of the 20-bar average; entry blocked"
+    )
+
+
 def _false_reversal_reason(
     candles: List[OHLCV],
     smc: SmcResult,
@@ -629,6 +663,27 @@ def run_decision_engine(
             blocked_reasons=quality.blocked_reasons, reasoning=conf_result.reasoning,
             trade_params=None, smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
             entry_filter=ef,
+        )
+
+    weak_volume_reason = _weak_volume_breakout_reason(
+        candles, smc, pa, candidate, quality.is_weak_volume
+    )
+    if weak_volume_reason:
+        quality.allowed = False
+        quality.blocked_reasons.append(weak_volume_reason)
+        return DecisionResult(
+            allowed=False, direction=candidate,  # type: ignore
+            confidence=conf_result.confidence, components=conf_result.components,
+            grade=conf_result.grade, regime=regime.regime,
+            regime_label=regime.rules.label, regime_rules=regime.rules,
+            quality_filter=quality,
+            blocked_reasons=[weak_volume_reason],
+            reasoning=conf_result.reasoning + [weak_volume_reason],
+            trade_params=None,
+            smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
+            entry_filter=ef,
+            divergence=divergence,
+            dxy_signal=dxy_signal,
         )
 
     # Option 2 hard gate: a directional breakout that closes back inside its

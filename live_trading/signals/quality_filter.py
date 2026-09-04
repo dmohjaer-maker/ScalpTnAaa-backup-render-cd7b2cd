@@ -185,8 +185,9 @@ def apply_quality_filter(
         )
 
     weak_vol = _is_weak_volume(candles)
-    # Note: volume filter is informational only — MT5 tick volume is a proxy,
-    # not real market depth, so we log the flag but do not block on it.
+    # The decision engine uses this flag as a hard veto for breakouts only.
+    # For non-breakout setups it remains telemetry because MT5 tick volume is
+    # a proxy, not real market depth.
 
     low_prob = confidence < CONF_HARD_MIN
     if low_prob:
