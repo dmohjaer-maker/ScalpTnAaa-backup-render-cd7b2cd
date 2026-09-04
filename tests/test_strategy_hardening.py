@@ -9,6 +9,7 @@ from live_trading.signals import decision_engine
 from live_trading.signals.decision_engine import run_decision_engine
 from live_trading.signals.gold_engine import OHLCV
 from live_trading.signals.smc_engine import SmcBos, SmcResult
+from live_trading.signals.trend_engine import TrendResult
 from live_trading.signals.wyckoff_engine import analyze_wyckoff
 
 
@@ -44,6 +45,24 @@ def test_decision_engine_blocks_structure_candidate_when_smc_is_neutral(monkeypa
     assert result.allowed is False
     assert result.direction == "NEUTRAL"
     assert "SMC composite is NEUTRAL" in result.blocked_reasons[0]
+
+
+def test_decision_engine_blocks_counter_trend_candidate(monkeypatch):
+    smc = _smc_with_candidate("BUY", "BUY")
+    bearish_trend = TrendResult(
+        ema50=101.0, ema100=102.0, ema200=103.0,
+        trend="BEARISH", strength="STRONG",
+    )
+    monkeypatch.setattr(decision_engine, "analyze_smc_structure", lambda _: smc)
+    monkeypatch.setattr(decision_engine, "analyze_wyckoff", lambda _: None)
+    monkeypatch.setattr(decision_engine, "analyze_price_action", lambda _: None)
+    monkeypatch.setattr(decision_engine, "analyze_trend", lambda _: bearish_trend)
+
+    result = run_decision_engine([], account_balance=10_000.0)
+
+    assert result.allowed is False
+    assert result.direction == "NEUTRAL"
+    assert "counter-trend entry blocked" in result.blocked_reasons[0]
 
 
 def _phase_only_candles(prior_direction: str) -> list[OHLCV]:
