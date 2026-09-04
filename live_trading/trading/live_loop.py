@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from live_trading.config import (
-    SYMBOL, TIMEFRAME, CANDLE_WINDOW, RISK_PERCENT,
+    SYMBOLS, TIMEFRAME, CANDLE_WINDOW, RISK_PERCENT,
     MAX_OPEN_TRADES, COMMENT,
     BAR_CHECK_INTERVAL, RECONNECT_DELAY, SYNC_TIMEOUT,
     MIN_CONFIRMATIONS, REQUIRE_PRICE_ACTION,
@@ -58,7 +58,9 @@ from live_trading.signals.decision_engine import run_decision_engine, DecisionRe
 from live_trading.signals.mtf_filter import compute_mtf_bias, mtf_allows_trade, MtfBias
 from live_trading.signals.news_filter import check_news_filter
 from live_trading.signals.dxy_filter import get_dxy_signal
-from live_trading.signals.wyckoff_engine import calibrate_wyckoff, set_calibrated_config
+from live_trading.signals.wyckoff_engine import (
+    CFG_M5, calibrate_wyckoff, set_calibrated_config,
+)
 from live_trading.mt5.connector import (
     connect, disconnect, ensure_connected,
     connect_with_retry, keepalive_mtapi,
@@ -106,8 +108,14 @@ class GoldScalperLive:
         self.loop_count: int = 0
         # Multi-TF bar tracking: one last-seen bar-time per trade timeframe.
         # Initialised to None so the first bar on every TF is always processed.
-        self._last_bar_times: dict[str, Optional[datetime]] = {
-            tf: None for tf in TRADE_TIMEFRAMES
+        self.symbols: list[str] = list(SYMBOLS)
+        self._active_symbol: str = self.symbols[0]
+        # One completed-bar cursor per symbol/timeframe. XAUUSD keeps the
+        # existing cursor semantics; EURUSD gets an independent cursor.
+        self._last_bar_times: dict[tuple[str, str], Optional[datetime]] = {
+            (symbol, tf): None
+            for symbol in self.symbols
+            for tf in TRADE_TIMEFRAMES
         }
         # Guard against opening multiple trades in the same tick when several
         # timeframes close simultaneously (e.g. M20+M10+M5 all fire at :20).
@@ -118,8 +126,12 @@ class GoldScalperLive:
         self._trade_opened_this_tick: bool = False
         # tracks the last successfully placed trade (direction + bar_time)
         # so the post-SL cooldown gate can detect same-direction re-entry.
-        self._last_entry_bar_time: Optional[datetime] = None
-        self._last_entry_direction: str = ""
+        # Cooldown is isolated per symbol so a gold entry never suppresses EUR.
+        self._last_entry_by_symbol: dict[str, dict] = {
+            symbol: {"bar_time": None, "direction": ""}
+            for symbol in self.symbols
+        }
+        self._wyckoff_configs: dict = {}
         self.trade_history: List[dict] = []
         self.last_decision: Optional[DecisionResult] = None
         self._last_news_filter: Optional[dict] = None
@@ -178,14 +190,15 @@ class GoldScalperLive:
         self._last_trailing_statuses: dict = {}  # {str(ticket): status-dict}, for panel telemetry
         # Cached ATR (price units) from the last completed bar — reused by the
         # trailing engine between bars so it doesn't need its own candle fetch.
-        self._last_atr: float = 0.0
+        self._last_atr: float = 0.0  # legacy telemetry fallback
+        self._last_atr_by_symbol: dict[str, float] = {}
 
     # ── Entry point ───────────────────────────────────────────────────────────
 
     async def start(self) -> bool:
         log.info("=" * 60)
         log.info("  GoldScalperPro v4 — LIVE TRADING ENGINE (mt5rest)")
-        log.info(f"  Symbol: {SYMBOL}  |  Trade TFs: {chr(44).join(TRADE_TIMEFRAMES)} (highest first)")
+        log.info(f"  Symbols: {chr(44).join(self.symbols)}  |  Trade TFs: {chr(44).join(TRADE_TIMEFRAMES)} (highest first)")
         log.info(f"  Risk: {RISK_PERCENT}%  |  Max positions: {MAX_OPEN_TRADES}")
         log.info(f"  Min confirmations: {MIN_CONFIRMATIONS}")
         log.info(f"  Daily loss limit: {DAILY_LOSS_LIMIT_PCT}%  |  "
@@ -383,17 +396,25 @@ class GoldScalperLive:
     # ── Wyckoff calibration ───────────────────────────────────────────────────
 
     async def _calibrate_wyckoff(self) -> None:
-        log.info("Calibrating Wyckoff config from live data …")
-        candles = await fetch_candles(SYMBOL, TIMEFRAME, 500)
-        if candles:
-            cfg = calibrate_wyckoff(candles)
-            set_calibrated_config(cfg)
-            log.info(f"Wyckoff calibrated — "
-                     f"maxRangePct={cfg.max_range_pct:.5f}  "
-                     f"springMargin={cfg.spring_margin:.2f}")
-        else:
-            log.warning("Could not fetch candles for Wyckoff calibration; "
-                        "using defaults")
+        log.info("Calibrating Wyckoff config for each active symbol …")
+        for symbol in self.symbols:
+            candles = await fetch_candles(symbol, TIMEFRAME, 500)
+            if candles:
+                cfg = calibrate_wyckoff(candles)
+                self._wyckoff_configs[symbol] = cfg
+                log.info(
+                    f"Wyckoff calibrated [{symbol}] — "
+                    f"maxRangePct={cfg.max_range_pct:.5f}  "
+                    f"springMargin={cfg.spring_margin:.2f}"
+                )
+            else:
+                # Do not let a missing EUR feed overwrite XAU's calibrated
+                # parameters; use the safe baseline only for that symbol.
+                self._wyckoff_configs[symbol] = CFG_M5
+                log.warning(
+                    f"Could not fetch candles for {symbol} Wyckoff calibration; "
+                    "using baseline defaults for that symbol"
+                )
 
     # ── Main async loop ───────────────────────────────────────────────────────
 
@@ -486,13 +507,13 @@ class GoldScalperLive:
                 new_bars = await self._check_new_bars()
                 _checkpoint(f"loop#{self.loop_count} new_bars={len(new_bars)}")
                 if new_bars:
-                    for _tf, _bar_time in new_bars:
+                    for _symbol, _tf, _bar_time in new_bars:
                         self.loop_count += 1
                         log.info(
-                            f"─── Bar #{self.loop_count} [{_tf}] "
+                            f"─── Bar #{self.loop_count} [{_symbol}][{_tf}] "
                             f"at {_bar_time.isoformat()} ───"
                         )
-                        await self._on_new_bar(_bar_time, _tf)
+                        await self._on_new_bar(_bar_time, _tf, _symbol)
                 else:
                     # Refresh account info every _ACC_REFRESH_INTERVAL seconds
                     # so the panel shows current balance/equity between candles.
@@ -555,60 +576,50 @@ class GoldScalperLive:
 
     # ── Bar detection ─────────────────────────────────────────────────────────
 
-    async def _check_new_bars(self) -> list[tuple[str, datetime]]:
-        """Poll every configured trade timeframe and return a list of
-        (timeframe, bar_time) pairs for every TF that has a new completed bar
-        since the last tick.  Results preserve TRADE_TIMEFRAMES order, which
-        is already sorted highest-first, so M20 signals are processed before
-        M15, then M10, then M5.  If M20 opens a position, the M15/M10/M5
-        handlers in the same tick will see it via get_open_positions() and
-        skip entry, preventing duplicate positions.
-        Never raises — individual TF errors are logged and skipped."""
-        results: list[tuple[str, datetime]] = []
-        for tf in TRADE_TIMEFRAMES:
-            try:
-                bt = await get_last_completed_bar_time(SYMBOL, tf)
-                if bt is None:
-                    continue
-                # ── Staleness guard ──────────────────────────────────────────
-                # Right after MT5 connects, PriceHistoryV2 returns cached
-                # historical data (sometimes years old) until the terminal
-                # finishes syncing from the broker.  Processing a 2022 bar in
-                # 2026 context would crash the signal pipeline or open a trade
-                # with completely wrong ATR/SL/TP values.  Skip any bar that is
-                # more than 2 hours old relative to UTC wall-clock time.
-                # Normalize to naive UTC immediately.  get_last_completed_bar_time()
-                # may return timezone-aware datetimes (when the mt5rest response
-                # includes a "Z" suffix) on some timeframes and naive on others.
-                # Storing a mix into _last_bar_times causes max() inside
-                # _write_state() to raise:
-                #   TypeError: can't compare offset-naive and offset-aware datetimes
-                # which silently crashes every _write_state() call (WAITING, ERROR,
-                # STOPPED) — leaving the state file permanently frozen at RUNNING.
-                _bt_naive = bt.replace(tzinfo=None) if bt.tzinfo else bt
-                _stale_cutoff = datetime.utcnow() - timedelta(hours=2)
-                if _bt_naive < _stale_cutoff:
-                    # Still update last_bar_times (as naive) so we don't re-log
-                    self._last_bar_times[tf] = _bt_naive
-                    log.debug(
-                        f"[{tf}] Bar {bt.isoformat()} is stale "
-                        f"(>{int((datetime.utcnow() - _bt_naive).total_seconds()/3600)}h old) "
-                        f"— waiting for MT5 historical data sync"
-                    )
-                    continue
-                prev = self._last_bar_times.get(tf)
-                if prev is None or _bt_naive > prev:
-                    self._last_bar_times[tf] = _bt_naive
-                    results.append((tf, _bt_naive))
-            except Exception as _bar_err:
-                log.warning(f"[{tf}] Bar time check failed: {_bar_err}")
+    async def _check_new_bars(self) -> list[tuple[str, str, datetime]]:
+        """Return new completed bars for every configured symbol/timeframe.
+
+        Each symbol has an independent cursor, so an unavailable EUR feed
+        cannot advance or suppress XAUUSD processing.
+        """
+        results: list[tuple[str, str, datetime]] = []
+        for symbol in self.symbols:
+            for tf in TRADE_TIMEFRAMES:
+                try:
+                    bt = await get_last_completed_bar_time(symbol, tf)
+                    if bt is None:
+                        continue
+                    _bt_naive = bt.replace(tzinfo=None) if bt.tzinfo else bt
+                    _stale_cutoff = datetime.utcnow() - timedelta(hours=2)
+                    key = (symbol, tf)
+                    if _bt_naive < _stale_cutoff:
+                        self._last_bar_times[key] = _bt_naive
+                        log.debug(
+                            f"[{symbol}][{tf}] Bar {bt.isoformat()} is stale "
+                            "— waiting for MT5 historical data sync"
+                        )
+                        continue
+                    prev = self._last_bar_times.get(key)
+                    if prev is None or _bt_naive > prev:
+                        self._last_bar_times[key] = _bt_naive
+                        results.append((symbol, tf, _bt_naive))
+                except Exception as _bar_err:
+                    log.warning(f"[{symbol}][{tf}] Bar time check failed: {_bar_err}")
         return results
 
     # ── Per-bar handler ───────────────────────────────────────────────────────
 
-    async def _on_new_bar(self, bar_time: datetime, tf: str = TIMEFRAME) -> None:
+    async def _on_new_bar(
+        self, bar_time: datetime, tf: str = TIMEFRAME, symbol: str = ""
+    ) -> None:
+        symbol = (symbol or self.symbols[0]).upper()
+        self._active_symbol = symbol
+        # Apply the calibrated parameters for this symbol immediately before
+        # analysis. The engines are synchronous, so EUR calibration cannot
+        # leak into the XAUUSD decision that follows it.
+        set_calibrated_config(self._wyckoff_configs.get(symbol, CFG_M5))
         # 1. Fetch candles for this timeframe (M5 / M10 / M15 / M20)
-        candles = await fetch_candles(SYMBOL, tf, CANDLE_WINDOW)
+        candles = await fetch_candles(symbol, tf, CANDLE_WINDOW)
         if len(candles) < 50:
             log.warning(f"Only {len(candles)} candles returned — skipping bar")
             return
@@ -620,7 +631,7 @@ class GoldScalperLive:
         htf_bias: Optional[MtfBias] = None
         if MTF_ENABLED:
             try:
-                htf_candles = await fetch_candles(SYMBOL, MTF_TIMEFRAME, MTF_CANDLE_WINDOW)
+                htf_candles = await fetch_candles(symbol, MTF_TIMEFRAME, MTF_CANDLE_WINDOW)
                 if len(htf_candles) >= 50:
                     htf_bias = compute_mtf_bias(htf_candles)
                     log.info(
@@ -752,7 +763,7 @@ class GoldScalperLive:
         # for this bar rather than risking duplicate-entry or crashing the loop.
         try:
             raw_positions, _dropped_unknown = await get_open_positions(
-                SYMBOL, self._known_open_tickets(), return_diagnostics=True
+                "", self._known_open_tickets(), return_diagnostics=True
             )
         except RuntimeError as _pos_err:
             log.error(
@@ -760,8 +771,15 @@ class GoldScalperLive:
             )
             self._write_state("WAITING", acc_info)
             return
-        pos_dicts = [mt5_pos_to_dict(p) for p in raw_positions]
-        pos       = pos_dicts[0] if pos_dicts else None
+        all_pos_dicts = [mt5_pos_to_dict(p) for p in raw_positions]
+        pos_dicts = [
+            p for p in all_pos_dicts
+            if str(p.get("symbol", "")).upper() == symbol.upper()
+        ]
+        # Keep the panel aware of an existing position from the other symbol
+        # while the current symbol is being scanned. This avoids a transient
+        # XAUUSD "flat" display during the EURUSD pass.
+        pos = pos_dicts[0] if pos_dicts else (all_pos_dicts[0] if all_pos_dicts else None)
 
         # DEFENSE IN DEPTH: an unrecognised corrupted row was dropped this
         # poll. Most of the time that really is bridge garbage, but right
@@ -772,7 +790,7 @@ class GoldScalperLive:
         # incident. Skip entry for this bar rather than risk stacking on top
         # of something we can't yet identify; positions we DO recognise are
         # unaffected and continue to be managed normally.
-        if _dropped_unknown and pos is None:
+        if _dropped_unknown:
             log.warning(
                 f"Skipping trade entry — mt5rest reported unidentified ticket(s) "
                 f"{_dropped_unknown} this poll that don't match any known "
@@ -795,6 +813,7 @@ class GoldScalperLive:
             dxy_signal=dxy_result.signal,
             require_price_action=REQUIRE_PRICE_ACTION,
             require_smc_price_action_wyckoff=REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
+            symbol=symbol,
         )
         self.last_decision = decision
 
@@ -816,6 +835,7 @@ class GoldScalperLive:
         # Cached for the staircase trailing engine, which runs between bars
         # (every BAR_CHECK_INTERVAL) and has no candle fetch of its own.
         self._last_atr = _snap_atr
+        self._last_atr_by_symbol[symbol] = _snap_atr
         # Build normalized account_info for the snapshot (snake_case keys to
         # match what telegram_panel's mt5_service expects).
         _snap_account_info = {
@@ -853,7 +873,7 @@ class GoldScalperLive:
             trend=decision.trend.trend,
             # FIX: Full account data so the panel shows real balance, not USD 0.00
             account_info=_snap_account_info,
-            open_positions=pos_dicts,
+            open_positions=all_pos_dicts,
             recent_trades=self.trade_history[-20:],
             today_profit=_snap_today_profit,
             floating_profit=_snap_account_info["floating_profit"],
@@ -944,13 +964,14 @@ class GoldScalperLive:
                                   extra=self._guardian_extra(gs))
                 return
 
-        # 7c. Gate: post-SL cooldown in choppy/range regimes
-        # If the last trade was in the same direction and closed (or will close)
-        # within 2 bars, the market setup has NOT changed — skip re-entry.
-        # Uses only the existing _last_entry state; fails-open on any parse error.
+        # 7c. Gate: post-SL cooldown in choppy/range regimes, isolated per symbol.
         _RANGE_COOLDOWN_REGIMES = {"RANGE", "ACCUMULATION", "DISTRIBUTION", "HIGH_VOLATILITY"}
-        if (self._last_entry_bar_time is not None
-                and self._last_entry_direction == decision.direction
+        _last_entry = self._last_entry_by_symbol.setdefault(
+            symbol, {"bar_time": None, "direction": ""}
+        )
+        _last_entry_bar_time = _last_entry.get("bar_time")
+        if (_last_entry_bar_time is not None
+                and _last_entry.get("direction") == decision.direction
                 and decision.regime in _RANGE_COOLDOWN_REGIMES):
             _TF_MIN_MAP = {
                 "M1": 1, "1m": 1, "M5": 5, "5m": 5, "M10": 10, "10m": 10,
@@ -958,7 +979,7 @@ class GoldScalperLive:
                 "H1": 60, "1h": 60, "H4": 240,
             }
             _tf_min = _TF_MIN_MAP.get(tf, 15)
-            _elapsed_min = (bar_time - self._last_entry_bar_time).total_seconds() / 60.0
+            _elapsed_min = (bar_time - _last_entry_bar_time).total_seconds() / 60.0
             if _elapsed_min < 2 * _tf_min:
                 log.info(
                     f"⏸ Post-SL cooldown [{tf}]: {decision.direction} last entered "
@@ -973,7 +994,7 @@ class GoldScalperLive:
         # but the order will fill at the live ask/bid. Re-price SL/TP from that
         # executable quote and reject fast moves or abnormal spreads.
         try:
-            _quote = await get_current_quote(SYMBOL)
+            _quote = await get_current_quote(symbol)
         except Exception as exc:
             log.warning(f"[{tf}] Skipping entry — live quote unavailable: {exc}")
             _quote = {}
@@ -1014,6 +1035,7 @@ class GoldScalperLive:
             require_smc_price_action_wyckoff=REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
             entry_price_override=_market_entry,
             spread=_spread,
+            symbol=symbol,
         )
         if (not _live_decision.allowed
                 or _live_decision.direction != decision.direction):
@@ -1075,7 +1097,7 @@ class GoldScalperLive:
         # is about to place an order; every other code path (trailing stop,
         # /close_all, panel snapshot) is untouched.
         try:
-            _confirm_positions = await get_open_positions(SYMBOL, self._known_open_tickets())
+            _confirm_positions = await get_open_positions("", self._known_open_tickets())
         except RuntimeError as _confirm_err:
             log.error(
                 f"Pre-order safety re-check could not verify positions — "
@@ -1119,7 +1141,7 @@ class GoldScalperLive:
         )
 
         result: TradeResult = await place_market_order(
-            symbol    = SYMBOL,
+            symbol    = symbol,
             direction = decision.direction,
             lot_size  = tp_params.lot_size,
             sl        = tp_params.stop_loss,
@@ -1132,11 +1154,14 @@ class GoldScalperLive:
             # Block all further _on_new_bar calls in this tick from opening
             # another position (covers the multi-TF same-bar-boundary race).
             self._trade_opened_this_tick = True
-            self._last_entry_bar_time   = bar_time
-            self._last_entry_direction  = decision.direction
+            self._last_entry_by_symbol[symbol] = {
+                "bar_time": bar_time,
+                "direction": decision.direction,
+            }
             strategy = describe_strategy(decision)
             entry_log = {
                 "position_id": result.position_id,
+                "symbol":       symbol,
                 "direction":   decision.direction,
                 "entry":       tp_params.entry_price,
                 "sl":          tp_params.stop_loss,
@@ -1177,7 +1202,7 @@ class GoldScalperLive:
             pos = {
                 "id":         result.position_id,
                 "ticket":     result.position_id,
-                "symbol":     SYMBOL,
+                "symbol":     symbol,
                 "type":       decision.direction,
                 "volume":     tp_params.lot_size,
                 "open_price": tp_params.entry_price,
@@ -1194,7 +1219,7 @@ class GoldScalperLive:
             # M5 bar — up to 5 minutes later.
             try:
                 from live_trading.redis_ipc import redis_update_snapshot_positions
-                redis_update_snapshot_positions(pos_dicts + [pos])
+                redis_update_snapshot_positions(all_pos_dicts + [pos])
             except Exception as _sync_exc:
                 log.debug(f"Snapshot position sync skipped: {_sync_exc}")
         else:
@@ -1298,7 +1323,7 @@ class GoldScalperLive:
             return
 
         try:
-            raw_positions = await get_open_positions(SYMBOL, self._known_open_tickets())
+            raw_positions = await get_open_positions("", self._known_open_tickets())
         except RuntimeError as exc:
             log.debug(f"Trailing check skipped — could not fetch positions: {exc}")
             return
@@ -1318,12 +1343,12 @@ class GoldScalperLive:
             pid: s for pid, s in self._last_trailing_statuses.items() if pid in live_ids
         }
 
-        quote = await get_current_quote(SYMBOL)
-        if not quote:
-            return  # no live price this tick — try again next tick
-
         for raw in raw_positions:
             pos = mt5_pos_to_dict(raw)
+            symbol = str(pos.get("symbol") or self.symbols[0]).upper()
+            quote = await get_current_quote(symbol)
+            if not quote:
+                continue  # no live price for this symbol — retry next tick
             pos_id = str(pos["id"])
 
             baseline = self._trail_baselines.get(pos_id)
@@ -1357,7 +1382,7 @@ class GoldScalperLive:
                 entry=baseline["entry"],
                 risk_distance=baseline["risk_distance"],
                 current_price=current_price,
-                atr=self._last_atr,
+                atr=self._last_atr_by_symbol.get(symbol, self._last_atr),
                 cfg=self._trailing_cfg,
                 favorable_extreme=baseline["favorable_extreme"],
                 spread=max(0.0, float(quote.get("ask", 0.0)) -
@@ -1598,7 +1623,7 @@ class GoldScalperLive:
 
     async def _close_all_positions(self) -> None:
         try:
-            positions = await get_open_positions(SYMBOL, self._known_open_tickets())
+            positions = await get_open_positions("", self._known_open_tickets())
         except RuntimeError as exc:
             log.error(f"CLOSE_ALL: could not fetch positions from mt5rest: {exc}")
             return
@@ -1739,6 +1764,8 @@ class GoldScalperLive:
                 "positions": dict(self._last_trailing_statuses),
             }
         merged_extra.update(self._external_filter_extra())
+        merged_extra["symbols"] = list(self.symbols)
+        merged_extra["active_symbol"] = self._active_symbol
         if extra:
             merged_extra.update(extra)
 

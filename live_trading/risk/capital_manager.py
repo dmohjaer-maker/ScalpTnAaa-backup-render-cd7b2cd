@@ -59,8 +59,32 @@ if TP_MIN_RR > TP_MAX_RR:
     raise ValueError("TP_MIN_RR cannot exceed TP_MAX_RR")
 
 LOT_DOLLAR_PER_UNIT = 100
+FOREX_DOLLAR_PER_UNIT = 100_000
 MIN_LOT = 0.01
 MAX_LOT = 50.0
+
+# EURUSD uses a standard 100,000-unit FX contract. Keep the existing XAUUSD
+# sizing constants untouched so adding EUR cannot change gold risk.
+FOREX_MIN_SL_ATR_MULT = _bounded_env_float(
+    "FOREX_MIN_SL_ATR_MULT", 1.20, 0.75, 4.00
+)
+FOREX_MAX_SL_ATR_MULT = _bounded_env_float(
+    "FOREX_MAX_SL_ATR_MULT", 2.50, 1.00, 6.00
+)
+
+
+def _is_eurusd(symbol: str) -> bool:
+    return symbol.upper().replace(".", "").startswith("EURUSD")
+
+
+def _price_unit_value(symbol: str) -> float:
+    return FOREX_DOLLAR_PER_UNIT if _is_eurusd(symbol) else LOT_DOLLAR_PER_UNIT
+
+
+def _sl_atr_bounds(symbol: str) -> tuple[float, float]:
+    if _is_eurusd(symbol):
+        return FOREX_MIN_SL_ATR_MULT, max(FOREX_MAX_SL_ATR_MULT, FOREX_MIN_SL_ATR_MULT)
+    return MIN_SL_ATR_MULT, MAX_SL_ATR_MULT
 
 
 @dataclass
@@ -82,6 +106,8 @@ class CapitalInput:
     # Latest confirmed local pivots; preferred over distant BOS levels for scalps.
     micro_swing_high: Optional[float] = None
     micro_swing_low: Optional[float] = None
+    # Broker symbol controls contract sizing and symbol-specific SL calibration.
+    symbol: str = "XAUUSD"
 
 
 @dataclass
@@ -110,6 +136,14 @@ def _r2(value: float) -> float:
 
 def _r4(value: float) -> float:
     return round(value, 4)
+
+
+def _price_digits(symbol: str) -> int:
+    return 5 if _is_eurusd(symbol) else 2
+
+
+def _price_round(value: float, symbol: str) -> float:
+    return round(value, _price_digits(symbol))
 
 
 def _dynamic_buffer(atr: float, atr_mean: Optional[float], spread: float) -> tuple[float, float]:
@@ -169,13 +203,14 @@ def _calc_smart_sl(direction: str, entry: float, atr: float, inp: CapitalInput) 
     buffer, volatility_ratio = _dynamic_buffer(safe_atr, inp.atr_mean, inp.spread)
     safe_spread = inp.spread if isfinite(inp.spread) and inp.spread > 0 else 0.0
 
-    # In elevated volatility, give the stop progressively more breathing room
-    # while never reducing it below the hard safety floor. This protects the
-    # trade from ordinary XAUUSD wick noise without changing the entry.
+    # In elevated volatility, give the stop progressively more breathing room.
+    # XAUUSD keeps the existing hard floor; EURUSD uses its own conservative
+    # FX calibration so the gold-specific envelope is never reused blindly.
+    min_sl_atr, max_sl_atr = _sl_atr_bounds(inp.symbol)
     adaptive_min_multiplier = _clamp(
-        MIN_SL_ATR_MULT + max(volatility_ratio - 1.0, 0.0) * 0.35,
-        MIN_SL_ATR_MULT,
-        MAX_SL_ATR_MULT,
+        min_sl_atr + max(volatility_ratio - 1.0, 0.0) * 0.35,
+        min_sl_atr,
+        max_sl_atr,
     )
     minimum_distance = max(
         safe_atr * adaptive_min_multiplier,
@@ -184,9 +219,9 @@ def _calc_smart_sl(direction: str, entry: float, atr: float, inp: CapitalInput) 
     maximum_distance = max(
         minimum_distance,
         safe_atr * _clamp(
-            MAX_SL_ATR_MULT + max(volatility_ratio - 1.0, 0.0) * 0.50,
+            max_sl_atr + max(volatility_ratio - 1.0, 0.0) * 0.50,
             adaptive_min_multiplier,
-            MAX_SL_ATR_MULT,
+            max_sl_atr,
         ),
     )
 
@@ -206,7 +241,10 @@ def _calc_smart_sl(direction: str, entry: float, atr: float, inp: CapitalInput) 
             maximum_distance,
         )
 
-    return _r2(entry - distance if direction == "BUY" else entry + distance)
+    return _price_round(
+        entry - distance if direction == "BUY" else entry + distance,
+        inp.symbol,
+    )
 
 
 def _calc_structural_tp(
@@ -227,19 +265,21 @@ def _calc_structural_tp(
     if target_distance <= 0 or rr < TP_MIN_RR or rr > TP_MAX_RR:
         return None, 0.0
     target = entry + target_distance if direction == "BUY" else entry - target_distance
-    return _r2(target), target_distance
+    return _price_round(target, inp.symbol), target_distance
 
 
-def _calc_lot_size(sl_dist_usd: float, balance: float, risk_pct: float) -> tuple[float, float]:
+def _calc_lot_size(
+    sl_dist_usd: float, balance: float, risk_pct: float, symbol: str
+) -> tuple[float, float]:
     if not isfinite(sl_dist_usd) or sl_dist_usd <= 0 or balance <= 0 or risk_pct <= 0:
         return MIN_LOT, 0.0
     risk_amount = balance * risk_pct / 100.0
-    raw_lot = risk_amount / (sl_dist_usd * LOT_DOLLAR_PER_UNIT)
+    raw_lot = risk_amount / (sl_dist_usd * _price_unit_value(symbol))
     # Round down before the executor's broker-step normalisation so the
     # requested risk is never increased by ordinary rounding.
     lot_size = floor(_clamp(raw_lot, MIN_LOT, MAX_LOT) * 10_000) / 10_000
     lot_size = max(MIN_LOT, min(MAX_LOT, lot_size))
-    actual_risk = _r2(lot_size * sl_dist_usd * LOT_DOLLAR_PER_UNIT)
+    actual_risk = _r2(lot_size * sl_dist_usd * _price_unit_value(symbol))
     return _r4(lot_size), actual_risk
 
 
@@ -249,28 +289,33 @@ def calc_trade_parameters(inp: CapitalInput) -> CapitalOutput:
     atr = inp.atr if isfinite(inp.atr) and inp.atr > 0 else max(entry * 0.001, 0.01)
 
     sl = _calc_smart_sl(direction, entry, atr, inp)
-    sl_dist = _r2(abs(entry - sl))
-    sl_pips = _r2(sl_dist * 100)
+    sl_dist = _price_round(abs(entry - sl), inp.symbol)
+    sl_pips = _r2(sl_dist * (10_000 if _is_eurusd(inp.symbol) else 100))
 
     tp, tp_dist = _calc_structural_tp(direction, entry, sl_dist, atr, inp)
     if tp is None:
         tp_dist = sl_dist * FIXED_TP_RR
-        tp = _r2(entry + tp_dist if direction == "BUY" else entry - tp_dist)
+        tp = _price_round(
+            entry + tp_dist if direction == "BUY" else entry - tp_dist,
+            inp.symbol,
+        )
     rr = _r2(tp_dist / sl_dist) if sl_dist > 0 else 0.0
 
-    lot, risk = _calc_lot_size(sl_dist, inp.account_balance, inp.risk_percent)
+    lot, risk = _calc_lot_size(
+        sl_dist, inp.account_balance, inp.risk_percent, inp.symbol
+    )
     be_dist = sl_dist
     be_at = _r2(entry + be_dist if direction == "BUY" else entry - be_dist)
 
     return CapitalOutput(
-        entry_price=_r2(entry),
+        entry_price=_price_round(entry, inp.symbol),
         stop_loss=sl,
         take_profit=tp,
         risk_reward_ratio=rr,
-        trailing_stop_distance=_r2(sl_dist * 0.5),
-        trailing_activation_at=be_at,
-        break_even_at=be_at,
-        break_even_sl=_r2(entry),
+        trailing_stop_distance=_price_round(sl_dist * 0.5, inp.symbol),
+        trailing_activation_at=_price_round(be_at, inp.symbol),
+        break_even_at=_price_round(be_at, inp.symbol),
+        break_even_sl=_price_round(entry, inp.symbol),
         lot_size=lot,
         risk_amount=risk,
         sl_distance_usd=sl_dist,
