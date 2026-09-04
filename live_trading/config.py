@@ -143,7 +143,29 @@ MT5_USER      = os.getenv("MT5_USER",     "")
 MT5_PASSWORD  = os.getenv("MT5_PASSWORD", "")
 
 # ── Symbol & Timeframe ───────────────────────────────────────────────────────
-SYMBOL        = os.getenv("SYMBOL", "XAUUSD")
+def _symbols() -> list[str]:
+    """Return de-duplicated broker symbols while preserving XAU compatibility.
+
+    SYMBOL remains the legacy single-symbol knob.  SYMBOLS is the new
+    multi-symbol setting; when omitted, the live robot behaves exactly as
+    before and trades only SYMBOL.
+    """
+    raw = os.getenv("SYMBOLS", "").strip() or os.getenv("SYMBOL", "XAUUSD")
+    symbols = list(dict.fromkeys(
+        item.strip().upper() for item in raw.split(",") if item.strip()
+    ))
+    if not symbols:
+        print(
+            "ERROR: SYMBOLS is empty. Provide comma-separated broker symbols, "
+            "for example XAUUSD,EURUSD.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return symbols
+
+
+SYMBOL        = os.getenv("SYMBOL", "XAUUSD").strip().upper() or "XAUUSD"
+SYMBOLS       = _symbols()
 TIMEFRAME     = _timeframe("TIMEFRAME", "5m")
 CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 

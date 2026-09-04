@@ -510,6 +510,7 @@ def run_decision_engine(
     require_smc_price_action_wyckoff: bool = REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
     entry_price_override: Optional[float] = None,
     spread: float = 0.0,
+    symbol: str = "XAUUSD",
 ) -> DecisionResult:
 
     smc     = analyze_smc_structure(candles)
@@ -798,6 +799,7 @@ def run_decision_engine(
         spread=spread,
         micro_swing_high=micro_high,
         micro_swing_low=micro_low,
+        symbol=symbol,
     )
     trade_params = calc_trade_parameters(cap_input)
 

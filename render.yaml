@@ -66,6 +66,10 @@ services:
       # the real reason the robot never opened a trade.
       - key: SYMBOL
         value: XAUUSD
+      # Multi-symbol mode preserves SYMBOL as the legacy XAU default while
+      # processing EURUSD on an independent bar cursor and risk/sizing path.
+      - key: SYMBOLS
+        value: "XAUUSD,EURUSD"
       # FIX: TIMEFRAME and CANDLE_WINDOW are now env-configurable (fix #4).
       - key: TIMEFRAME
         value: "5m"
