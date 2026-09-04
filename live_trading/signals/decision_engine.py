@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import List, Literal, Optional
 from live_trading.signals.gold_engine import OHLCV
 from live_trading.signals.smc_engine import (
+    SmcBos,
     SmcChoch,
     SmcLiquiditySweep,
     SmcResult,
@@ -155,6 +156,74 @@ def _liquidity_sweep_reason(
         return (
             f"False liquidity sweep detected: price closed back across the "
             f"{candidate} swept level"
+        )
+    return None
+
+
+def _bos_follow_through_reason(
+    candles: List[OHLCV],
+    smc: SmcResult,
+    candidate: str,
+    confirmation_max_age: int = 3,
+) -> Optional[str]:
+    """Return a block reason when the latest BOS lacks continuation.
+
+    A BOS is only actionable when the next closed candle accepts the broken
+    level.  This prevents a single wide candle or a stop-hunt close from
+    authorizing an entry that immediately loses the structure.
+    """
+    if candidate not in {"BUY", "SELL"} or not candles:
+        return None
+
+    latest = get_latest_structure_event(smc)
+    if not isinstance(latest, SmcBos) or latest.type != candidate:
+        return None
+
+    current_index = len(candles) - 1
+    bars_after = current_index - latest.bar_index
+    if bars_after < 0 or bars_after > confirmation_max_age:
+        return None
+    if bars_after == 0:
+        return (
+            f"BOS pending confirmation: {candidate} breakout needs "
+            "one subsequent closed candle"
+        )
+
+    confirmation_index = latest.bar_index + 1
+    if confirmation_index >= len(candles):
+        return "BOS guard: missing confirmation candle"
+
+    confirmation = candles[confirmation_index]
+    confirmation_range = confirmation.high - confirmation.low
+    body_ratio = (
+        abs(confirmation.close - confirmation.open) / confirmation_range
+        if confirmation_range > 0 else 0.0
+    )
+    directional_body = (
+        confirmation.close > confirmation.open
+        if candidate == "BUY"
+        else confirmation.close < confirmation.open
+    )
+    held_level = (
+        confirmation.close > latest.price
+        if candidate == "BUY"
+        else confirmation.close < latest.price
+    )
+    if not directional_body or not held_level or body_ratio < 0.35:
+        return (
+            f"False BOS detected: {candidate} breakout lacked "
+            "directional follow-through"
+        )
+
+    crossed_back = any(
+        (c.close <= latest.price if candidate == "BUY"
+         else c.close >= latest.price)
+        for c in candles[confirmation_index:]
+    )
+    if crossed_back:
+        return (
+            f"False BOS detected: price closed back across the "
+            f"{candidate} breakout level"
         )
     return None
 
@@ -410,6 +479,15 @@ def run_decision_engine(
         return _make_neutral(
             smc, wyckoff, pa, trend,
             [liquidity_sweep_reason], [liquidity_sweep_reason],
+        )
+
+    bos_follow_through_reason = _bos_follow_through_reason(
+        candles, smc, candidate
+    )
+    if bos_follow_through_reason:
+        return _make_neutral(
+            smc, wyckoff, pa, trend,
+            [bos_follow_through_reason], [bos_follow_through_reason],
         )
 
     if candidate == "BUY"  and not regime.rules.allow_long:
