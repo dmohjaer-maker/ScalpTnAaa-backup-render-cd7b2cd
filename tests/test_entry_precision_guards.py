@@ -2,7 +2,9 @@
 
 from live_trading.signals.decision_engine import _has_fresh_entry_trigger
 from live_trading.signals.mtf_filter import MtfBias, mtf_allows_trade
-from live_trading.trading.entry_guards import validate_entry_quote
+from live_trading.trading.entry_guards import (
+    validate_entry_quote, validate_protection_levels,
+)
 from live_trading.signals.smc_engine import SmcBos, SmcResult
 
 
@@ -66,3 +68,27 @@ def test_price_drift_blocks_entry():
     allowed, reason, _ = validate_entry_quote("SELL", 98.00, 98.05, 100.00, 1.0, 0.20, 0.20)
     assert allowed is False
     assert "drift" in reason
+
+
+def test_invalid_buy_risk_reward_is_rejected_at_execution_boundary():
+    allowed, reason, rr = validate_protection_levels(
+        "BUY", 4483.92, 4473.43, 4490.11, required_rr=2.0
+    )
+    assert allowed is False
+    assert "R:R" in reason
+    assert round(rr, 2) == 0.59
+
+
+def test_two_r_buy_protection_levels_are_allowed():
+    assert validate_protection_levels(
+        "BUY", 100.0, 95.0, 110.0, required_rr=2.0
+    ) == (True, "", 2.0)
+
+
+def test_invalid_sell_protection_levels_are_rejected():
+    allowed, reason, rr = validate_protection_levels(
+        "SELL", 100.0, 110.0, 95.0, required_rr=2.0
+    )
+    assert allowed is False
+    assert "R:R" in reason
+    assert round(rr, 2) == 0.50
