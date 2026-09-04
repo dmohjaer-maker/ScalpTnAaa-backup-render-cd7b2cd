@@ -70,6 +70,12 @@ services:
       # processing EURUSD on an independent bar cursor and risk/sizing path.
       - key: SYMBOLS
         value: "XAUUSD,EURUSD"
+      # Poll transport/bar boundaries more frequently without changing the
+      # completed-candle signal semantics.
+      - key: BAR_CHECK_INTERVAL
+        value: "5"
+      - key: RECONNECT_DELAY
+        value: "15"
       # FIX: TIMEFRAME and CANDLE_WINDOW are now env-configurable (fix #4).
       - key: TIMEFRAME
         value: "5m"
@@ -157,7 +163,7 @@ services:
       - key: TRAIL_MIN_STEP_PRICE
         value: "0.10"
       - key: TRAIL_CHECK_INTERVAL
-        value: "3.0"
+        value: "1.0"
       # TRADE_TIMEFRAMES / QUALITY_ADX_MIN are read by the live engine and
       # were set on the live service but missing from this manifest.
       - key: TRADE_TIMEFRAMES

@@ -230,9 +230,9 @@ class GoldScalperLive:
         # reconnects before the trading loop hits a failure.  Faster than
         # waiting for a bar-tick request to fail (worst case: one full bar).
         self._watchdog_task = asyncio.create_task(
-            start_connection_watchdog(interval_seconds=30.0), name="mt5_watchdog"
+            start_connection_watchdog(interval_seconds=15.0), name="mt5_watchdog"
         )
-        # MT5 broker-session keepalive: pings /ConnectionStatus every 3 min
+        # MT5 broker-session keepalive: pings /ConnectionStatus every 1 min
         # so the broker socket stays open and conn_id never expires silently.
         self._mt5_keepalive_task = asyncio.create_task(
             start_mt5_session_keepalive(), name="mt5_session_keepalive"

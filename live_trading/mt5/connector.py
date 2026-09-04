@@ -32,7 +32,7 @@ import aiohttp
 from live_trading.config import (
     MTAPI_URL, MT5_HOST, MT5_PORT,
     MT5_USER, MT5_PASSWORD,
-    SYNC_TIMEOUT,
+    RECONNECT_DELAY, SYNC_TIMEOUT,
 )
 from live_trading.signals.gold_engine import OHLCV
 from live_trading.logger import get_logger
@@ -72,7 +72,7 @@ _watchdog_task: asyncio.Task | None = None
 # every _MT5_KEEPALIVE_INTERVAL_S seconds so the broker socket stays open.
 # Completely separate from the HTTP-bridge /Ping in server.py.
 _MT5_KEEPALIVE_TASK: asyncio.Task | None = None
-_MT5_KEEPALIVE_INTERVAL_S:    float = 180.0    # 3 min  — keep broker session alive
+_MT5_KEEPALIVE_INTERVAL_S:    float = 60.0     # 1 min — keep broker session alive
 _MT5_SESSION_REFRESH_AGE_S:   float = 14400.0  # 4 hours — proactively refresh conn_id
 
 
@@ -308,10 +308,12 @@ async def ensure_connected(*args, **kwargs) -> bool:
         # Re-check inside the lock: another waiter may have already reconnected
         if _connected and _time.monotonic() - _last_connect_time < _CONNECT_GRACE_PERIOD:
             return True
-        return await connect_with_retry(max_attempts=3, retry_delay=30.0)
+        return await connect_with_retry(
+            max_attempts=3, retry_delay=RECONNECT_DELAY
+        )
 
 
-async def start_connection_watchdog(interval_seconds: float = 30.0) -> None:
+async def start_connection_watchdog(interval_seconds: float = 15.0) -> None:
     """Proactive background task: checks MT5 connection health every *interval_seconds*
     and reconnects before the trading loop hits a failure.
 
@@ -321,8 +323,9 @@ async def start_connection_watchdog(interval_seconds: float = 30.0) -> None:
     Why this matters:
       Without a proactive watchdog the connector only reconnects *after* a
       trading-loop request fails — by which time the bar has already started
-      and the opportunity may be lost.  Checking every 60 s means the worst-case
-      reconnect latency is ~60 s, not one full 5-minute bar.
+      and the opportunity may be lost.  Checking every 15 s and requiring two
+      consecutive failures means reconnect detection takes at most ~30 s,
+      not one full 5-minute bar.
     """
     global _watchdog_task
     log.info(f"[watchdog] MT5 connection watchdog started (interval={interval_seconds}s) — reconnect within {interval_seconds*2}s of any sustained drop")

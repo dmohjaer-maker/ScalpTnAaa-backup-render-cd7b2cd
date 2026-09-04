@@ -257,8 +257,11 @@ TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M20,M15,M10,5m")
 COMMENT = "GSPv4"
 
 # ── Loop Timing ──────────────────────────────────────────────────────────────
-BAR_CHECK_INTERVAL = 15       # seconds between candle-close checks
-RECONNECT_DELAY    = 30       # seconds before reconnect attempt
+# These controls affect transport responsiveness only. Signal decisions still
+# run once per completed candle, so polling more often cannot create duplicate
+# entries or change the strategy's candle semantics.
+BAR_CHECK_INTERVAL = _int("BAR_CHECK_INTERVAL", 5, lo=2, hi=60)
+RECONNECT_DELAY    = _int("RECONNECT_DELAY", 15, lo=5, hi=300)
 SYNC_TIMEOUT       = 120      # seconds to wait for initial connect
 
 # ── File Paths (for Telegram panel) ─────────────────────────────────────────
