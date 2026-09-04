@@ -523,6 +523,7 @@ class MessageFormatter:
                 return ""
             replacements = [
                 (r"No SMC direction signal", "سیگنال جهت‌دار SMC وجود ندارد"),
+                (r"No SMC signal", "سیگنال SMC وجود ندارد"),
                 (r"SMC composite is NEUTRAL while structure candidate is (\w+)",
                  r"ترکیب SMC خنثی است؛ کاندیدای ساختار \1 تأیید نشد"),
                 (r"SMC direction conflict: structure candidate (\w+) vs composite (\w+)",
