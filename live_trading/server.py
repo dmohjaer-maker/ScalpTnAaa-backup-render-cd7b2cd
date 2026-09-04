@@ -280,6 +280,11 @@ def _build_snapshot_from_state(state: dict, signal_snap: dict | None = None) -> 
         "open_positions":   [pos] if pos else [],
         "pending_orders":   [],
         "recent_trades":    state.get("recent_trades", []),
+        # Keep the complete latest decision available to the Telegram panel.
+        # It contains the authoritative blocked_reasons/reasoning explaining
+        # why a scan did not produce an entry.
+        "last_decision":    state.get("last_decision"),
+        "last_signal_time": state.get("last_signal_time"),
         "drawdown": {
             "current_percent": float(guardian.get("drawdown_pct", 0.0)),
             "max_percent":     float(

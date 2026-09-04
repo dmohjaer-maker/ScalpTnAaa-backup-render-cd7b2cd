@@ -5,6 +5,7 @@ Produces beautiful, consistent messages for every panel screen.
 
 from datetime import datetime, timezone
 from html import escape
+import re
 from typing import Optional, Any
 from ...config.constants import RobotStatus, ConnectionStatus, ICONS
 from ...models.account import Account
@@ -491,12 +492,12 @@ class MessageFormatter:
 
     @staticmethod
     def latest_scan(snapshot: dict[str, Any]) -> str:
-        """Format the latest live market scan from the robot snapshot."""
+        """Format the latest live market scan in Persian."""
         if not snapshot or not snapshot.get("connection_status"):
             return (
-                "📡 <b>LATEST MARKET SCAN</b>\n"
+                "📡 <b>آخرین اسکن بازار</b>\n"
                 f"<code>{_DIVIDER}</code>\n\n"
-                "⚠️ No live scan data is available right now."
+                "⚠️ در حال حاضر اطلاعات اسکن زنده در دسترس نیست."
             )
 
         def value(key: str, fallback: str = "—") -> str:
@@ -510,37 +511,118 @@ class MessageFormatter:
             except (TypeError, ValueError):
                 return "—"
 
+        def translate_term(raw: Any, terms: dict[str, str]) -> str:
+            if raw is None or raw == "":
+                return "—"
+            return escape(terms.get(str(raw).upper(), str(raw)))
+
+        def translate_reason(raw: Any) -> str:
+            """Translate known decision-engine reasons without hiding detail."""
+            reason = str(raw or "").strip()
+            if not reason:
+                return ""
+            replacements = [
+                (r"No SMC direction signal", "سیگنال جهت‌دار SMC وجود ندارد"),
+                (r"SMC composite is NEUTRAL while structure candidate is (\w+)",
+                 r"ترکیب SMC خنثی است؛ کاندیدای ساختار \1 تأیید نشد"),
+                (r"SMC direction conflict: structure candidate (\w+) vs composite (\w+)",
+                 r"تناقض جهت SMC: ساختار \1 در برابر ترکیب \2"),
+                (r'REgime', "وضعیت بازار"),
+                (r'Regime "([^"]+)" does not allow LONG',
+                 r'وضعیت بازار "\1" اجازهٔ خرید نمی‌دهد'),
+                (r'Regime "([^"]+)" does not allow SHORT',
+                 r'وضعیت بازار "\1" اجازهٔ فروش نمی‌دهد'),
+                (r"Confidence ([\d.]+)% < ([\d.]+)%",
+                 r"اعتماد سیگنال \1٪ کمتر از حداقل \2٪ است"),
+                (r"Insufficient candle data \(< 30\)",
+                 "تعداد کندل‌های کافی برای تحلیل وجود ندارد"),
+                (r"MTF unavailable", "اطلاعات تایم‌فریم بالاتر در دسترس نیست"),
+                (r"MTF neutral", "جهت تایم‌فریم بالاتر خنثی است"),
+                (r"entry blocked", "ورود مسدود شد"),
+                (r"No signal", "سیگنال معتبر پیدا نشد"),
+            ]
+            for pattern, replacement in replacements:
+                reason = re.sub(pattern, replacement, reason, flags=re.IGNORECASE)
+            return escape(reason)
+
+        trend_terms = {
+            "BULLISH": "صعودی",
+            "BEARISH": "نزولی",
+            "NEUTRAL": "خنثی",
+        }
+        regime_terms = {
+            "RANGE": "رنج",
+            "TRENDING": "رونددار",
+            "VOLATILE": "پرنوسان",
+            "NEUTRAL": "خنثی",
+        }
+        signal_terms = {
+            "BUY": "خرید",
+            "SELL": "فروش",
+            "NEUTRAL": "خنثی",
+        }
+        connection_terms = {
+            "CONNECTED": "متصل",
+            "DISCONNECTED": "قطع",
+        }
         news = snapshot.get("news_filter") or {}
         dxy = snapshot.get("dxy_filter") or {}
         news_blocked = bool(news.get("blocked", False))
-        news_label = "BLOCKED" if news_blocked else "CLEAR"
+        news_label = "مسدود" if news_blocked else "آزاد"
         news_icon = "🔴" if news_blocked else "🟢"
-        dxy_signal = escape(str(dxy.get("signal") or "—"))
+        dxy_signal = translate_term(
+            dxy.get("signal"),
+            {"BEARISH_DXY": "نزولی DXY", "BULLISH_DXY": "صعودی DXY", "NEUTRAL": "خنثی"},
+        )
         positions = snapshot.get("open_positions") or []
         trades = snapshot.get("recent_trades") or []
+        decision = snapshot.get("last_decision") or {}
+        blocked_reasons = decision.get("blocked_reasons") or []
+        reasoning = decision.get("reasoning") or []
+        if isinstance(blocked_reasons, str):
+            blocked_reasons = [blocked_reasons]
+        if isinstance(reasoning, str):
+            reasoning = [reasoning]
+        if blocked_reasons:
+            rejection_lines = [translate_reason(item) for item in blocked_reasons if item]
+        elif str(snapshot.get("smc_signal", "")).upper() == "NEUTRAL":
+            rejection_lines = [
+                "سیگنال SMC خنثی است؛ ساختار ورود مشخصی تأیید نشده است."
+            ]
+        elif decision.get("allowed") is False:
+            rejection_lines = ["شرایط لازم برای ورود کامل نشده است."]
+        else:
+            rejection_lines = ["سیگنال معتبر است؛ شرایط ورود تأیید شده است."]
+        if not rejection_lines:
+            rejection_lines = ["علت رد شدن در snapshot فعلی ثبت نشده است."]
 
         lines = [
-            "📡 <b>LATEST MARKET SCAN</b>",
+            "📡 <b>آخرین اسکن بازار</b>",
             f"<code>{_DIVIDER}</code>",
-            f"🕒 Candle: <code>{value('candle_time')}</code>",
-            f"🛰️ Snapshot: <code>{value('timestamp', value('_fetched_at'))}</code>",
-            f"💵 Price: <b>{number('price')}</b>",
+            f"🕒 کندل: <code>{value('candle_time')}</code>",
+            f"🛰️ زمان دریافت: <code>{value('timestamp', value('_fetched_at'))}</code>",
+            f"💵 قیمت: <b>{number('price')}</b>",
             "",
-            f"📈 Trend: <b>{value('trend')}</b>",
-            f"📊 Regime: <b>{value('regime')}</b>",
-            f"🎯 SMC Signal: <b>{value('smc_signal')}</b>",
+            f"📈 روند: <b>{translate_term(snapshot.get('trend'), trend_terms)}</b>",
+            f"📊 وضعیت بازار: <b>{translate_term(snapshot.get('regime'), regime_terms)}</b>",
+            f"🎯 سیگنال SMC: <b>{translate_term(snapshot.get('smc_signal'), signal_terms)}</b>",
             f"📐 ADX: <b>{number('adx', 2)}</b>  |  ATR: <b>{number('atr', 5)}</b>",
             "",
-            f"{news_icon} News filter: <b>{news_label}</b>",
+            f"{news_icon} فیلتر اخبار: <b>{news_label}</b>",
         ]
         if news.get("reason"):
-            lines.append(f"   └ {escape(str(news['reason']))}")
+            lines.append(f"   └ {translate_reason(news['reason'])}")
         lines.extend([
-            f"💲 DXY: <b>{dxy_signal}</b>",
-            f"🟢 Connection: <b>{value('connection_status')}</b>",
-            f"💼 Open positions: <b>{len(positions)}</b>",
-            f"📋 Closed trades in snapshot: <b>{len(trades)}</b>",
+            f"💲 وضعیت DXY: <b>{dxy_signal}</b>",
+            f"🟢 اتصال: <b>{translate_term(snapshot.get('connection_status'), connection_terms)}</b>",
+            f"💼 پوزیشن‌های باز: <b>{len(positions)}</b>",
+            f"📋 معاملات بسته‌شده: <b>{len(trades)}</b>",
+            "",
+            "🚫 <b>علت رد شدن سیگنال:</b>",
         ])
+        lines.extend(f"• {reason}" for reason in rejection_lines[:3])
+        if reasoning and not blocked_reasons:
+            lines.append(f"💡 توضیح تحلیل: {translate_reason(reasoning[0])}")
         return "\n".join(lines)
 
     # ─── Helpers ─────────────────────────────────────────────────────────────
