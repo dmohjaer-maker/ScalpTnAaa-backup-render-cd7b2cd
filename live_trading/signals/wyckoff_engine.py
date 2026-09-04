@@ -239,15 +239,20 @@ def analyze_wyckoff(candles: List[OHLCV]) -> WyckoffResult:
                              volume_confirmed=vol_conf,
                              wyckoff_signal="NEUTRAL", wyckoff_score=0.0)
 
-    score_raw = 0.30
-    if phase == "ACCUMULATION":
-        signal = "BUY"
-        if spring:   score_raw += 0.40
-        if vol_conf: score_raw += 0.30
-    else:
-        signal = "SELL"
-        if upthrust: score_raw += 0.40
-        if vol_conf: score_raw += 0.30
+    # A phase describes context, not an entry trigger. Require both the
+    # directional event (Spring/Upthrust) and directional volume confirmation
+    # before Wyckoff can cast a BUY/SELL vote. This prevents a phase-only
+    # classification from authorizing an entry in a still-unresolved range.
+    confirmed_event = spring if phase == "ACCUMULATION" else upthrust
+    if not confirmed_event or not vol_conf:
+        return WyckoffResult(
+            phase=phase, spring=spring, upthrust=upthrust,  # type: ignore
+            volume_confirmed=vol_conf,
+            wyckoff_signal="NEUTRAL", wyckoff_score=0.0,
+        )
+
+    score_raw = 1.0
+    signal = "BUY" if phase == "ACCUMULATION" else "SELL"
 
     return WyckoffResult(
         phase=phase, spring=spring, upthrust=upthrust,  # type: ignore
