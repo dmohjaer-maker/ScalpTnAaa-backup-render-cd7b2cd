@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import List, Literal, Optional
 from live_trading.signals.gold_engine import OHLCV
 from live_trading.signals.smc_engine import (
+    SmcChoch,
     SmcResult,
     analyze_smc_structure,
     detect_order_block_fake_breakout,
@@ -81,6 +82,75 @@ def _has_fresh_entry_trigger(
         for sweep in smc.liquidity_sweeps
     )
     return structure_trigger or sweep_trigger or pa_signal == candidate
+
+
+def _false_reversal_reason(
+    candles: List[OHLCV],
+    smc: SmcResult,
+    candidate: str,
+) -> Optional[str]:
+    """Return a block reason when a CHoCH fails its first follow-through.
+
+    A CHoCH is a reversal *candidate*, not proof that the new direction will
+    hold.  Require one subsequent closed candle to stay beyond the broken
+    structure level, with a directional body.  If price closes back across
+    that level during the first few bars, classify the move as a false
+    reversal and keep it out of the order executor.
+    """
+    latest = get_latest_structure_event(smc)
+    if not isinstance(latest, SmcChoch) or latest.type != candidate:
+        return None
+
+    current_index = len(candles) - 1
+    bars_after = current_index - latest.bar_index
+    if bars_after < 0:
+        return "False reversal guard: invalid CHoCH bar index"
+    if bars_after == 0:
+        return (
+            f"Reversal pending confirmation: {candidate} CHoCH needs "
+            "one subsequent closed candle"
+        )
+
+    confirmation = candles[latest.bar_index + 1] \
+        if latest.bar_index + 1 < len(candles) else None
+    if confirmation is None:
+        return "False reversal guard: missing confirmation candle"
+
+    confirmation_range = confirmation.high - confirmation.low
+    confirmation_body_ratio = (
+        abs(confirmation.close - confirmation.open) / confirmation_range
+        if confirmation_range > 0 else 0.0
+    )
+    directional_body = (
+        confirmation.close > confirmation.open
+        if candidate == "BUY"
+        else confirmation.close < confirmation.open
+    )
+    held_level = (
+        confirmation.close > latest.price
+        if candidate == "BUY"
+        else confirmation.close < latest.price
+    )
+    if not directional_body or not held_level or confirmation_body_ratio < 0.30:
+        return (
+            f"False reversal detected: {candidate} CHoCH lacked "
+            "directional follow-through"
+        )
+
+    # A reclaim of the broken level shortly after the CHoCH invalidates the
+    # reversal even if the first confirmation candle looked acceptable.
+    recent_after = candles[latest.bar_index + 1:]
+    crossed_back = any(
+        (c.close <= latest.price if candidate == "BUY"
+         else c.close >= latest.price)
+        for c in recent_after
+    )
+    if crossed_back:
+        return (
+            f"False reversal detected: price closed back across the "
+            f"{candidate} CHoCH level"
+        )
+    return None
 
 
 @dataclass
@@ -252,6 +322,13 @@ def run_decision_engine(
             f"trigger within {ENTRY_TRIGGER_MAX_AGE_BARS} bars"
         )
         return _make_neutral(smc, wyckoff, pa, trend, [reason], [reason])
+
+    false_reversal_reason = _false_reversal_reason(candles, smc, candidate)
+    if false_reversal_reason:
+        return _make_neutral(
+            smc, wyckoff, pa, trend,
+            [false_reversal_reason], [false_reversal_reason],
+        )
 
     if candidate == "BUY"  and not regime.rules.allow_long:
         return _make_neutral(smc, wyckoff, pa, trend,

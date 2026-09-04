@@ -20,7 +20,11 @@ def analyze_trend(candles: List[OHLCV]) -> TrendResult:
     closes = [c.close for c in candles]
     n = len(closes)
 
-    if n < 210:
+    # 200 candles are enough to calculate EMA200.  Keep the live engine
+    # usable when CANDLE_WINDOW is intentionally set to 200; returning a
+    # neutral trend at exactly that setting disables the trend confirmation
+    # and makes reversal filtering less effective.
+    if n < 200:
         last = closes[-1] if closes else 0.0
         return TrendResult(ema50=last, ema100=last, ema200=last,
                            trend="NEUTRAL", strength="WEAK")
