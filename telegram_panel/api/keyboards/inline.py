@@ -88,6 +88,12 @@ class Keyboards:
                 InlineKeyboardButton("💼 Accounts", callback_data="nav:accounts"),
             ],
             [
+                InlineKeyboardButton(
+                    "📡 10 Recent Trades · Live",
+                    callback_data="trading:recent10",
+                ),
+            ],
+            [
                 InlineKeyboardButton("💱 Trading", callback_data="nav:trading"),
                 InlineKeyboardButton("🛡️ Risk Control", callback_data="nav:risk"),
             ],
@@ -117,6 +123,12 @@ class Keyboards:
             [
                 InlineKeyboardButton("🔄 Refresh Status", callback_data="dashboard:refresh"),
                 InlineKeyboardButton("🧪 Test Connection", callback_data="dashboard:test_connection"),
+            ],
+            [
+                InlineKeyboardButton(
+                    "📡 10 Recent Trades · Live",
+                    callback_data="trading:recent10",
+                ),
             ],
             [
                 InlineKeyboardButton("🔄 Reconnect MT5", callback_data="robot:restart_mt5_confirm"),
@@ -256,7 +268,10 @@ class Keyboards:
                 InlineKeyboardButton("⏳ Pending Orders", callback_data="trading:pending"),
             ],
             [
-                InlineKeyboardButton("📜 Trade History", callback_data="trading:history"),
+                InlineKeyboardButton(
+                    "📡 10 Recent Trades · Live",
+                    callback_data="trading:recent10",
+                ),
             ],
             [
                 InlineKeyboardButton(f"🔴 Close All", callback_data="trading:close_all_confirm"),

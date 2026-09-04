@@ -436,17 +436,21 @@ class MessageFormatter:
     # ─── Trade History ──────────────────────────────────────────────────────
 
     @staticmethod
-    def trade_history(trades: list) -> str:
+    def trade_history(trades: list, *, live: bool = False) -> str:
         """Format recent closed trades for Telegram display."""
         _D = "─" * 32
         if not trades:
             return (
-                "📋 <b>TRADE HISTORY</b>\n"
+                f"{'📡' if live else '📋'} <b>{'LIVE 10 RECENT TRADES' if live else 'TRADE HISTORY'}</b>\n"
                 f"<code>{_D}</code>\n\n"
                 "No completed trades found.\n\n"
                 "<i>Trades appear here once the robot closes a position.</i>"
             )
-        lines = [f"📋 <b>TRADE HISTORY</b> (last {len(trades)})", f"<code>{_D}</code>"]
+        title = "LIVE 10 RECENT TRADES" if live else "TRADE HISTORY"
+        lines = [
+            f"{'📡' if live else '📋'} <b>{title}</b> (last {len(trades)})",
+            f"<code>{_D}</code>",
+        ]
         total_pnl = 0.0
         wins = 0
         for t in reversed(trades):

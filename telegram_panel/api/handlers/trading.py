@@ -397,11 +397,18 @@ class TradingHandler(BaseHandler):
     # ── Trade History ─────────────────────────────────────────────────────────
 
     async def show_trade_history(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE, limit: int = 20
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        limit: int = 20,
+        *,
+        fresh: bool = False,
     ) -> None:
         """
-        Display recent closed trades via /history or trading:history callback.
-        ROOT-CAUSE FIX: no handler existed to show completed trade history.
+        Display recent closed trades via /history or a Telegram callback.
+
+        The dedicated Live action passes ``fresh=True`` so the report is
+        fetched from the latest robot snapshot on every click.
         """
         ok, _ = await self._auth.check_permission(update, "can_view_dashboard")
         if not ok:
@@ -409,7 +416,7 @@ class TradingHandler(BaseHandler):
         from ..formatters.messages import MessageFormatter
         from telegram import InlineKeyboardMarkup
         try:
-            trades = await self._trades.get_recent_trades(limit)
+            trades = await self._trades.get_recent_trades(limit, fresh=fresh)
         except Exception as exc:
             await self.edit_or_reply(
                 update, context,
@@ -417,11 +424,17 @@ class TradingHandler(BaseHandler):
                 InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back to Trading", callback_data="nav:trading")]]),
             )
             return
-        text = MessageFormatter.trade_history(trades)
+        text = MessageFormatter.trade_history(trades, live=fresh)
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("🔄 Refresh History",  callback_data="trading:history"),
-                InlineKeyboardButton("📋 Show Last 50",  callback_data="trading:history:50"),
+                InlineKeyboardButton(
+                    "📡 Refresh Live 10",
+                    callback_data="trading:recent10",
+                ),
+                InlineKeyboardButton(
+                    "📋 Show Last 50",
+                    callback_data="trading:history:50",
+                ),
             ],
             [InlineKeyboardButton("↩️ Back to Trading", callback_data="nav:trading")],
         ])

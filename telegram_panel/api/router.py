@@ -276,6 +276,10 @@ class Router:
                     await self._trading.show_position_detail(update, context, int(param))
                 elif action == "pending":
                     await self._trading.show_pending(update, context)
+                elif action == "recent10":
+                    await self._trading.show_trade_history(
+                        update, context, 10, fresh=True
+                    )
                 elif action == "history":
                     limit = int(param) if param else 20
                     await self._trading.show_trade_history(update, context, limit)
