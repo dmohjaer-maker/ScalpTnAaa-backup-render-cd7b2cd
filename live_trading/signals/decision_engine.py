@@ -7,6 +7,7 @@ from typing import List, Literal, Optional
 from live_trading.signals.gold_engine import OHLCV
 from live_trading.signals.smc_engine import (
     SmcChoch,
+    SmcLiquiditySweep,
     SmcResult,
     analyze_smc_structure,
     detect_order_block_fake_breakout,
@@ -82,6 +83,80 @@ def _has_fresh_entry_trigger(
         for sweep in smc.liquidity_sweeps
     )
     return structure_trigger or sweep_trigger or pa_signal == candidate
+
+
+def _liquidity_sweep_reason(
+    candles: List[OHLCV],
+    smc: SmcResult,
+    candidate: str,
+    confirmation_max_age: int = 3,
+) -> Optional[str]:
+    """Return a block reason when a fresh liquidity sweep lacks confirmation.
+
+    A sweep is a liquidity event, not a complete entry signal.  Require the
+    next closed candle to keep its close beyond the swept level with a
+    directional body.  A sweep older than a small bounded window is ignored so
+    it cannot veto an unrelated later setup.
+    """
+    if candidate not in {"BUY", "SELL"} or not candles:
+        return None
+
+    expected_type = "BULLISH" if candidate == "BUY" else "BEARISH"
+    aligned_sweeps = [
+        sweep for sweep in smc.liquidity_sweeps
+        if sweep.type == expected_type
+    ]
+    if not aligned_sweeps:
+        return None
+
+    latest = max(aligned_sweeps, key=lambda sweep: sweep.bar_index)
+    current_index = len(candles) - 1
+    bars_after = current_index - latest.bar_index
+    if bars_after < 0 or bars_after > confirmation_max_age:
+        return None
+    if bars_after == 0:
+        return (
+            f"Liquidity sweep pending confirmation: {candidate} sweep needs "
+            "one subsequent closed candle"
+        )
+
+    confirmation_index = latest.bar_index + 1
+    if confirmation_index >= len(candles):
+        return "Liquidity sweep guard: missing confirmation candle"
+
+    confirmation = candles[confirmation_index]
+    confirmation_range = confirmation.high - confirmation.low
+    body_ratio = (
+        abs(confirmation.close - confirmation.open) / confirmation_range
+        if confirmation_range > 0 else 0.0
+    )
+    directional_body = (
+        confirmation.close > confirmation.open
+        if candidate == "BUY"
+        else confirmation.close < confirmation.open
+    )
+    held_level = (
+        confirmation.close > latest.swept_level
+        if candidate == "BUY"
+        else confirmation.close < latest.swept_level
+    )
+    if not directional_body or not held_level or body_ratio < 0.30:
+        return (
+            f"False liquidity sweep detected: {candidate} sweep lacked "
+            "directional follow-through"
+        )
+
+    crossed_back = any(
+        (c.close <= latest.swept_level if candidate == "BUY"
+         else c.close >= latest.swept_level)
+        for c in candles[confirmation_index:]
+    )
+    if crossed_back:
+        return (
+            f"False liquidity sweep detected: price closed back across the "
+            f"{candidate} swept level"
+        )
+    return None
 
 
 def _false_reversal_reason(
@@ -328,6 +403,13 @@ def run_decision_engine(
         return _make_neutral(
             smc, wyckoff, pa, trend,
             [false_reversal_reason], [false_reversal_reason],
+        )
+
+    liquidity_sweep_reason = _liquidity_sweep_reason(candles, smc, candidate)
+    if liquidity_sweep_reason:
+        return _make_neutral(
+            smc, wyckoff, pa, trend,
+            [liquidity_sweep_reason], [liquidity_sweep_reason],
         )
 
     if candidate == "BUY"  and not regime.rules.allow_long:
