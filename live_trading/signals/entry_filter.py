@@ -27,6 +27,7 @@ def apply_entry_filter(
     min_confirmations: int = MIN_CONFIRMATIONS,
     require_price_action: bool = False,
     require_smc_price_action_wyckoff: bool = False,
+    require_trend_alignment: bool = True,
 ) -> EntryFilterResult:
 
     blocked = EntryFilterResult(
@@ -47,8 +48,13 @@ def apply_entry_filter(
     wyc_ok   = wyckoff_signal == direction
 
     count = sum([smc_ok, trend_ok, pa_ok, wyc_ok])
-    if require_smc_price_action_wyckoff:
-        # Exact option 1: EMA is deliberately not part of the required gate.
+    # Trend alignment is a hard safety rule.  No confirmation count or
+    # alternate entry mode may authorize a counter-trend trade.
+    if require_trend_alignment and not trend_ok:
+        allowed = False
+    elif require_smc_price_action_wyckoff:
+        # Exact option 1: SMC + Price Action + Wyckoff are required, and the
+        # hard trend gate above independently requires EMA alignment.
         allowed = smc_ok and pa_ok and wyc_ok
     else:
         allowed = count >= min_confirmations and (
