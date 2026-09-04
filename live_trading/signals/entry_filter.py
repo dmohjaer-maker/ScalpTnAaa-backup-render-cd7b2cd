@@ -1,6 +1,9 @@
 """
-Entry Filter — Minimum N of 4 independent confirmations.
-Ported from entryFilter.ts
+Entry Filter — Minimum confirmation gate with advisory SMC context.
+
+SMC is intentionally a soft confirmation: an aligned SMC signal strengthens a
+setup, but a neutral/missing SMC signal must not veto an otherwise-confirmed
+trade. Trend alignment remains a hard safety gate.
 """
 from dataclasses import dataclass
 from typing import Literal
@@ -28,6 +31,7 @@ def apply_entry_filter(
     require_price_action: bool = False,
     require_smc_price_action_wyckoff: bool = False,
     require_trend_alignment: bool = True,
+    candidate_direction: str | None = None,
 ) -> EntryFilterResult:
 
     blocked = EntryFilterResult(
@@ -35,14 +39,19 @@ def apply_entry_filter(
         smc=False, trend=False, price_action=False, wyckoff=False,
     )
 
-    if smc_signal == "NEUTRAL":
+    # The candidate is selected by the decision engine from the non-SMC
+    # directional context when SMC is neutral or disagrees. Keep accepting the
+    # old call shape for standalone callers by falling back to smc_signal.
+    direction = candidate_direction or smc_signal
+    if direction not in {"BUY", "SELL"}:
         return blocked
 
-    direction = smc_signal
     trend_vote = ("BUY" if ema_trend == "BULLISH" else
                   "SELL" if ema_trend == "BEARISH" else "NEUTRAL")
 
-    smc_ok   = True
+    # SMC is a real vote only when it explicitly agrees with the candidate.
+    # NEUTRAL and opposing SMC are advisory negatives, never hard vetoes.
+    smc_ok   = smc_signal == direction
     trend_ok = trend_vote     == direction
     pa_ok    = pa_signal      == direction
     wyc_ok   = wyckoff_signal == direction
@@ -53,9 +62,9 @@ def apply_entry_filter(
     if require_trend_alignment and not trend_ok:
         allowed = False
     elif require_smc_price_action_wyckoff:
-        # Exact option 1: SMC + Price Action + Wyckoff are required, and the
-        # hard trend gate above independently requires EMA alignment.
-        allowed = smc_ok and pa_ok and wyc_ok
+        # Backward-compatible option name. SMC is no longer mandatory; this
+        # legacy strict mode now requires the two non-SMC confirmations.
+        allowed = pa_ok and wyc_ok
     else:
         allowed = count >= min_confirmations and (
             not require_price_action or pa_ok

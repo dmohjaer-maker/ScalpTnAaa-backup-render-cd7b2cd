@@ -1,7 +1,7 @@
-"""Exact option 1 entry-gate tests.
+"""Entry-gate regression tests.
 
-Option 1 requires same-direction SMC + Trend + Price Action + Wyckoff.
-Trend alignment is a hard safety gate, not an optional vote.
+SMC is advisory rather than a mandatory gate. Trend alignment remains a hard
+safety rule, while the legacy strict option requires Price Action + Wyckoff.
 """
 
 from live_trading.signals.entry_filter import apply_entry_filter
@@ -35,6 +35,22 @@ def test_option_one_allows_when_all_engines_and_trend_align():
     assert result.allowed is True
     assert result.direction == "BUY"
     assert result.confirmation_count == 4
+
+
+def test_legacy_strict_option_allows_without_smc_when_other_confirmations_align():
+    result = apply_entry_filter(
+        smc_signal="NEUTRAL",
+        ema_trend="BULLISH",
+        pa_signal="BUY",
+        wyckoff_signal="BUY",
+        min_confirmations=2,
+        require_smc_price_action_wyckoff=True,
+        candidate_direction="BUY",
+    )
+
+    assert result.allowed is True
+    assert result.direction == "BUY"
+    assert result.smc is False
 
 
 def test_option_one_blocks_when_trend_is_opposite():

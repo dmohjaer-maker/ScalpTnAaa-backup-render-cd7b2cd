@@ -439,9 +439,40 @@ class DecisionResult:
     dxy_signal:      str                         = "NEUTRAL"
 
 
-def _candidate_direction(smc: SmcResult) -> str:
-    # Use the newest event across both lists. Prioritising the last CHoCH
-    # unconditionally can resurrect an old reversal against a newer BOS.
+def _candidate_direction(
+    smc: SmcResult,
+    pa: Optional[PriceActionResult] = None,
+    trend: Optional[TrendResult] = None,
+    wyckoff: Optional[WyckoffResult] = None,
+) -> str:
+    """Choose direction from non-SMC context first, with SMC as a fallback.
+
+    SMC is advisory now. A neutral or conflicting SMC result must not suppress
+    a setup supported by the local EMA trend and other confirmations. Trend is
+    preferred because it remains the hard anti-counter-trend safety gate.
+    """
+    if trend is not None:
+        if trend.trend == "BULLISH":
+            return "BUY"
+        if trend.trend == "BEARISH":
+            return "SELL"
+
+    non_smc_votes = [
+        signal for signal in (
+            pa.pa_signal if pa is not None else "NEUTRAL",
+            wyckoff.wyckoff_signal if wyckoff is not None else "NEUTRAL",
+        )
+        if signal in {"BUY", "SELL"}
+    ]
+    if non_smc_votes:
+        if non_smc_votes.count("BUY") > non_smc_votes.count("SELL"):
+            return "BUY"
+        if non_smc_votes.count("SELL") > non_smc_votes.count("BUY"):
+            return "SELL"
+
+    # Use the newest event across both lists only as a last-resort fallback.
+    # Prioritising the last CHoCH unconditionally can resurrect an old
+    # reversal against a newer BOS.
     latest_structure = get_latest_structure_event(smc)
     if latest_structure is not None:
         return latest_structure.type
@@ -518,18 +549,11 @@ def run_decision_engine(
     pa      = analyze_price_action(candles)
     trend   = analyze_trend(candles)
 
-    candidate = _candidate_direction(smc)
+    candidate = _candidate_direction(smc, pa, trend, wyckoff)
     if candidate == "NEUTRAL":
-        return _make_neutral(smc, wyckoff, pa, trend, ["No SMC signal"])
-
-    # The structure event proposes a direction, but only the composite SMC
-    # verdict can satisfy the mandatory SMC vote. Fail closed on neutral or
-    # conflicting composite output before any other engine can authorize entry.
-    smc_conflict_reason = _smc_direction_conflict_reason(smc, candidate)
-    if smc_conflict_reason:
         return _make_neutral(
             smc, wyckoff, pa, trend,
-            [smc_conflict_reason], [smc_conflict_reason],
+            ["No directional Trend, Price Action, or Wyckoff signal"],
         )
 
     # Hard trend gate: a trade must follow the local EMA trend.
@@ -582,9 +606,10 @@ def run_decision_engine(
     else:
         effective_min_confirmations = min_confirmations
 
-    # Entry filter — minimum N-of-4 vote gate (SMC always required)
+    # Entry filter — minimum confirmation gate. SMC contributes only when it
+    # agrees; it is not required and cannot veto the non-SMC setup.
     ef = apply_entry_filter(
-        smc_signal      = candidate,
+        smc_signal      = smc.smc_signal,
         ema_trend       = trend.trend,
         pa_signal       = pa.pa_signal,
         wyckoff_signal  = wyckoff.wyckoff_signal,
@@ -592,6 +617,7 @@ def run_decision_engine(
         require_price_action = require_price_action,
         require_smc_price_action_wyckoff = require_smc_price_action_wyckoff,
         require_trend_alignment = True,
+        candidate_direction = candidate,
     )
     if not ef.allowed:
         votes = (f"SMC={'✓' if ef.smc else '✗'}  "
@@ -600,10 +626,11 @@ def run_decision_engine(
                  f"Wyckoff={'✓' if ef.wyckoff else '✗'}")
         if (
             require_smc_price_action_wyckoff
-            and not (ef.smc and ef.price_action and ef.wyckoff)
+            and not (ef.price_action and ef.wyckoff)
         ):
             reason = (
-                "Entry filter: Option 1 requires SMC + Price Action + Wyckoff — "
+                "Entry filter: strict mode requires Price Action + Wyckoff "
+                "(SMC is advisory) — "
                 f"{votes}  [regime={regime.regime}]"
             )
         elif require_price_action and not ef.price_action:

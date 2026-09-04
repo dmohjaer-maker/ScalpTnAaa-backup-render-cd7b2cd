@@ -7,6 +7,7 @@ These tests protect the two strategy-level failure modes found in production:
 
 from live_trading.signals import decision_engine
 from live_trading.signals.decision_engine import run_decision_engine
+from live_trading.signals.entry_filter import apply_entry_filter
 from live_trading.signals.gold_engine import OHLCV
 from live_trading.signals.smc_engine import SmcBos, SmcResult
 from live_trading.signals.trend_engine import TrendResult
@@ -33,36 +34,33 @@ def _smc_with_candidate(candidate: str, composite: str) -> SmcResult:
     )
 
 
-def test_decision_engine_blocks_structure_candidate_when_smc_is_neutral(monkeypatch):
-    smc = _smc_with_candidate("BUY", "NEUTRAL")
-    monkeypatch.setattr(decision_engine, "analyze_smc_structure", lambda _: smc)
-    monkeypatch.setattr(decision_engine, "analyze_wyckoff", lambda _: None)
-    monkeypatch.setattr(decision_engine, "analyze_price_action", lambda _: None)
-    monkeypatch.setattr(decision_engine, "analyze_trend", lambda _: None)
+def test_neutral_smc_is_advisory_when_trend_and_price_action_align():
+    result = apply_entry_filter(
+        smc_signal="NEUTRAL",
+        ema_trend="BULLISH",
+        pa_signal="BUY",
+        wyckoff_signal="NEUTRAL",
+        min_confirmations=2,
+        require_price_action=True,
+        candidate_direction="BUY",
+    )
 
-    result = run_decision_engine([], account_balance=10_000.0)
+    assert result.allowed is True
+    assert result.direction == "BUY"
+    assert result.smc is False
+    assert result.confirmation_count == 2
 
-    assert result.allowed is False
-    assert result.direction == "NEUTRAL"
-    assert "SMC composite is NEUTRAL" in result.blocked_reasons[0]
 
-
-def test_decision_engine_blocks_counter_trend_candidate(monkeypatch):
+def test_non_smc_trend_takes_priority_over_conflicting_smc():
     smc = _smc_with_candidate("BUY", "BUY")
     bearish_trend = TrendResult(
         ema50=101.0, ema100=102.0, ema200=103.0,
         trend="BEARISH", strength="STRONG",
     )
-    monkeypatch.setattr(decision_engine, "analyze_smc_structure", lambda _: smc)
-    monkeypatch.setattr(decision_engine, "analyze_wyckoff", lambda _: None)
-    monkeypatch.setattr(decision_engine, "analyze_price_action", lambda _: None)
-    monkeypatch.setattr(decision_engine, "analyze_trend", lambda _: bearish_trend)
 
-    result = run_decision_engine([], account_balance=10_000.0)
-
-    assert result.allowed is False
-    assert result.direction == "NEUTRAL"
-    assert "counter-trend entry blocked" in result.blocked_reasons[0]
+    assert decision_engine._candidate_direction(
+        smc, trend=bearish_trend
+    ) == "SELL"
 
 
 def _phase_only_candles(prior_direction: str) -> list[OHLCV]:

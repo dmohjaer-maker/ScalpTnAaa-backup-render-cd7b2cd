@@ -134,7 +134,7 @@ services:
       - key: REQUIRE_PRICE_ACTION
         value: "true"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
-        value: "true"
+        value: "false"
       - key: CONF_HARD_MIN
         value: "32"
       - key: DAILY_LOSS_LIMIT_PCT

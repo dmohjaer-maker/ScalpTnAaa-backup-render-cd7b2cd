@@ -171,21 +171,21 @@ CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 
 # ── Risk & Trade Rules ───────────────────────────────────────────────────────
 # Production defaults — override via Render env vars if needed.
-# MIN_CONFIRMATIONS: minimum engines that must agree (out of 4: SMC, Trend, PA, Wyckoff).
+# MIN_CONFIRMATIONS: minimum confirmations that must agree. SMC is advisory;
+# Trend, Price Action, and Wyckoff provide the independent entry confirmations.
 # CONF_HARD_MIN: trades below this confidence % are always rejected.
 RISK_PERCENT      = _float("RISK_PERCENT",      1.0,  lo=0.01, hi=10.0)
-# MIN_CONFIRMATIONS=2: SMC (always) + any 1 of (Trend / PA / Wyckoff).
-# Wyckoff fires rarely on 5m; PA patterns don't appear every candle.
-# Requiring 3 caused multi-day silences. 2 keeps quality while allowing flow.
+# MIN_CONFIRMATIONS=2: normally Trend + one additional confirmation.
+# Range regimes add one confirmation because false breakouts are more common.
 MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   2,    lo=1,    hi=10)
 # When enabled, every new trade must also have a same-direction Price Action signal.
 # Default false preserves existing behavior until explicitly enabled on Render.
 REQUIRE_PRICE_ACTION = os.getenv("REQUIRE_PRICE_ACTION", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
-# Exact option 1 gate: SMC, Price Action, and Wyckoff must all agree with the
-# candidate direction. EMA remains informational/confirmatory and is not
-# required for entry.
+# Deprecated compatibility flag. SMC is advisory and is never a mandatory
+# authorization gate; the decision engine keeps the flag only for callers that
+# still provide the old environment variable.
 REQUIRE_SMC_PRICE_ACTION_WYCKOFF = os.getenv(
     "REQUIRE_SMC_PRICE_ACTION_WYCKOFF", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
