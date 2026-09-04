@@ -531,11 +531,24 @@ def run_decision_engine(
             [smc_conflict_reason], [smc_conflict_reason],
         )
 
-    # Soft EMA gate — counter-trend trades are allowed but need 3 confirmations
+    # Hard trend gate: a trade must follow the local EMA trend.
+    # Counter-trend and unresolved (NEUTRAL) setups are rejected before
+    # confidence, regime, or confirmation votes are evaluated.
     trend_dir = ("BUY" if trend.trend == "BULLISH" else
                  "SELL" if trend.trend == "BEARISH" else "NEUTRAL")
-    _counter_trend = (candidate == "BUY" and trend_dir == "SELL") or \
-                     (candidate == "SELL" and trend_dir == "BUY")
+    if trend_dir == "NEUTRAL":
+        trend_reason = "Trend filter: EMA trend is NEUTRAL — entry blocked"
+        return _make_neutral(
+            smc, wyckoff, pa, trend, [trend_reason], [trend_reason]
+        )
+    if trend_dir != candidate:
+        trend_reason = (
+            f"Trend filter: {candidate} conflicts with EMA trend "
+            f"{trend.trend} — counter-trend entry blocked"
+        )
+        return _make_neutral(
+            smc, wyckoff, pa, trend, [trend_reason], [trend_reason]
+        )
 
     # Detect regime early — needed to set the adaptive confirmation threshold.
     # RANGE / ACCUMULATION / DISTRIBUTION / HIGH_VOLATILITY markets suppress
@@ -559,10 +572,7 @@ def run_decision_engine(
         )
 
     _RANGE_REGIMES = {"RANGE", "ACCUMULATION", "DISTRIBUTION", "HIGH_VOLATILITY"}
-    if _counter_trend:
-        # Counter-trend: one extra confirmation required — EMA opposes direction.
-        effective_min_confirmations = min(min_confirmations + 1, 4)
-    elif regime.regime in _RANGE_REGIMES:
+    if regime.regime in _RANGE_REGIMES:
         # Range/volatile regimes: require one extra confirmation over the base
         # minimum.  Structural signals alone (e.g. SMC + Wyckoff without EMA
         # trend or PA) are insufficient in choppy/ranging markets — at least
@@ -580,6 +590,7 @@ def run_decision_engine(
         min_confirmations = effective_min_confirmations,
         require_price_action = require_price_action,
         require_smc_price_action_wyckoff = require_smc_price_action_wyckoff,
+        require_trend_alignment = True,
     )
     if not ef.allowed:
         votes = (f"SMC={'✓' if ef.smc else '✗'}  "
