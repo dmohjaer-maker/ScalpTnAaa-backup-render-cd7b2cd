@@ -89,7 +89,13 @@ class Keyboards:
             ],
             [
                 InlineKeyboardButton(
-                    "📡 10 Recent Trades · Live",
+                    "📡 Latest Market Scan",
+                    callback_data="trading:scan",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "📋 10 Recent Trades · Live",
                     callback_data="trading:recent10",
                 ),
             ],
@@ -126,7 +132,13 @@ class Keyboards:
             ],
             [
                 InlineKeyboardButton(
-                    "📡 10 Recent Trades · Live",
+                    "📡 Latest Market Scan",
+                    callback_data="trading:scan",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "📋 10 Recent Trades · Live",
                     callback_data="trading:recent10",
                 ),
             ],
@@ -269,7 +281,11 @@ class Keyboards:
             ],
             [
                 InlineKeyboardButton(
-                    "📡 10 Recent Trades · Live",
+                    "📡 Latest Market Scan",
+                    callback_data="trading:scan",
+                ),
+                InlineKeyboardButton(
+                    "📋 10 Recent Trades",
                     callback_data="trading:recent10",
                 ),
             ],

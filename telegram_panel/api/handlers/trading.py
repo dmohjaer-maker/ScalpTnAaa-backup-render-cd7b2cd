@@ -3,7 +3,7 @@ Trading Handler — position and order management.
 """
 
 import logging
-from telegram import Update
+from telegram import InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 from .base import BaseHandler
 from ..keyboards.inline import Keyboards, panel_button
@@ -432,8 +432,43 @@ class TradingHandler(BaseHandler):
                     callback_data="trading:recent10",
                 ),
                 InlineKeyboardButton(
+                    "📡 Latest Scan",
+                    callback_data="trading:scan",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     "📋 Show Last 50",
                     callback_data="trading:history:50",
+                ),
+            ],
+            [InlineKeyboardButton("↩️ Back to Trading", callback_data="nav:trading")],
+        ])
+        await self.edit_or_reply(update, context, text, kb)
+
+    async def show_latest_scan(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Display the newest market scan produced by the live robot."""
+        ok, _ = await self._auth.check_permission(update, "can_view_dashboard")
+        if not ok:
+            return
+        try:
+            snapshot = await self._trades.get_latest_scan()
+            text = self._fmt.latest_scan(snapshot)
+        except Exception as exc:
+            logger.exception("Latest scan fetch failed")
+            text = self._fmt.error(f"Could not fetch the latest scan: {exc}")
+
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🔄 Refresh Scan",
+                    callback_data="trading:scan",
+                ),
+                InlineKeyboardButton(
+                    "📡 Live Trades",
+                    callback_data="trading:recent10",
                 ),
             ],
             [InlineKeyboardButton("↩️ Back to Trading", callback_data="nav:trading")],

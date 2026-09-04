@@ -280,6 +280,8 @@ class Router:
                     await self._trading.show_trade_history(
                         update, context, 10, fresh=True
                     )
+                elif action == "scan":
+                    await self._trading.show_latest_scan(update, context)
                 elif action == "history":
                     limit = int(param) if param else 20
                     await self._trading.show_trade_history(update, context, limit)

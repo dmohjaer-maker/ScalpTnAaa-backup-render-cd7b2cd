@@ -4,6 +4,7 @@ Produces beautiful, consistent messages for every panel screen.
 """
 
 from datetime import datetime, timezone
+from html import escape
 from typing import Optional, Any
 from ...config.constants import RobotStatus, ConnectionStatus, ICONS
 from ...models.account import Account
@@ -486,6 +487,60 @@ class MessageFormatter:
             f"📊 Total: <b>{total_pnl:+.2f}</b>  |  "
             f"Win-rate: <b>{winrate}%</b> ({wins}/{n})"
         )
+        return "\n".join(lines)
+
+    @staticmethod
+    def latest_scan(snapshot: dict[str, Any]) -> str:
+        """Format the latest live market scan from the robot snapshot."""
+        if not snapshot or not snapshot.get("connection_status"):
+            return (
+                "📡 <b>LATEST MARKET SCAN</b>\n"
+                f"<code>{_DIVIDER}</code>\n\n"
+                "⚠️ No live scan data is available right now."
+            )
+
+        def value(key: str, fallback: str = "—") -> str:
+            raw = snapshot.get(key)
+            return fallback if raw is None or raw == "" else escape(str(raw))
+
+        def number(key: str, digits: int = 5) -> str:
+            raw = snapshot.get(key)
+            try:
+                return f"{float(raw):.{digits}f}"
+            except (TypeError, ValueError):
+                return "—"
+
+        news = snapshot.get("news_filter") or {}
+        dxy = snapshot.get("dxy_filter") or {}
+        news_blocked = bool(news.get("blocked", False))
+        news_label = "BLOCKED" if news_blocked else "CLEAR"
+        news_icon = "🔴" if news_blocked else "🟢"
+        dxy_signal = escape(str(dxy.get("signal") or "—"))
+        positions = snapshot.get("open_positions") or []
+        trades = snapshot.get("recent_trades") or []
+
+        lines = [
+            "📡 <b>LATEST MARKET SCAN</b>",
+            f"<code>{_DIVIDER}</code>",
+            f"🕒 Candle: <code>{value('candle_time')}</code>",
+            f"🛰️ Snapshot: <code>{value('timestamp', value('_fetched_at'))}</code>",
+            f"💵 Price: <b>{number('price')}</b>",
+            "",
+            f"📈 Trend: <b>{value('trend')}</b>",
+            f"📊 Regime: <b>{value('regime')}</b>",
+            f"🎯 SMC Signal: <b>{value('smc_signal')}</b>",
+            f"📐 ADX: <b>{number('adx', 2)}</b>  |  ATR: <b>{number('atr', 5)}</b>",
+            "",
+            f"{news_icon} News filter: <b>{news_label}</b>",
+        ]
+        if news.get("reason"):
+            lines.append(f"   └ {escape(str(news['reason']))}")
+        lines.extend([
+            f"💲 DXY: <b>{dxy_signal}</b>",
+            f"🟢 Connection: <b>{value('connection_status')}</b>",
+            f"💼 Open positions: <b>{len(positions)}</b>",
+            f"📋 Closed trades in snapshot: <b>{len(trades)}</b>",
+        ])
         return "\n".join(lines)
 
     # ─── Helpers ─────────────────────────────────────────────────────────────

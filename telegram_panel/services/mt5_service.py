@@ -314,6 +314,10 @@ class MT5Service:
         self._cache_ts = None
         return await self._read_snapshot()
 
+    async def get_latest_scan(self) -> dict[str, Any]:
+        """Return the robot's latest market-scan snapshot without cache."""
+        return await self.get_fresh_snapshot()
+
     async def _read_snapshot(self) -> dict[str, Any]:
         now = asyncio.get_running_loop().time()
         if self._cache_ts and (now - self._cache_ts) < self._cache_ttl:
