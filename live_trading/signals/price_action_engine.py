@@ -3,7 +3,7 @@ Price Action Engine — Patterns, S/R Levels, Breakouts
 Ported from priceActionEngine.ts — confirmation only.
 """
 from dataclasses import dataclass
-from typing import List, Literal
+from typing import List, Literal, Optional
 from live_trading.signals.gold_engine import OHLCV
 
 
@@ -54,6 +54,10 @@ class PriceActionResult:
     bearish_pullback: bool
     pa_signal: Literal["BUY", "SELL", "NEUTRAL"]
     pa_score: float
+    # Set only when the latest candle is a valid S/R breakout.  The decision
+    # engine uses the level to require a retest or a second close.
+    bull_breakout_level: Optional[float] = None
+    bear_breakout_level: Optional[float] = None
 
 
 def _calc_atr(candles: List[OHLCV], period: int) -> float:
@@ -183,11 +187,15 @@ def _detect_breakout_pullback(
     cp   = curr.close
 
     vbull = vbear = fbull = fbear = bull_pb = bear_pb = False
+    bull_breakout_level: Optional[float] = None
+    bear_breakout_level: Optional[float] = None
 
     for level in resistance_lvls:
         if (cp > level and _body(curr) >= cfg.breakout_min_body and
                 _body_ratio(curr) >= cfg.breakout_body_ratio and _is_bull(curr)):
             vbull = True
+            if bull_breakout_level is None or level > bull_breakout_level:
+                bull_breakout_level = level
         recent = candles[n - cfg.fake_retrace_bars - 1: n - 1]
         for rc in recent:
             if rc.close > level and cp < level: fbull = True
@@ -196,6 +204,8 @@ def _detect_breakout_pullback(
         if (cp < level and _body(curr) >= cfg.breakout_min_body and
                 _body_ratio(curr) >= cfg.breakout_body_ratio and _is_bear(curr)):
             vbear = True
+            if bear_breakout_level is None or level < bear_breakout_level:
+                bear_breakout_level = level
         recent = candles[n - cfg.fake_retrace_bars - 1: n - 1]
         for rc in recent:
             if rc.close < level and cp > level: fbear = True
@@ -218,7 +228,10 @@ def _detect_breakout_pullback(
                          for z in supply_zones)
         if near_res or near_sup_z: bear_pb = True
 
-    return vbull, vbear, fbull, fbear, bull_pb, bear_pb
+    return (
+        vbull, vbear, fbull, fbear, bull_pb, bear_pb,
+        bull_breakout_level, bear_breakout_level,
+    )
 
 
 def _compute_pa_signal(
@@ -289,7 +302,10 @@ def analyze_price_action(candles: List[OHLCV]) -> PriceActionResult:
     near_dem  = any(z["bottom"] - tol <= cp <= z["top"] + tol for z in demand_zones)
     near_supl = any(z["bottom"] - tol <= cp <= z["top"] + tol for z in supply_zones)
 
-    vbull, vbear, fbull, fbear, bull_pb, bear_pb = _detect_breakout_pullback(
+    (
+        vbull, vbear, fbull, fbear, bull_pb, bear_pb,
+        bull_breakout_level, bear_breakout_level,
+    ) = _detect_breakout_pullback(
         candles, support_lvls, resistance_lvls, demand_zones, supply_zones, cfg, atr)
 
     signal, score = _compute_pa_signal(
@@ -309,4 +325,6 @@ def analyze_price_action(candles: List[OHLCV]) -> PriceActionResult:
         bullish_pullback=bull_pb, bearish_pullback=bear_pb,
         pa_signal=signal,  # type: ignore
         pa_score=score,
+        bull_breakout_level=bull_breakout_level,
+        bear_breakout_level=bear_breakout_level,
     )

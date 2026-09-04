@@ -228,6 +228,86 @@ def _bos_follow_through_reason(
     return None
 
 
+def _breakout_follow_through_reason(
+    candles: List[OHLCV],
+    pa: PriceActionResult,
+    candidate: str,
+    retest_bars: int = 4,
+) -> Optional[str]:
+    """Require a retest or two closes for a Price Action breakout.
+
+    ``valid_*_breakout`` is intentionally a signal, not proof that a level
+    has been accepted.  A breakout is actionable only after either two
+    consecutive closes beyond its level or a later candle that retests the
+    level and closes away from it with a directional body.
+    """
+    if candidate == "BUY":
+        is_breakout = pa.valid_bull_breakout
+        level = pa.bull_breakout_level
+    elif candidate == "SELL":
+        is_breakout = pa.valid_bear_breakout
+        level = pa.bear_breakout_level
+    else:
+        return None
+
+    if not is_breakout or level is None or len(candles) < 2:
+        return None
+
+    current = candles[-1]
+    previous = candles[-2]
+    if (
+        (candidate == "BUY" and previous.close > level and current.close > level)
+        or
+        (candidate == "SELL" and previous.close < level and current.close < level)
+    ):
+        return None
+
+    current_index = len(candles) - 1
+    start = max(0, current_index - retest_bars - 1)
+    breakout_bar: Optional[int] = None
+    for i in range(start, current_index):
+        if (
+            candidate == "BUY"
+            and candles[i].close <= level
+            and candles[i + 1].close > level
+        ):
+            breakout_bar = i + 1
+        elif (
+            candidate == "SELL"
+            and candles[i].close >= level
+            and candles[i + 1].close < level
+        ):
+            breakout_bar = i + 1
+
+    if breakout_bar is not None:
+        for candle in candles[breakout_bar + 1:]:
+            candle_range = candle.high - candle.low
+            body_ratio = (
+                abs(candle.close - candle.open) / candle_range
+                if candle_range > 0 else 0.0
+            )
+            directional_body = (
+                candle.close > candle.open
+                if candidate == "BUY"
+                else candle.close < candle.open
+            )
+            touched_level = (
+                candle.low <= level if candidate == "BUY"
+                else candle.high >= level
+            )
+            held_level = (
+                candle.close > level if candidate == "BUY"
+                else candle.close < level
+            )
+            if touched_level and held_level and directional_body and body_ratio >= 0.30:
+                return None
+
+    return (
+        f"Breakout pending confirmation: {candidate} needs a successful "
+        "retest or two consecutive closes beyond the level"
+    )
+
+
 def _false_reversal_reason(
     candles: List[OHLCV],
     smc: SmcResult,
@@ -488,6 +568,16 @@ def run_decision_engine(
         return _make_neutral(
             smc, wyckoff, pa, trend,
             [bos_follow_through_reason], [bos_follow_through_reason],
+        )
+
+    breakout_follow_through_reason = _breakout_follow_through_reason(
+        candles, pa, candidate
+    )
+    if breakout_follow_through_reason:
+        return _make_neutral(
+            smc, wyckoff, pa, trend,
+            [breakout_follow_through_reason],
+            [breakout_follow_through_reason],
         )
 
     if candidate == "BUY"  and not regime.rules.allow_long:
