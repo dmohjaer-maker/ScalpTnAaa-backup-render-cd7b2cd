@@ -46,8 +46,11 @@ from live_trading.config import (
 )
 from live_trading.logger import get_logger
 from live_trading.signals.gold_engine import calc_atr
-from live_trading.trading.entry_guards import validate_entry_quote
+from live_trading.trading.entry_guards import (
+    validate_entry_quote, validate_protection_levels,
+)
 from live_trading.risk.guardian import RiskGuardian, GuardianStatus
+from live_trading.risk.capital_manager import REQUIRED_ENTRY_RR
 from live_trading.risk.trailing_stop import (
     TrailingConfig, compute_staircase_sl, should_apply, r_multiple_of,
 )
@@ -1024,6 +1027,32 @@ class GoldScalperLive:
         decision = _live_decision
         self.last_decision = decision
 
+        # 8d. FINAL EXECUTION SAFETY: validate the exact levels that will be sent.
+        # Decision-engine checks are intentionally repeated here because this is
+        # the last fail-closed barrier before the broker API call.
+        tp_params = decision.trade_params
+        if tp_params is None:
+            log.error(f"[{tf}] Refusing entry — allowed decision has no trade parameters")
+            self._write_state("SCANNING", acc_info, decision, pos,
+                              extra=self._guardian_extra(gs))
+            return
+        _protection_ok, _protection_reason, _execution_rr = validate_protection_levels(
+            decision.direction,
+            tp_params.entry_price,
+            tp_params.stop_loss,
+            tp_params.take_profit,
+            required_rr=REQUIRED_ENTRY_RR,
+        )
+        if not _protection_ok:
+            log.error(
+                f"[{tf}] Refusing entry — invalid executable protection: "
+                f"{_protection_reason} (entry={tp_params.entry_price} "
+                f"SL={tp_params.stop_loss} TP={tp_params.take_profit})"
+            )
+            self._write_state("SCANNING", acc_info, decision, pos,
+                              extra=self._guardian_extra(gs))
+            return
+
         # 8c. Safety re-check: confirm we are still flat immediately before
         # sending the order.
         #
@@ -1080,7 +1109,6 @@ class GoldScalperLive:
             return
 
         # 9. ── PLACE ORDER ────────────────────────────────────────────────────
-        tp_params = decision.trade_params
         log.info(
             f"🔔 SIGNAL [{tf}] {decision.direction}  "
             f"conf={decision.confidence:.1f}%  "
