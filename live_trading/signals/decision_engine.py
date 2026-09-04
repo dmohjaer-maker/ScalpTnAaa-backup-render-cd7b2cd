@@ -450,6 +450,29 @@ def _candidate_direction(smc: SmcResult) -> str:
     return "NEUTRAL"
 
 
+def _smc_direction_conflict_reason(smc: SmcResult, candidate: str) -> Optional[str]:
+    """Return a fail-closed reason when the candidate is not SMC-confirmed.
+
+    The candidate direction is used for freshness/event handling, while
+    ``smc.smc_signal`` is the composite SMC verdict. They must agree before
+    the entry filter can count SMC as a vote; otherwise a stale or weak BOS/
+    CHoCH could be promoted into a trade even when the composite is NEUTRAL.
+    """
+    if candidate not in {"BUY", "SELL"}:
+        return None
+    if smc.smc_signal == candidate:
+        return None
+    if smc.smc_signal == "NEUTRAL":
+        return (
+            f"SMC composite is NEUTRAL while structure candidate is {candidate} "
+            "— entry blocked"
+        )
+    return (
+        f"SMC direction conflict: structure candidate {candidate} vs "
+        f"composite {smc.smc_signal} — entry blocked"
+    )
+
+
 def _make_neutral(
     smc, wyckoff, pa, trend, blocked_reasons, reasoning=None,
     dxy_signal: str = "NEUTRAL",
@@ -497,6 +520,16 @@ def run_decision_engine(
     candidate = _candidate_direction(smc)
     if candidate == "NEUTRAL":
         return _make_neutral(smc, wyckoff, pa, trend, ["No SMC signal"])
+
+    # The structure event proposes a direction, but only the composite SMC
+    # verdict can satisfy the mandatory SMC vote. Fail closed on neutral or
+    # conflicting composite output before any other engine can authorize entry.
+    smc_conflict_reason = _smc_direction_conflict_reason(smc, candidate)
+    if smc_conflict_reason:
+        return _make_neutral(
+            smc, wyckoff, pa, trend,
+            [smc_conflict_reason], [smc_conflict_reason],
+        )
 
     # Soft EMA gate — counter-trend trades are allowed but need 3 confirmations
     trend_dir = ("BUY" if trend.trend == "BULLISH" else
