@@ -104,6 +104,7 @@ class Keyboards:
                 InlineKeyboardButton("🖥️ System", callback_data="nav:system"),
             ],
             [
+                InlineKeyboardButton("⚙️ Robot Control", callback_data="nav:robot"),
                 InlineKeyboardButton("🔄 Refresh Panel", callback_data="nav:refresh_home"),
             ],
         ])
@@ -115,6 +116,13 @@ class Keyboards:
         return InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("🔄 Refresh Status", callback_data="dashboard:refresh"),
+                InlineKeyboardButton("🧪 Test Connection", callback_data="dashboard:test_connection"),
+            ],
+            [
+                InlineKeyboardButton("🔄 Reconnect MT5", callback_data="robot:restart_mt5_confirm"),
+                InlineKeyboardButton("⚙️ Robot Control", callback_data="nav:robot"),
+            ],
+            [
                 InlineKeyboardButton("▶️ Start Bot", callback_data="robot:start"),
                 InlineKeyboardButton("⏸️ Pause Bot", callback_data="robot:pause"),
             ],

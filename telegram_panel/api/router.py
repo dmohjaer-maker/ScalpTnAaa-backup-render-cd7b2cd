@@ -217,6 +217,8 @@ class Router:
                     await self._show_settings(update, context)
                 elif dest == "system":
                     await self._system.show_system(update, context)
+                elif dest == "robot":
+                    await self._dashboard.show_robot_control(update, context)
                 elif dest == "news":
                     await update.callback_query.edit_message_text(
                         "📰 <b>NEWS</b>\n\nNews feed is not yet available.",
@@ -230,6 +232,8 @@ class Router:
                 action = parts[1] if len(parts) > 1 else "refresh"
                 if action == "refresh":
                     await self._dashboard.show_dashboard(update, context)
+                elif action == "test_connection":
+                    await self._dashboard.test_connection(update, context)
 
             elif section == "robot":
                 action = parts[1] if len(parts) > 1 else ""

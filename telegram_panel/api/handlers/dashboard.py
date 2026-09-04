@@ -160,6 +160,86 @@ class DashboardHandler(BaseHandler):
         )
         await self.edit_or_reply(update, context, text, Keyboards.dashboard())
 
+    async def show_robot_control(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Show the complete robot-control screen from the main menu."""
+        ok, _ = await self._auth.check_permission(update, "can_control_robot")
+        if not ok:
+            return
+
+        state = await self._robot.get_state()
+        status = str(state.get("status", "unknown")).upper()
+        mt5_status = str(
+            state.get("mt5_status", state.get("connection_status", "unknown"))
+        ).upper()
+        raw_symbols = state.get("symbols") or state.get("symbol") or "—"
+        if isinstance(raw_symbols, (list, tuple)):
+            symbols = ", ".join(str(item) for item in raw_symbols)
+        else:
+            symbols = str(raw_symbols)
+
+        text = (
+            "⚙️ <b>ROBOT CONTROL</b>\n"
+            "────────────────────\n"
+            f"🤖 Status: <b>{status}</b>\n"
+            f"🔌 MT5: <b>{mt5_status}</b>\n"
+            f"💱 Symbols: <b>{symbols}</b>\n\n"
+            "Use confirmations for restart and shutdown actions."
+        )
+        await self.edit_or_reply(update, context, text, Keyboards.robot_control())
+
+    async def test_connection(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Run a fresh live connection test from the dashboard."""
+        ok, _ = await self._auth.check_permission(update, "can_view_dashboard")
+        if not ok:
+            return
+
+        account = await self._accounts.get_active_account()
+        result = None
+        if account and account.id is not None:
+            result = await self._accounts.test_connection(account.id)
+
+        if result is None:
+            state = await self._robot.get_fresh_state()
+            mt5_status = str(
+                state.get("mt5_status", state.get("connection_status", "unknown"))
+            ).upper()
+            symbols = state.get("symbols") or state.get("symbol") or "—"
+            if isinstance(symbols, (list, tuple)):
+                symbols = ", ".join(str(item) for item in symbols)
+            result = {
+                "success": mt5_status == "CONNECTED",
+                "robot_status": str(state.get("status", "unknown")).upper(),
+                "mt5_status": mt5_status,
+                "last_heartbeat": state.get("last_heartbeat", "—"),
+                "error": "No active account record" if mt5_status != "CONNECTED" else "",
+                "symbols": symbols,
+            }
+
+        if result.get("success"):
+            message = (
+                "✅ <b>CONNECTION TEST PASSED</b>\n\n"
+                f"🤖 Robot: <b>{str(result.get('robot_status', 'running')).upper()}</b>\n"
+                "🔌 MT5: <b>CONNECTED</b>\n"
+                f"💱 Symbols: <b>{result.get('symbols', 'XAUUSD, EURUSD')}</b>\n"
+                f"💰 Balance: <b>{result.get('currency', 'USD')} "
+                f"{float(result.get('balance', 0.0)):,.2f}</b>\n"
+                f"💓 Heartbeat: <b>{result.get('last_heartbeat', '—')}</b>"
+            )
+        else:
+            message = (
+                "⚠️ <b>CONNECTION TEST FAILED</b>\n\n"
+                f"🤖 Robot: <b>{str(result.get('robot_status', 'unknown')).upper()}</b>\n"
+                f"🔌 MT5: <b>{str(result.get('mt5_status', 'unknown')).upper()}</b>\n"
+                f"💓 Heartbeat: <b>{result.get('last_heartbeat', '—')}</b>\n"
+                f"❗ {result.get('error', 'Connection could not be verified')}"
+            )
+
+        await self.answer_callback(update, message, show_alert=True)
+
     async def handle_robot_control(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE, action: str
     ) -> None:
