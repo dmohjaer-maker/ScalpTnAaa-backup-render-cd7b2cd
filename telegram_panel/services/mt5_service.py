@@ -17,6 +17,7 @@ import os
 import json
 import asyncio
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Optional, Any
 from ..config.constants import ConnectionStatus, TradeDirection, TradeStatus
@@ -67,32 +68,51 @@ class MT5Service:
     # artifact — no retail gold account can hold this many lots.
     _MAX_SANE_VOLUME_LOTS: float = 100.0
 
+    @classmethod
+    def _sane_snapshot_volume(cls, raw: dict) -> tuple[float, str] | None:
+        """Read a trustworthy lot value without inventing a fallback.
+
+        The robot normally publishes a canonical ``volume``.  ``lots`` and
+        ``closeLots`` remain supported for snapshots written by older builds
+        or for a bridge response whose primary volume was corrupted.
+        """
+        for key in ("volume", "lots", "closeLots"):
+            try:
+                value = float(raw.get(key))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value) and 0.0 < value <= cls._MAX_SANE_VOLUME_LOTS:
+                return value, key
+        return None
+
     async def get_open_positions(self) -> list[Position]:
         snapshot = await self._read_snapshot()
         positions_raw = snapshot.get("open_positions", [])
         positions = []
         for raw in positions_raw:
             try:
-                # Safety net: drop phantom rows with insane volume even if they
-                # somehow reached the snapshot (e.g. before the robot's
-                # _dedupe_positions fix filtered them).  Without this check a
-                # 1 000 000-lot BUY phantom row would appear as a brand-new
-                # open position in the heartbeat monitor and trigger a spurious
-                # "TRADE OPENED" Telegram notification with fabricated details.
-                vol = float(raw.get("volume", 0.0) or 0.0)
-                if vol > self._MAX_SANE_VOLUME_LOTS:
+                volume_result = self._sane_snapshot_volume(raw)
+                if volume_result is None:
                     logger.warning(
-                        f"Skipping snapshot position with insane volume "
-                        f"({vol:.0f}L) — likely phantom row from mt5rest bridge "
-                        f"(ticket={raw.get('ticket')}, type={raw.get('type')})"
+                        "Skipping snapshot position without a trustworthy "
+                        "finite lot value — likely corrupted mt5rest data "
+                        f"(ticket={raw.get('ticket')}, volume={raw.get('volume')!r}, "
+                        f"lots={raw.get('lots')!r})"
                     )
                     continue
+                vol, volume_source = volume_result
+                if volume_source != "volume":
+                    logger.warning(
+                        f"Using {volume_source}={vol:g} for snapshot ticket "
+                        f"{raw.get('ticket')} because volume={raw.get('volume')!r} "
+                        "is not trustworthy"
+                    )
 
                 pos = Position(
                     ticket=raw.get("ticket", 0),
                     symbol=raw.get("symbol", "XAUUSD"),
                     direction=TradeDirection(raw.get("type", "BUY")),
-                    volume=vol if vol > 0 else 0.01,
+                    volume=vol,
                     open_price=raw.get("open_price", 0.0),
                     current_price=raw.get("current_price", 0.0),
                     stop_loss=raw.get("sl"),

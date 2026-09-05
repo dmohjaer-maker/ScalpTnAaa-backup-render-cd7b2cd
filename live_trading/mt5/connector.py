@@ -23,6 +23,7 @@ mt5rest endpoints used:
 """
 
 import asyncio
+import math
 import time as _time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -754,13 +755,13 @@ def _parse_open_positions_response(
 _MAX_SANE_VOLUME_LOTS = 100.0
 
 
-def _sane_volume_from_row(row: dict) -> float:
-    """Return a plausible lot value from an mt5rest position row.
+def _volume_from_row(row: dict) -> Tuple[str, float]:
+    """Return the first plausible lot field and its source name.
 
-    The bridge has returned rows where ``volume`` is corrupted (for example
-    1,000,000) while the parallel ``lots`` field still contains the real
-    broker volume (for example 0.01). Prefer the independent ``lots`` field
-    and never expose an implausible value to the trading or panel layers.
+    mt5rest has returned a corrupted primary ``volume`` while a parallel
+    ``lots`` field still contained the broker's real position size.  Keeping
+    the source alongside the value lets the caller canonicalise the whole row
+    instead of merely using the safe value at one downstream call site.
     """
     for key in ("lots", "volume", "closeLots"):
         raw = row.get(key)
@@ -768,9 +769,47 @@ def _sane_volume_from_row(row: dict) -> float:
             value = float(raw)
         except (TypeError, ValueError):
             continue
+        if not math.isfinite(value):
+            continue
         if 0.0 < value <= _MAX_SANE_VOLUME_LOTS:
-            return value
-    return 0.0
+            return key, value
+    return "", 0.0
+
+
+def _sane_volume_from_row(row: dict) -> float:
+    """Return a plausible lot value from an mt5rest position row."""
+    return _volume_from_row(row)[1]
+
+
+def _canonical_position_row(row: dict) -> dict:
+    """Make the safe volume authoritative for every downstream consumer.
+
+    Returning the original bridge row after merely *calculating* a safe
+    volume was not sufficient: max-position checks, snapshots, logging and
+    future callers could still read ``volume=1000000`` directly.  This
+    creates a copy with a finite, bounded numeric ``volume`` and mirrors it
+    to ``lots`` when an independent bridge field rescued the value.
+    """
+    source, volume = _volume_from_row(row)
+    if not source:
+        return dict(row)
+
+    normalized = dict(row)
+    normalized["volume"] = volume
+    if source != "volume":
+        normalized["lots"] = volume
+        normalized["volume_source"] = source
+    return normalized
+
+
+def _primary_volume_is_sane(row: dict) -> bool:
+    """Whether the bridge's primary ``volume`` field is usable."""
+    raw = row.get("volume")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(value) and 0.0 < value <= _MAX_SANE_VOLUME_LOTS
 
 
 def _dedupe_positions(
@@ -867,10 +906,10 @@ def _dedupe_positions(
                     dropped_unknown.append(str(ticket))
             else:
                 # Keep the full row so direction/price/SL/TP remain
-                # available, while making the recovery visible when the
-                # independent lots field rescued a corrupted volume.
+                # available, but make the safe volume authoritative before
+                # any caller can inspect the raw bridge payload.
                 try:
-                    if raw_volume is not None and float(raw_volume) > _MAX_SANE_VOLUME_LOTS:
+                    if not _primary_volume_is_sane(row):
                         log.warning(
                             f"mt5rest returned ticket {ticket!r} with a corrupted "
                             f"volume ({raw_volume!r}); using independent "
@@ -878,7 +917,7 @@ def _dedupe_positions(
                         )
                 except (TypeError, ValueError):
                     pass
-                result.append(row)
+                result.append(_canonical_position_row(row))
             continue
 
         sane = [
@@ -886,19 +925,27 @@ def _dedupe_positions(
             if _sane_volume_from_row(row) > 0
         ]
         if len(sane) == 1:
+            selected = _canonical_position_row(sane[0])
             log.warning(
                 f"mt5rest returned {len(group)} duplicate rows for ticket {ticket} "
                 f"— keeping the one with a plausible volume, dropping the rest "
                 f"(volumes seen: {[row.get('volume', row.get('lots')) for row in group]})"
             )
-            result.append(sane[0])
+            result.append(selected)
         else:
+            # If both rows have a plausible fallback, prefer the one whose
+            # primary volume is already sane; otherwise canonicalise the first
+            # row and keep its broker-independent lot evidence.
+            selected = next(
+                (row for row in sane if _primary_volume_is_sane(row)),
+                sane[0] if sane else group[0],
+            )
             log.warning(
                 f"mt5rest returned {len(group)} duplicate rows for ticket {ticket} "
                 f"with no single plausible volume — keeping the first row only "
                 f"(volumes seen: {[row.get('volume', row.get('lots')) for row in group]})"
             )
-            result.append(group[0])
+            result.append(_canonical_position_row(selected))
     return result, dropped_unknown
 
 

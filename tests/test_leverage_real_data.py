@@ -147,8 +147,9 @@ async def test_get_active_account_updates_leverage():
     """get_active_account must propagate real leverage from MT5 snapshot."""
     from telegram_panel.services.account_service import AccountService
     from telegram_panel.storage.encryption import EncryptionService
+    from cryptography.fernet import Fernet
 
-    enc = EncryptionService(key=b"0" * 32)
+    enc = EncryptionService(key=Fernet.generate_key())
     svc = AccountService(account_repo=_FakeRepo(leverage=100), encryption=enc, mt5_service=_FakeMT5())
     account = await svc.get_active_account()
     assert account.leverage == 300, (
@@ -162,8 +163,9 @@ async def test_get_all_accounts_updates_leverage():
     """get_all_accounts must propagate real leverage from MT5 snapshot."""
     from telegram_panel.services.account_service import AccountService
     from telegram_panel.storage.encryption import EncryptionService
+    from cryptography.fernet import Fernet
 
-    enc = EncryptionService(key=b"0" * 32)
+    enc = EncryptionService(key=Fernet.generate_key())
     svc = AccountService(account_repo=_FakeRepo(leverage=100), encryption=enc, mt5_service=_FakeMT5())
     accounts = await svc.get_all_accounts()
     assert accounts[0].leverage == 300, (

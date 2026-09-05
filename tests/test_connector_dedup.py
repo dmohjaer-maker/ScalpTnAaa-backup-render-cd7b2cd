@@ -183,6 +183,35 @@ class TestPhantomRowRepair:
         assert result == rows
         assert dropped == []
 
+    def test_independent_lots_becomes_canonical_volume(self):
+        """A sane lots fallback must replace the corrupt primary field."""
+        from live_trading.mt5.connector import _dedupe_positions, mt5_pos_to_dict
+
+        rows = [{
+            "ticket": 274131033,
+            "volume": 1_000_000,
+            "lots": 0.01,
+            "type": "BUY",
+            "openPrice": 4390.07,
+        }]
+        result, dropped = _dedupe_positions(rows)
+
+        assert dropped == []
+        assert result[0]["volume"] == 0.01
+        assert result[0]["lots"] == 0.01
+        assert result[0]["volume_source"] == "lots"
+        assert mt5_pos_to_dict(result[0])["volume"] == 0.01
+
+    def test_non_finite_volume_is_not_accepted(self):
+        """NaN/Infinity must never pass the lot validation."""
+        from live_trading.mt5.connector import _dedupe_positions
+
+        rows = [{"ticket": 42, "volume": float("nan"), "lots": float("inf")}]
+        result, dropped = _dedupe_positions(rows)
+
+        assert result == []
+        assert dropped == ["42"]
+
     def test_no_known_positions_arg_behaves_like_before(self):
         from live_trading.mt5.connector import _dedupe_positions
 
@@ -198,7 +227,7 @@ class TestOpenPositionsResponse:
     def test_successful_list_is_accepted(self):
         from live_trading.mt5.connector import _parse_open_positions_response
 
-        positions = [{"ticket": 123}]
+        positions = [{"ticket": 123, "volume": 0.01}]
         result, dropped = _parse_open_positions_response(positions, 200)
         assert result == positions
         assert dropped == []
@@ -214,3 +243,46 @@ class TestOpenPositionsResponse:
 
         with pytest.raises(RuntimeError, match="HTTP 503"):
             _parse_open_positions_response({"message": "temporary failure"}, 503)
+
+
+class TestPanelVolumeSafety:
+    """The panel must use independent lot evidence and never guess 0.01."""
+
+    @pytest.mark.asyncio
+    async def test_snapshot_uses_independent_lots(self):
+        from telegram_panel.services.mt5_service import MT5Service
+
+        service = MT5Service()
+        service._read_snapshot = AsyncMock(return_value={
+            "open_positions": [{
+                "ticket": 274131033,
+                "volume": 1_000_000,
+                "lots": 0.01,
+                "type": "BUY",
+                "symbol": "XAUUSD",
+                "open_price": 4390.07,
+            }]
+        })
+
+        positions = await service.get_open_positions()
+
+        assert len(positions) == 1
+        assert positions[0].volume == 0.01
+
+    @pytest.mark.asyncio
+    async def test_snapshot_drops_unknown_volume_instead_of_guessing(self):
+        from telegram_panel.services.mt5_service import MT5Service
+
+        service = MT5Service()
+        service._read_snapshot = AsyncMock(return_value={
+            "open_positions": [{
+                "ticket": 274131033,
+                "volume": 1_000_000,
+                "type": "BUY",
+                "symbol": "XAUUSD",
+            }]
+        })
+
+        positions = await service.get_open_positions()
+
+        assert positions == []

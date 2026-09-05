@@ -271,7 +271,10 @@ def redis_send_command(command: str, payload: Optional[dict] = None) -> bool:
         cmds = json.loads(raw) if raw else {}
         # Store payload alongside the flag so UPDATE_RISK / UPDATE_STRATEGY
         # can carry their config dict to the robot.
-        cmds[engine_key] = payload if payload is not None else True
+        # Command flags are consumed by truthiness checks in the robot.  An
+        # empty params dict is still a command (notably RECONNECT), so do not
+        # persist it as a false-y value.
+        cmds[engine_key] = payload if payload else True
         r.set(_COMMANDS_KEY, json.dumps(cmds, default=str), ex=_CMD_TTL)
         logger.info("Redis sent command: %s -> %s", command, engine_key)
         return True
