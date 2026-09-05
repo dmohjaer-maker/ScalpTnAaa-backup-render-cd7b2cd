@@ -8,6 +8,7 @@ from typing import Optional, Any
 from telegram import Update, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import TelegramError, BadRequest
+from ...i18n.fa import translate
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class BaseHandler:
         parse_mode: str = "HTML",
     ) -> None:
         """Edit the current message (callback) or send a new one (message)."""
+        text = translate(text)
         try:
             if update.callback_query:
                 await update.callback_query.answer()
@@ -57,6 +59,7 @@ class BaseHandler:
         show_alert: bool = False,
     ) -> None:
         """Answer callback query silently or with an alert."""
+        text = translate(text)
         try:
             if update.callback_query:
                 await update.callback_query.answer(text=text, show_alert=show_alert)
@@ -72,6 +75,7 @@ class BaseHandler:
         parse_mode: str = "HTML",
     ) -> None:
         """Always send a new message, regardless of update type."""
+        text = translate(text)
         try:
             chat_id = update.effective_chat.id
             await context.bot.send_message(
