@@ -10,7 +10,6 @@ from .base import BaseHandler
 from ..keyboards.inline import Keyboards
 from ..formatters.messages import MessageFormatter
 from ...config.constants import AccountType
-from ...i18n.fa import translate
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +71,12 @@ class AccountsHandler(BaseHandler):
     async def receive_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         name = self.get_text(update).strip()
         if not name:
-            await update.message.reply_text(translate("Please enter a valid account name."))
+            await update.message.reply_text("Please enter a valid account name.")
             return ASK_NAME
         context.user_data["new_account"]["name"] = name
         await update.message.reply_text(
-            translate(
-                f"✅ Name: <b>{name}</b>\n\n"
-                "Step 2/6: Select <b>account type</b>:"
-            ),
+            f"✅ Name: <b>{name}</b>\n\n"
+            "Step 2/6: Select <b>account type</b>:",
             reply_markup=Keyboards.account_type_select(),
             parse_mode="HTML",
         )
@@ -96,11 +93,9 @@ class AccountsHandler(BaseHandler):
 
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
-            translate(
-                f"✅ Type: <b>{acc_type.upper()}</b>\n\n"
-                "Step 3/6: Enter the <b>broker name</b>.\n"
-                "Example: <code>ICMarkets</code>"
-            ),
+            f"✅ Type: <b>{acc_type.upper()}</b>\n\n"
+            "Step 3/6: Enter the <b>broker name</b>.\n"
+            "Example: <code>ICMarkets</code>",
             parse_mode="HTML",
         )
         return ASK_BROKER
@@ -108,15 +103,13 @@ class AccountsHandler(BaseHandler):
     async def receive_broker(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         broker = self.get_text(update).strip()
         if not broker:
-            await update.message.reply_text(translate("Please enter a valid broker name."))
+            await update.message.reply_text("Please enter a valid broker name.")
             return ASK_BROKER
         context.user_data["new_account"]["broker"] = broker
         await update.message.reply_text(
-            translate(
-                f"✅ Broker: <b>{broker}</b>\n\n"
-                "Step 4/6: Enter the MT5 <b>server name</b>.\n"
-                "Example: <code>ICMarkets-Demo02</code>"
-            ),
+            f"✅ Broker: <b>{broker}</b>\n\n"
+            "Step 4/6: Enter the MT5 <b>server name</b>.\n"
+            "Example: <code>ICMarkets-Demo02</code>",
             parse_mode="HTML",
         )
         return ASK_SERVER
@@ -124,14 +117,12 @@ class AccountsHandler(BaseHandler):
     async def receive_server(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         server = self.get_text(update).strip()
         if not server:
-            await update.message.reply_text(translate("Please enter a valid server name."))
+            await update.message.reply_text("Please enter a valid server name.")
             return ASK_SERVER
         context.user_data["new_account"]["server"] = server
         await update.message.reply_text(
-            translate(
-                f"✅ Server: <b>{server}</b>\n\n"
-                "Step 5/6: Enter your MT5 <b>account number (login)</b>."
-            ),
+            f"✅ Server: <b>{server}</b>\n\n"
+            "Step 5/6: Enter your MT5 <b>account number (login)</b>.",
             parse_mode="HTML",
         )
         return ASK_LOGIN
@@ -139,15 +130,13 @@ class AccountsHandler(BaseHandler):
     async def receive_login(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         login = self.get_text(update).strip()
         if not login:
-            await update.message.reply_text(translate("Please enter a valid login number."))
+            await update.message.reply_text("Please enter a valid login number.")
             return ASK_LOGIN
         context.user_data["new_account"]["login"] = login
         await update.message.reply_text(
-            translate(
-                f"✅ Login: <code>{login}</code>\n\n"
-                "Step 6/6: Enter your MT5 <b>password</b>.\n\n"
-                "⚠️ <i>This will be stored encrypted. Delete your message after sending.</i>"
-            ),
+            f"✅ Login: <code>{login}</code>\n\n"
+            "Step 6/6: Enter your MT5 <b>password</b>.\n\n"
+            "⚠️ <i>This will be stored encrypted. Delete your message after sending.</i>",
             parse_mode="HTML",
         )
         return ASK_PASSWORD
@@ -155,7 +144,7 @@ class AccountsHandler(BaseHandler):
     async def receive_password(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         password = self.get_text(update).strip()
         if not password:
-            await update.message.reply_text(translate("Please enter a valid password."))
+            await update.message.reply_text("Please enter a valid password.")
             return ASK_PASSWORD
 
         # Delete the password message for security
@@ -165,7 +154,7 @@ class AccountsHandler(BaseHandler):
             pass
 
         data = context.user_data.get("new_account", {})
-        summary = translate(
+        summary = (
             f"📋 <b>Confirm New Account</b>\n\n"
             f"📛 Name: <b>{data.get('name')}</b>\n"
             f"📋 Type: <b>{data.get('account_type', '').value if data.get('account_type') else ''}</b>\n"

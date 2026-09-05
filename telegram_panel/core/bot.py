@@ -41,7 +41,6 @@ from ..api.handlers.system import SystemHandler
 from ..api.middleware.auth import AuthMiddleware
 from ..api.middleware.rate_limiter import RateLimiter
 from ..api.formatters.messages import MessageFormatter
-from ..i18n.fa import translate
 from ..api.router import Router
 from .event_bus import EventBus, Events
 from .heartbeat import HeartbeatMonitor
@@ -178,11 +177,11 @@ class BotApplication:
         # Set bot commands
         await self._app.initialize()
         await self._app.bot.set_my_commands([
-            BotCommand("start", "منوی اصلی"),
-            BotCommand("dashboard", "داشبورد"),
-            BotCommand("menu", "منوی اصلی"),
-            BotCommand("status", "وضعیت ربات"),
-            BotCommand("help", "راهنما"),
+            BotCommand("start", "Main menu"),
+            BotCommand("dashboard", "Dashboard"),
+            BotCommand("menu", "Main menu"),
+            BotCommand("status", "Robot status"),
+            BotCommand("help", "Help"),
         ])
 
         # ── Event Bus ─────────────────────────────────────────────────────
@@ -214,7 +213,7 @@ class BotApplication:
         try:
             await self._app.bot.send_message(
                 chat_id=self._settings.telegram.owner_id,
-                text=translate(
+                text=(
                     "🟢 <b>GoldScalperPro Panel started</b>\n"
                     "Send /start to open the control panel."
                 ),

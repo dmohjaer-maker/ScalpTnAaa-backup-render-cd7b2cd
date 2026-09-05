@@ -14,7 +14,6 @@ from ...models.user import User, UserPermission
 from ...storage.repositories.user_repo import UserRepository
 from ...storage.repositories.audit_repo import AuditRepository
 from ...models.audit import AuditLog
-from ...i18n.fa import translate
 
 logger = logging.getLogger(__name__)
 
@@ -187,15 +186,13 @@ class AuthMiddleware:
         try:
             if update.callback_query:
                 await update.callback_query.answer(
-                    translate("⛔ Access denied."), show_alert=True
+                    "⛔ Access denied.", show_alert=True
                 )
             elif update.message:
                 await update.message.reply_text(
-                    translate(
-                        "⛔ <b>Access Denied</b>\n"
-                        "You do not have permission to perform this action.\n"
-                        "Contact the bot owner if you believe this is an error."
-                    ),
+                    "⛔ <b>Access Denied</b>\n"
+                    "You do not have permission to perform this action.\n"
+                    "Contact the bot owner if you believe this is an error.",
                     parse_mode="HTML",
                 )
         except Exception as e:

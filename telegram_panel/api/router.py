@@ -26,7 +26,6 @@ from .handlers.strategy import StrategyHandler
 from .handlers.reports import ReportsHandler
 from .handlers.notifications_handler import NotificationsHandler
 from .handlers.system import SystemHandler
-from ..i18n.fa import translate
 from .middleware.auth import AuthMiddleware
 from .middleware.rate_limiter import RateLimiter
 from .formatters.messages import MessageFormatter
@@ -170,12 +169,12 @@ class Router:
             f"Your role: <b>{user.role_icon} {user.role.value}</b>"
         )
         if update.message:
-            await update.message.reply_text(translate(text), parse_mode="HTML")
+            await update.message.reply_text(text, parse_mode="HTML")
 
     async def _unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.message:
             await update.message.reply_text(
-                translate("Unknown command. Use /start for the main menu.")
+                "Unknown command. Use /start for the main menu."
             )
 
     # ─── Main Callback Router ────────────────────────────────────────────────
@@ -222,7 +221,7 @@ class Router:
                     await self._dashboard.show_robot_control(update, context)
                 elif dest == "news":
                     await update.callback_query.edit_message_text(
-                        translate("📰 <b>NEWS</b>\n\nNews feed is not yet available."),
+                        "📰 <b>NEWS</b>\n\nNews feed is not yet available.",
                         reply_markup=Keyboards.back_only("nav:home"),
                         parse_mode="HTML",
                     )
@@ -403,35 +402,29 @@ class Router:
                 action = parts[1] if len(parts) > 1 else ""
                 if action == "token":
                     await update.callback_query.edit_message_text(
-                        translate(
-                            "🔑 <b>CHANGE BOT TOKEN</b>\n\n"
-                            "Set <code>TELEGRAM_BOT_TOKEN</code> in your Render environment variables, "
-                            "then redeploy the panel service."
-                        ),
+                        "🔑 <b>CHANGE BOT TOKEN</b>\n\n"
+                        "Set <code>TELEGRAM_BOT_TOKEN</code> in your Render environment variables, "
+                        "then redeploy the panel service.",
                         reply_markup=Keyboards.back_only("nav:settings"),
                         parse_mode="HTML",
                     )
                     await update.callback_query.answer()
                 elif action == "admins":
                     await update.callback_query.edit_message_text(
-                        translate(
-                            "👥 <b>MANAGE ADMINS</b>\n\n"
-                            "Add admin Telegram IDs to <code>TELEGRAM_ADMIN_IDS</code> "
-                            "(comma-separated) in your Render environment variables, "
-                            "then redeploy the panel service."
-                        ),
+                        "👥 <b>MANAGE ADMINS</b>\n\n"
+                        "Add admin Telegram IDs to <code>TELEGRAM_ADMIN_IDS</code> "
+                        "(comma-separated) in your Render environment variables, "
+                        "then redeploy the panel service.",
                         reply_markup=Keyboards.back_only("nav:settings"),
                         parse_mode="HTML",
                     )
                     await update.callback_query.answer()
                 elif action == "session_timeout":
                     await update.callback_query.edit_message_text(
-                        translate(
-                            "⏱️ <b>SESSION TIMEOUT</b>\n\n"
-                            "Configure session timeout in "
-                            "<code>telegram_panel/config/panel.json</code> under "
-                            "<code>security.session_timeout_minutes</code>."
-                        ),
+                        "⏱️ <b>SESSION TIMEOUT</b>\n\n"
+                        "Configure session timeout in "
+                        "<code>telegram_panel/config/panel.json</code> under "
+                        "<code>security.session_timeout_minutes</code>.",
                         reply_markup=Keyboards.back_only("nav:settings"),
                         parse_mode="HTML",
                     )
@@ -440,12 +433,10 @@ class Router:
                     from cryptography.fernet import Fernet
                     key = Fernet.generate_key().decode()
                     await update.callback_query.edit_message_text(
-                        translate(
-                            f"🔒 <b>NEW ENCRYPTION KEY</b>\n\n"
-                            f"<code>{key}</code>\n\n"
-                            f"⚠️ Set this as <code>PANEL_ENCRYPTION_KEY</code> in Render and redeploy. "
-                            f"<b>Store it securely — losing it means losing access to encrypted credentials.</b>"
-                        ),
+                        f"🔒 <b>NEW ENCRYPTION KEY</b>\n\n"
+                        f"<code>{key}</code>\n\n"
+                        f"⚠️ Set this as <code>PANEL_ENCRYPTION_KEY</code> in Render and redeploy. "
+                        f"<b>Store it securely — losing it means losing access to encrypted credentials.</b>",
                         reply_markup=Keyboards.back_only("nav:settings"),
                         parse_mode="HTML",
                     )
@@ -459,13 +450,13 @@ class Router:
 
         except (ValueError, IndexError) as e:
             logger.warning(f"[BTN ERR] user={user_id} data={data!r} malformed: {e}")
-            await update.callback_query.answer(translate("Invalid action"), show_alert=True)
+            await update.callback_query.answer("Invalid action", show_alert=True)
         except Exception as e:
             logger.error(
                 f"[BTN EXCEPTION] user={user_id} data={data!r} error={e}",
                 exc_info=True,
             )
-            await update.callback_query.answer(translate("An error occurred"), show_alert=True)
+            await update.callback_query.answer("An error occurred", show_alert=True)
         else:
             logger.info(f"[BTN OK] user={user_id} data={data!r}")
 
@@ -507,7 +498,7 @@ class Router:
         from .keyboards.inline import Keyboards
         _, user = await self._auth.is_authorized(update)
         if not user or not user.permissions.can_manage_users:
-            await update.callback_query.answer(translate("⛔ Access denied"), show_alert=True)
+            await update.callback_query.answer("⛔ Access denied", show_alert=True)
             return
         text = (
             "⚙️ <b>SETTINGS</b>\n\n"
@@ -519,7 +510,7 @@ class Router:
             "<i>See README.md for full configuration guide.</i>"
         )
         await update.callback_query.edit_message_text(
-            translate(text), reply_markup=Keyboards.settings_menu(), parse_mode="HTML"
+            text, reply_markup=Keyboards.settings_menu(), parse_mode="HTML"
         )
         await update.callback_query.answer()
 
@@ -532,12 +523,10 @@ class Router:
             try:
                 if update.callback_query:
                     await update.callback_query.answer(
-                        translate("⏱️ Too many requests. Please slow down."), show_alert=True
+                        "⏱️ Too many requests. Please slow down.", show_alert=True
                     )
                 elif update.message:
-                    await update.message.reply_text(
-                        translate("⏱️ Too many requests. Please slow down.")
-                    )
+                    await update.message.reply_text("⏱️ Too many requests. Please slow down.")
             except Exception:
                 pass
             return False

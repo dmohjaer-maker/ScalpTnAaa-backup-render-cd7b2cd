@@ -9,7 +9,6 @@ from .base import BaseHandler
 from ..keyboards.inline import Keyboards
 from ..formatters.messages import MessageFormatter
 from ...config.constants import RiskParameter
-from ...i18n.fa import translate
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +81,7 @@ class RiskHandler(BaseHandler):
             else:
                 value = float(raw)
         except ValueError:
-            await update.message.reply_text(
-                translate("❌ Invalid value. Please enter a number.")
-            )
+            await update.message.reply_text("❌ Invalid value. Please enter a number.")
             return ASK_VALUE
 
         config_before = await self._risk.get_config()
@@ -102,7 +99,7 @@ class RiskHandler(BaseHandler):
             success=success,
         )
 
-        await update.message.reply_text(translate(message), parse_mode="HTML")
+        await update.message.reply_text(message, parse_mode="HTML")
         context.user_data.pop("editing_risk", None)
 
         # Return to risk menu

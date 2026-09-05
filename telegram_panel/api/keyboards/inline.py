@@ -7,7 +7,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from ...config.constants import StrategyComponent, NotificationType, RiskParameter, ICONS
 from ...models.account import Account
 from ...models.trade import Position, PendingOrder
-from ...i18n.fa import translate
 
 
 _TelegramInlineKeyboardButton = InlineKeyboardButton
@@ -66,7 +65,7 @@ def panel_button(
 ) -> InlineKeyboardButton:
     """Create a Telegram button with a safe, consistent visual style."""
     return _TelegramInlineKeyboardButton(
-        text=translate(text),
+        text=text,
         callback_data=callback_data,
         style=style or _button_style(text, callback_data),
         **kwargs,

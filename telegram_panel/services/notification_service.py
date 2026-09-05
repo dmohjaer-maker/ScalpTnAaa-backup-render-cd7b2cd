@@ -10,7 +10,6 @@ from ..config.constants import NotificationType
 from ..models.notification import NotificationSetting, NotificationLog
 from ..storage.repositories.notification_repo import NotificationRepository
 from ..utils.time import utc_now
-from ..i18n.fa import translate
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +166,7 @@ class NotificationService:
                 try:
                     msg = await self._bot_app.bot.send_message(
                         chat_id=recipient,
-                        text=translate(message),
+                        text=message,
                         parse_mode="HTML",
                     )
                     # Log success
