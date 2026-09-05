@@ -545,9 +545,12 @@ def run_decision_engine(
     symbol: str = "XAUUSD",
 ) -> DecisionResult:
 
-    smc     = analyze_smc_structure(candles)
-    wyckoff = analyze_wyckoff(candles)
-    pa      = analyze_price_action(candles)
+    # Every engine receives the active instrument.  XAUUSD and EURUSD share
+    # the decision pipeline, but never share absolute price thresholds or
+    # calibrated state.
+    smc     = analyze_smc_structure(candles, symbol=symbol)
+    wyckoff = analyze_wyckoff(candles, symbol=symbol)
+    pa      = analyze_price_action(candles, symbol=symbol)
     trend   = analyze_trend(candles)
 
     candidate = _candidate_direction(smc, pa, trend, wyckoff)
@@ -597,15 +600,15 @@ def run_decision_engine(
     # regimes. Trending regimes keep the stricter operator-configured value.
     regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
 
-    # DXY is an active hard directional veto for gold. The feed fails open to
-    # NEUTRAL, so an outage never blocks trading; only a confirmed opposing
-    # dollar trend blocks the corresponding gold direction.
+    # DXY is an active hard directional veto for dollar-sensitive pairs. The
+    # feed fails open to NEUTRAL, so an outage never blocks trading; only a
+    # confirmed opposing dollar trend blocks the candidate direction.
     if (
         (candidate == "BUY" and dxy_signal == "BULLISH_DXY")
         or (candidate == "SELL" and dxy_signal == "BEARISH_DXY")
     ):
         dxy_reason = (
-            f"DXY filter: {dxy_signal} opposes gold {candidate} — entry blocked"
+            f"DXY filter: {dxy_signal} opposes {symbol} {candidate} — entry blocked"
         )
         return _make_neutral(
             smc, wyckoff, pa, trend, [dxy_reason], [dxy_reason],

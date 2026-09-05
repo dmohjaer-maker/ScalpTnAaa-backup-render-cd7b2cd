@@ -5,6 +5,7 @@ Ported from priceActionEngine.ts — confirmation only.
 from dataclasses import dataclass
 from typing import List, Literal, Optional
 from live_trading.signals.gold_engine import OHLCV
+from live_trading.symbols import price_action_thresholds
 
 
 @dataclass
@@ -22,6 +23,7 @@ class PaConfig:
     fake_retrace_bars: int
     pullback_zone_pct: float
     atr_period: int
+    price_digits: int = 2
 
 
 CFG_M5 = PaConfig(
@@ -171,9 +173,15 @@ def _detect_supply_demand(candles: List[OHLCV], cfg: PaConfig, atr: float):
         if not is_strong: continue
 
         if _is_bull(impulse):
-            demand_zones.append({"top": round(base_high, 2), "bottom": round(base_low, 2)})
+            demand_zones.append({
+                "top": round(base_high, cfg.price_digits),
+                "bottom": round(base_low, cfg.price_digits),
+            })
         elif _is_bear(impulse):
-            supply_zones.append({"top": round(base_high, 2), "bottom": round(base_low, 2)})
+            supply_zones.append({
+                "top": round(base_high, cfg.price_digits),
+                "bottom": round(base_low, cfg.price_digits),
+            })
 
     return demand_zones[-3:], supply_zones[-3:]
 
@@ -282,8 +290,24 @@ _NEUTRAL_PA = PriceActionResult(
 )
 
 
-def analyze_price_action(candles: List[OHLCV]) -> PriceActionResult:
-    cfg = CFG_M5
+def analyze_price_action(candles: List[OHLCV], symbol: str = "XAUUSD") -> PriceActionResult:
+    raw = price_action_thresholds(symbol)
+    cfg = PaConfig(
+        pin_bar_wick_ratio=2.0,
+        pin_bar_body_max_ratio=0.30,
+        strong_body_ratio=0.60,
+        strong_body_atr_mult=0.40,
+        engulf_body_ratio=1.05,
+        level_lookback=30,
+        level_tolerance=float(raw["level_tolerance"]),
+        min_level_touches=2,
+        breakout_min_body=float(raw["breakout_min_body"]),
+        breakout_body_ratio=0.50,
+        fake_retrace_bars=3,
+        pullback_zone_pct=0.0015,
+        atr_period=10,
+        price_digits=int(raw["price_digits"]),
+    )
     if len(candles) < cfg.level_lookback + cfg.atr_period + 5:
         return _NEUTRAL_PA
 

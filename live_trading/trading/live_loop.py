@@ -60,7 +60,7 @@ from live_trading.signals.mtf_filter import compute_mtf_bias, mtf_allows_trade, 
 from live_trading.signals.news_filter import check_news_filter
 from live_trading.signals.dxy_filter import get_dxy_signal
 from live_trading.signals.wyckoff_engine import (
-    CFG_M5, calibrate_wyckoff, set_calibrated_config,
+    calibrate_wyckoff, set_calibrated_config,
 )
 from live_trading.mt5.connector import (
     connect, disconnect, ensure_connected,
@@ -77,6 +77,7 @@ from live_trading.utils.state_writer import (
     write_robot_state, write_mt5_snapshot,
     read_commands, clear_command, log_trade,
 )
+from live_trading.symbols import execution_step
 
 log = get_logger()
 
@@ -401,17 +402,19 @@ class GoldScalperLive:
         for symbol in self.symbols:
             candles = await fetch_candles(symbol, TIMEFRAME, 500)
             if candles:
-                cfg = calibrate_wyckoff(candles)
+                cfg = calibrate_wyckoff(candles, symbol=symbol)
                 self._wyckoff_configs[symbol] = cfg
                 log.info(
                     f"Wyckoff calibrated [{symbol}] — "
                     f"maxRangePct={cfg.max_range_pct:.5f}  "
-                    f"springMargin={cfg.spring_margin:.2f}"
+                    f"springMargin={cfg.spring_margin:.5f}"
                 )
             else:
                 # Do not let a missing EUR feed overwrite XAU's calibrated
                 # parameters; use the safe baseline only for that symbol.
-                self._wyckoff_configs[symbol] = CFG_M5
+                self._wyckoff_configs[symbol] = calibrate_wyckoff(
+                    [], symbol=symbol
+                )
                 log.warning(
                     f"Could not fetch candles for {symbol} Wyckoff calibration; "
                     "using baseline defaults for that symbol"
@@ -618,7 +621,12 @@ class GoldScalperLive:
         # Apply the calibrated parameters for this symbol immediately before
         # analysis. The engines are synchronous, so EUR calibration cannot
         # leak into the XAUUSD decision that follows it.
-        set_calibrated_config(self._wyckoff_configs.get(symbol, CFG_M5))
+        set_calibrated_config(
+            self._wyckoff_configs.get(
+                symbol, calibrate_wyckoff([], symbol=symbol)
+            ),
+            symbol=symbol,
+        )
         # 1. Fetch candles for this timeframe (M5 / M10 / M15 / M20)
         candles = await fetch_candles(symbol, tf, CANDLE_WINDOW)
         if len(candles) < 50:
@@ -634,7 +642,7 @@ class GoldScalperLive:
             try:
                 htf_candles = await fetch_candles(symbol, MTF_TIMEFRAME, MTF_CANDLE_WINDOW)
                 if len(htf_candles) >= 50:
-                    htf_bias = compute_mtf_bias(htf_candles)
+                    htf_bias = compute_mtf_bias(htf_candles, symbol=symbol)
                     log.info(
                         f"[{tf}] HTF ({MTF_TIMEFRAME}) bias: {htf_bias.direction}  "
                         f"trend={htf_bias.trend}  smc={htf_bias.smc_signal}  "
@@ -1415,6 +1423,7 @@ class GoldScalperLive:
                 favorable_extreme=baseline["favorable_extreme"],
                 spread=max(0.0, float(quote.get("ask", 0.0)) -
                           float(quote.get("bid", 0.0))),
+                symbol=symbol,
             )
 
             r_now = r_multiple_of(
@@ -1428,10 +1437,17 @@ class GoldScalperLive:
                 "favorable_extreme": baseline["favorable_extreme"],
             }
 
-            if not should_apply(direction, pos["sl"], candidate_sl, self._trailing_cfg.min_step_price):
+            _trail_step = (
+                max(execution_step(symbol), self._trailing_cfg.min_step_price / 1000.0)
+                if symbol.startswith("EURUSD")
+                else self._trailing_cfg.min_step_price
+            )
+            if not should_apply(direction, pos["sl"], candidate_sl, _trail_step):
                 continue
 
-            result = await modify_position(pos["id"], candidate_sl, pos["tp"])
+            result = await modify_position(
+                pos["id"], candidate_sl, pos["tp"], symbol=symbol
+            )
             if result.success:
                 log.info(
                     f"📐 Trailing stop advanced — position {pos['id']}  "

@@ -7,6 +7,7 @@ Cross-engine combining (Wyckoff, PA, Trend) is done in decision_engine.py.
 from dataclasses import dataclass, field
 from typing import List, Literal, Optional, Set
 from live_trading.signals.gold_engine import OHLCV
+from live_trading.symbols import smc_thresholds
 
 
 # ── Per-timeframe config ──────────────────────────────────────────────────────
@@ -29,6 +30,7 @@ class SmcConfig:
     max_bos: int
     max_choch: int
     max_sweeps: int
+    price_digits: int = 2
 
 
 CFG_M5 = SmcConfig(
@@ -271,11 +273,15 @@ def _detect_bos_and_choch(
             min_body   = choch_body_ratio if local_trend == "BEARISH" else cfg.min_bos_body_ratio
             if break_dist >= cfg.min_break_distance and br >= min_body:
                 if local_trend == "BEARISH":
-                    choch_signals.append(SmcChoch("BUY", round(sh_price, 2), i, c.time))
+                    choch_signals.append(
+                        SmcChoch("BUY", round(sh_price, cfg.price_digits), i, c.time)
+                    )
                     local_trend = "NEUTRAL"
                     recent_bos_dir.clear()
                 else:
-                    bos_signals.append(SmcBos("BUY", round(sh_price, 2), i, c.time))
+                    bos_signals.append(
+                        SmcBos("BUY", round(sh_price, cfg.price_digits), i, c.time)
+                    )
                     recent_bos_dir.append("BUY")
                     if len(recent_bos_dir) >= 2 and all(d == "BUY" for d in recent_bos_dir[-2:]):
                         local_trend = "BULLISH"
@@ -289,11 +295,15 @@ def _detect_bos_and_choch(
             min_body   = choch_body_ratio if local_trend == "BULLISH" else cfg.min_bos_body_ratio
             if break_dist >= cfg.min_break_distance and br >= min_body:
                 if local_trend == "BULLISH":
-                    choch_signals.append(SmcChoch("SELL", round(sl_price, 2), i, c.time))
+                    choch_signals.append(
+                        SmcChoch("SELL", round(sl_price, cfg.price_digits), i, c.time)
+                    )
                     local_trend = "NEUTRAL"
                     recent_bos_dir.clear()
                 else:
-                    bos_signals.append(SmcBos("SELL", round(sl_price, 2), i, c.time))
+                    bos_signals.append(
+                        SmcBos("SELL", round(sl_price, cfg.price_digits), i, c.time)
+                    )
                     recent_bos_dir.append("SELL")
                     if len(recent_bos_dir) >= 2 and all(d == "SELL" for d in recent_bos_dir[-2:]):
                         local_trend = "BEARISH"
@@ -349,8 +359,8 @@ def _detect_order_blocks(
         raw = candles[ob_idx]
         ob  = SmcOrderBlock(
             type="BULLISH" if bos.type == "BUY" else "BEARISH",
-            high=round(raw.high, 2), low=round(raw.low, 2),
-            open=round(raw.open, 2), close=round(raw.close, 2),
+            high=round(raw.high, cfg.price_digits), low=round(raw.low, cfg.price_digits),
+            open=round(raw.open, cfg.price_digits), close=round(raw.close, cfg.price_digits),
             bar_index=ob_idx, time=raw.time, mitigated=False,
         )
 
@@ -389,7 +399,10 @@ def _detect_fvgs(candles: List[OHLCV], cfg: SmcConfig) -> List[SmcFvg]:
                          for j in range(i + 1, len(candles)))
             if not filled:
                 filled = curr_low <= c3.low and curr_high >= c1.high
-            fvgs.append(SmcFvg("BULLISH", round(c3.low, 2), round(c1.high, 2),
+            fvgs.append(SmcFvg(
+                                "BULLISH",
+                                round(c3.low, cfg.price_digits),
+                                round(c1.high, cfg.price_digits),
                                 i - 1, candles[i - 1].time, filled))
 
         # Bearish FVG: gap between c3.high and c1.low
@@ -398,7 +411,10 @@ def _detect_fvgs(candles: List[OHLCV], cfg: SmcConfig) -> List[SmcFvg]:
                          for j in range(i + 1, len(candles)))
             if not filled:
                 filled = curr_high >= c3.high and curr_low <= c1.low
-            fvgs.append(SmcFvg("BEARISH", round(c1.low, 2), round(c3.high, 2),
+            fvgs.append(SmcFvg(
+                                "BEARISH",
+                                round(c1.low, cfg.price_digits),
+                                round(c3.high, cfg.price_digits),
                                 i - 1, candles[i - 1].time, filled))
 
     return [g for g in fvgs if not g.filled][-cfg.max_fvgs:]
@@ -423,10 +439,14 @@ def _detect_liquidity_sweeps(
             if (level - c.low  >= cfg.liquidity_sweep_min and
                     c.close - level >= cfg.min_sweep_close_margin and
                     c.close > c.open):
-                if not any(s.type == "BULLISH" and abs(s.swept_level - level) < 0.05
-                           for s in sweeps):
+                if not any(
+                    s.type == "BULLISH"
+                    and abs(s.swept_level - level) < cfg.equal_level_tolerance
+                    for s in sweeps
+                ):
                     sweeps.append(SmcLiquiditySweep(
-                        "BULLISH", round(level, 2), round(c.low, 2), i, c.time))
+                        "BULLISH", round(level, cfg.price_digits),
+                        round(c.low, cfg.price_digits), i, c.time))
                 break
 
         # Bearish sweep: wick above swing high, close below level
@@ -435,10 +455,14 @@ def _detect_liquidity_sweeps(
             if (c.high - level  >= cfg.liquidity_sweep_min and
                     level - c.close >= cfg.min_sweep_close_margin and
                     c.close < c.open):
-                if not any(s.type == "BEARISH" and abs(s.swept_level - level) < 0.05
-                           for s in sweeps):
+                if not any(
+                    s.type == "BEARISH"
+                    and abs(s.swept_level - level) < cfg.equal_level_tolerance
+                    for s in sweeps
+                ):
                     sweeps.append(SmcLiquiditySweep(
-                        "BEARISH", round(level, 2), round(c.high, 2), i, c.time))
+                        "BEARISH", round(level, cfg.price_digits),
+                        round(c.high, cfg.price_digits), i, c.time))
                 break
 
     return sweeps[-cfg.max_sweeps:]
@@ -471,7 +495,7 @@ def _detect_equal_levels(
                 last_k = group[-1]
                 levels.append(SmcEqualLevel(
                     type=level_type,  # type: ignore
-                    price=round(avg_p, 2),
+                    price=round(avg_p, cfg.price_digits),
                     bar_indices=[indices[k] for k in group],
                     time=candles[indices[last_k]].time,
                 ))
@@ -563,8 +587,27 @@ def _compute_smc_signal(
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
-def analyze_smc_structure(candles: List[OHLCV]) -> SmcResult:
-    cfg = CFG_M5
+def analyze_smc_structure(candles: List[OHLCV], symbol: str = "XAUUSD") -> SmcResult:
+    raw = smc_thresholds(symbol)
+    cfg = SmcConfig(
+        swing_lookback=5,
+        fvg_min_size=float(raw["fvg_min_size"]),
+        equal_level_tolerance=float(raw["equal_level_tolerance"]),
+        liquidity_sweep_min=float(raw["liquidity_sweep_min"]),
+        min_sweep_close_margin=float(raw["min_sweep_close_margin"]),
+        near_ob_threshold=float(raw["near_ob_threshold"]),
+        near_fvg_threshold=float(raw["near_fvg_threshold"]),
+        min_ob_body_size=float(raw["min_ob_body_size"]),
+        min_ob_body_ratio=0.30,
+        min_break_distance=float(raw["min_break_distance"]),
+        min_bos_body_ratio=0.35,
+        max_order_blocks=6,
+        max_fvgs=6,
+        max_bos=5,
+        max_choch=3,
+        max_sweeps=5,
+        price_digits=int(raw["price_digits"]),
+    )
     min_required = cfg.swing_lookback * 2 + 10
 
     _empty = SmcResult(

@@ -86,7 +86,7 @@ def _neutral(reason: str) -> MtfBias:
 
 # ── Core computation ──────────────────────────────────────────────────────────
 
-def compute_mtf_bias(htf_candles: List[OHLCV]) -> MtfBias:
+def compute_mtf_bias(htf_candles: List[OHLCV], symbol: str = "XAUUSD") -> MtfBias:
     """
     Derive the HTF directional bias from Trend + SMC + Regime analysis.
 
@@ -110,8 +110,8 @@ def compute_mtf_bias(htf_candles: List[OHLCV]) -> MtfBias:
 
     try:
         trend   : TrendResult  = analyze_trend(htf_candles)
-        smc     : SmcResult    = analyze_smc_structure(htf_candles)
-        wyckoff : WyckoffResult = analyze_wyckoff(htf_candles)
+        smc     : SmcResult    = analyze_smc_structure(htf_candles, symbol=symbol)
+        wyckoff : WyckoffResult = analyze_wyckoff(htf_candles, symbol=symbol)
         regime  : RegimeResult  = detect_market_regime(
             htf_candles, trend, wyckoff, use_atr_high_vol=False
         )

@@ -16,6 +16,7 @@ import aiohttp
 
 from live_trading.logger import get_logger
 from live_trading.mt5.connector import _get_session, get_connection, get_conn_id
+from live_trading.symbols import price_round
 
 log = get_logger()
 
@@ -71,8 +72,8 @@ async def place_market_order(
         "operation":  operation,
         "volume":     lot,
         "slippage":   deviation,
-        "stoploss":   round(sl, 2),
-        "takeprofit": round(tp, 2),
+        "stoploss":   price_round(sl, symbol),
+        "takeprofit": price_round(tp, symbol),
         "comment":    comment[:32],
     }
 
@@ -150,7 +151,7 @@ async def close_position(position_id: str, deviation: int = 30, **kwargs) -> Tra
 # ── Modify position ───────────────────────────────────────────────────────────
 
 async def modify_position(
-    position_id: str, sl: float, tp: float
+    position_id: str, sl: float, tp: float, symbol: str = "XAUUSD"
 ) -> TradeResult:
     base    = get_connection()
     conn_id = get_conn_id()
@@ -164,8 +165,8 @@ async def modify_position(
             params={
                 "id":         conn_id,
                 "ticket":     int(position_id),
-                "stoploss":   round(sl, 2),
-                "takeprofit": round(tp, 2),
+                "stoploss":   price_round(sl, symbol),
+                "takeprofit": price_round(tp, symbol),
             },
             timeout=aiohttp.ClientTimeout(total=60),
         ) as resp:

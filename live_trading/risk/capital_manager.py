@@ -305,7 +305,10 @@ def calc_trade_parameters(inp: CapitalInput) -> CapitalOutput:
         sl_dist, inp.account_balance, inp.risk_percent, inp.symbol
     )
     be_dist = sl_dist
-    be_at = _r2(entry + be_dist if direction == "BUY" else entry - be_dist)
+    be_at = _price_round(
+        entry + be_dist if direction == "BUY" else entry - be_dist,
+        inp.symbol,
+    )
 
     return CapitalOutput(
         entry_price=_price_round(entry, inp.symbol),

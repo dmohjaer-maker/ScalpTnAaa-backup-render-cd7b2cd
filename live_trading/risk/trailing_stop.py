@@ -47,6 +47,7 @@ position's original entry/SL baseline so it survives restarts.
 from dataclasses import dataclass
 from math import isfinite
 from typing import Optional
+from live_trading.symbols import execution_step, is_eurusd, price_round
 
 
 @dataclass
@@ -77,6 +78,7 @@ def compute_staircase_sl(
     cfg:           TrailingConfig,
     favorable_extreme: Optional[float] = None,
     spread:         float = 0.0,    # current ask-bid spread in price units
+    symbol:         str = "XAUUSD",
 ) -> Optional[float]:
     """Return an adaptive candidate SL price, or None if not yet triggered.
 
@@ -141,8 +143,14 @@ def compute_staircase_sl(
         max(cfg.lock_buffer_r, cfg.max_lock_r),
     )
     lock_floor = locked_r * risk_distance
+    configured_min_gap = (
+        min(cfg.min_gap_price, execution_step(symbol))
+        if is_eurusd(symbol)
+        else cfg.min_gap_price
+    )
     adaptive_gap = max(
-        cfg.min_gap_price,
+        configured_min_gap,
+        execution_step(symbol),
         risk_distance * cfg.lock_buffer_r,
         (atr * cfg.atr_gap_mult) if atr and atr > 0 else 0.0,
         (spread * cfg.spread_gap_mult) if spread and spread > 0 else 0.0,
@@ -162,7 +170,7 @@ def compute_staircase_sl(
         if candidate < current_price + adaptive_gap:
             return None
 
-    return _r2(candidate)
+    return price_round(candidate, symbol)
 
 
 def r_multiple_of(direction: str, entry: float, risk_distance: float, current_price: float) -> float:

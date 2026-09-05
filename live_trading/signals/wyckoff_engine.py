@@ -5,6 +5,7 @@ Ported from wyckoffEngine.ts — confirmation only, never triggers alone.
 from dataclasses import dataclass
 from typing import List, Literal, Optional
 from live_trading.signals.gold_engine import OHLCV
+from live_trading.symbols import is_eurusd, wyckoff_baseline
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -28,15 +29,29 @@ CFG_M5 = WyckoffConfig(
     recent_bars=6,
 )
 
-# Runtime-calibrated config (set by calibrate_wyckoff())
-_calibrated_m5: Optional[WyckoffConfig] = None
+# Runtime-calibrated config (set by calibrate_wyckoff()), isolated by symbol.
+_calibrated_by_symbol: dict[str, WyckoffConfig] = {}
 
 
-def calibrate_wyckoff(candles: List[OHLCV]) -> WyckoffConfig:
+def _base_config(symbol: str) -> WyckoffConfig:
+    values = wyckoff_baseline(symbol)
+    return WyckoffConfig(
+        range_bars=20,
+        trend_bars=12,
+        spring_margin=float(values["spring_margin"]),
+        upthrust_margin=float(values["upthrust_margin"]),
+        min_range_touches=2,
+        max_range_pct=0.010,
+        min_range_pct=0.001,
+        recent_bars=6,
+    )
+
+
+def calibrate_wyckoff(candles: List[OHLCV], symbol: str = "XAUUSD") -> WyckoffConfig:
     """Derive WyckoffConfig from real OHLCV data (mirrors calibrateM5Config)."""
     n = len(candles)
     if n < 200:
-        return CFG_M5
+        return _base_config(symbol)
 
     # Median 14-bar ATR (sampled every 30 bars)
     atrs = []
@@ -64,7 +79,7 @@ def calibrate_wyckoff(candles: List[OHLCV]) -> WyckoffConfig:
     range_pcts.sort()
 
     p85 = range_pcts[int(len(range_pcts) * 0.85)] if range_pcts else 0.010
-    margin = round(median_atr * 0.80, 2)
+    margin = round(median_atr * 0.80, 5 if is_eurusd(symbol) else 2)
 
     return WyckoffConfig(
         range_bars=20, trend_bars=12,
@@ -75,13 +90,12 @@ def calibrate_wyckoff(candles: List[OHLCV]) -> WyckoffConfig:
     )
 
 
-def set_calibrated_config(cfg: WyckoffConfig) -> None:
-    global _calibrated_m5
-    _calibrated_m5 = cfg
+def set_calibrated_config(cfg: WyckoffConfig, symbol: str = "XAUUSD") -> None:
+    _calibrated_by_symbol[symbol.upper()] = cfg
 
 
-def _get_cfg() -> WyckoffConfig:
-    return _calibrated_m5 if _calibrated_m5 else CFG_M5
+def _get_cfg(symbol: str = "XAUUSD") -> WyckoffConfig:
+    return _calibrated_by_symbol.get(symbol.upper(), _base_config(symbol))
 
 
 # ── Output ────────────────────────────────────────────────────────────────────
@@ -215,8 +229,8 @@ _NEUTRAL = WyckoffResult(
 )
 
 
-def analyze_wyckoff(candles: List[OHLCV]) -> WyckoffResult:
-    cfg = _get_cfg()
+def analyze_wyckoff(candles: List[OHLCV], symbol: str = "XAUUSD") -> WyckoffResult:
+    cfg = _get_cfg(symbol)
 
     if len(candles) < cfg.range_bars + cfg.trend_bars:
         return _NEUTRAL
