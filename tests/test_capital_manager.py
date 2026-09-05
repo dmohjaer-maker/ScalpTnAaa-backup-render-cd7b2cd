@@ -1,6 +1,11 @@
 """Regression coverage for the structure-aware initial stop envelope."""
 
-from live_trading.risk.capital_manager import CapitalInput, calc_trade_parameters
+from live_trading.risk.capital_manager import (
+    CapitalInput,
+    calc_trade_parameters,
+    validate_trade_risk,
+    validate_total_open_risk,
+)
 
 
 def _input(**overrides):
@@ -93,3 +98,55 @@ def test_every_fallback_target_is_exactly_two_r():
 
     assert result.risk_reward_ratio == 2.0
     assert result.take_profit < result.entry_price
+
+
+def test_minimum_lot_excess_risk_is_blocked_instead_of_forced():
+    result = calc_trade_parameters(
+        _input(account_balance=440.0, atr=15.8),
+    )
+
+    assert result.lot_size == 0.01
+    assert result.risk_amount / 440.0 * 100.0 > 6.0
+    allowed, reason = validate_trade_risk(result, 440.0, 1.0)
+
+    assert allowed is False
+    assert "entry blocked" in reason
+
+
+def test_total_open_risk_includes_existing_positions():
+    positions = [
+        {
+            "id": "one",
+            "symbol": "XAUUSD",
+            "volume": 0.01,
+            "open_price": 4400.0,
+            "sl": 4390.0,
+        },
+        {
+            "id": "two",
+            "symbol": "XAUUSD",
+            "volume": 0.01,
+            "open_price": 4400.0,
+            "sl": 4390.0,
+        },
+    ]
+
+    allowed, reason = validate_total_open_risk(
+        positions, new_trade_risk=10.0, account_balance=440.0,
+        max_total_risk_percent=3.0,
+    )
+
+    assert allowed is False
+    assert "Aggregate stop risk" in reason
+
+
+def test_unprotected_position_blocks_new_entry():
+    allowed, reason = validate_total_open_risk(
+        [{"id": "unprotected", "symbol": "XAUUSD", "volume": 0.01,
+          "open_price": 4400.0, "sl": 0.0}],
+        new_trade_risk=1.0, account_balance=440.0,
+        max_total_risk_percent=3.0,
+    )
+
+    assert allowed is False
+    assert "protective SL" in reason

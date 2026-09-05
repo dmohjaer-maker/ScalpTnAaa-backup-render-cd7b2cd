@@ -62,6 +62,12 @@ LOT_DOLLAR_PER_UNIT = 100
 FOREX_DOLLAR_PER_UNIT = 100_000
 MIN_LOT = 0.01
 MAX_LOT = 50.0
+# A broker's minimum lot can force the realised stop-loss exposure above the
+# configured percentage.  That is not an acceptable reason to place a trade:
+# the fail-closed gate below rejects it instead of silently risking 5–10%.
+MAX_SINGLE_TRADE_RISK_MULTIPLIER = _bounded_env_float(
+    "MAX_SINGLE_TRADE_RISK_MULTIPLIER", 1.00, 1.00, 3.00
+)
 
 # EURUSD uses a standard 100,000-unit FX contract. Keep the existing XAUUSD
 # sizing constants untouched so adding EUR cannot change gold risk.
@@ -124,6 +130,113 @@ class CapitalOutput:
     risk_amount: float
     sl_distance_usd: float
     sl_distance_pips: float
+
+
+def validate_trade_risk(
+    output: CapitalOutput,
+    account_balance: float,
+    target_risk_percent: float,
+) -> tuple[bool, str]:
+    """Fail closed when broker lot granularity exceeds the risk budget.
+
+    Sizing normally rounds down, but ``MIN_LOT`` can still round a very small
+    calculated position up to the broker minimum.  In that case the returned
+    ``risk_amount`` is the *real* stop-loss exposure, not the requested
+    amount.  Never send an order when that exposure materially exceeds the
+    configured budget.
+    """
+    if (
+        not isfinite(account_balance)
+        or account_balance <= 0
+        or not isfinite(target_risk_percent)
+        or target_risk_percent <= 0
+        or not isfinite(output.risk_amount)
+        or output.risk_amount < 0
+    ):
+        return False, "Risk budget is invalid — entry blocked"
+
+    budget = account_balance * target_risk_percent / 100.0
+    max_allowed = budget * MAX_SINGLE_TRADE_RISK_MULTIPLIER
+    if output.risk_amount > max_allowed + max(0.01, budget * 0.005):
+        actual_percent = output.risk_amount / account_balance * 100.0
+        return (
+            False,
+            f"Minimum broker lot would risk {actual_percent:.2f}% "
+            f"({output.risk_amount:.2f}) vs target {target_risk_percent:.2f}% "
+            f"({budget:.2f}) — entry blocked",
+        )
+    return True, ""
+
+
+def estimate_position_risk(position: dict) -> Optional[float]:
+    """Estimate stop-loss exposure for a normalised open-position row.
+
+    ``None`` is deliberately returned when a position has no usable SL.  An
+    unprotected position must not be treated as zero risk by the aggregate
+    exposure gate.
+    """
+    try:
+        symbol = str(position.get("symbol") or "XAUUSD")
+        volume = float(position.get("volume", 0.0))
+        open_price = float(position.get("open_price", 0.0))
+        stop_loss = float(position.get("sl", 0.0))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if (
+        not isfinite(volume)
+        or not isfinite(open_price)
+        or not isfinite(stop_loss)
+        or volume <= 0
+        or open_price <= 0
+        or stop_loss <= 0
+    ):
+        return None
+    distance = abs(open_price - stop_loss)
+    if distance <= 0:
+        return None
+    return volume * distance * _price_unit_value(symbol)
+
+
+def validate_total_open_risk(
+    positions: list[dict],
+    new_trade_risk: float,
+    account_balance: float,
+    max_total_risk_percent: float,
+) -> tuple[bool, str]:
+    """Keep existing stop exposure plus the new order under one account cap."""
+    if (
+        not isfinite(account_balance)
+        or account_balance <= 0
+        or not isfinite(new_trade_risk)
+        or new_trade_risk < 0
+        or not isfinite(max_total_risk_percent)
+        or max_total_risk_percent <= 0
+    ):
+        return False, "Total risk budget is invalid — entry blocked"
+
+    total_existing = 0.0
+    for position in positions:
+        position_risk = estimate_position_risk(position)
+        if position_risk is None:
+            ticket = position.get("id", position.get("ticket", "?"))
+            return (
+                False,
+                f"Open position {ticket} has no valid protective SL — "
+                "entry blocked until it is protected",
+            )
+        total_existing += position_risk
+
+    max_total = account_balance * max_total_risk_percent / 100.0
+    total_after_entry = total_existing + new_trade_risk
+    if total_after_entry > max_total + max(0.01, max_total * 0.005):
+        total_percent = total_after_entry / account_balance * 100.0
+        return (
+            False,
+            f"Aggregate stop risk would be {total_percent:.2f}% "
+            f"({total_after_entry:.2f}) vs account cap "
+            f"{max_total_risk_percent:.2f}% ({max_total:.2f}) — entry blocked",
+        )
+    return True, ""
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:

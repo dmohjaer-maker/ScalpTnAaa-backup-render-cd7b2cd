@@ -102,6 +102,13 @@ services:
         value: "0.50"
       - key: RISK_PERCENT
         value: "1.0"
+      # Fail closed when the broker's 0.01 minimum lot would exceed the
+      # configured single-trade risk budget.
+      - key: MAX_SINGLE_TRADE_RISK_MULTIPLIER
+        value: "1.00"
+      # Existing stop exposure plus a new trade may not exceed 3% of balance.
+      - key: MAX_TOTAL_RISK_PCT
+        value: "3.0"
       - key: MAX_OPEN_TRADES
         value: "3"
       # Bounded XAUUSD M5 initial-stop calibration: enough room for normal

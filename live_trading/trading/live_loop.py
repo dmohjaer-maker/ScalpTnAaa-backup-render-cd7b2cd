@@ -43,6 +43,7 @@ from live_trading.config import (
     MTF_ENABLED, MTF_REQUIRE_ALIGNMENT, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
     TRADE_TIMEFRAMES,
     MAX_ENTRY_DRIFT_ATR, MAX_SPREAD_ATR, STRICT_ENTRY_MODE,
+    MAX_TOTAL_RISK_PCT,
 )
 from live_trading.logger import get_logger
 from live_trading.signals.gold_engine import calc_atr
@@ -51,7 +52,11 @@ from live_trading.trading.entry_guards import (
     validate_protection_levels,
 )
 from live_trading.risk.guardian import RiskGuardian, GuardianStatus
-from live_trading.risk.capital_manager import REQUIRED_ENTRY_RR
+from live_trading.risk.capital_manager import (
+    REQUIRED_ENTRY_RR,
+    validate_trade_risk,
+    validate_total_open_risk,
+)
 from live_trading.risk.trailing_stop import (
     TrailingConfig, compute_staircase_sl, should_apply, r_multiple_of,
 )
@@ -1067,6 +1072,21 @@ class GoldScalperLive:
             self._write_state("SCANNING", acc_info, decision, pos,
                               extra=self._guardian_extra(gs))
             return
+
+        _risk_ok, _risk_reason = validate_trade_risk(
+            tp_params, balance, RISK_PERCENT
+        )
+        if not _risk_ok:
+            log.warning(f"[{tf}] Refusing entry — {_risk_reason}")
+            self._write_state(
+                "SCANNING", acc_info, decision, pos,
+                extra={
+                    **self._guardian_extra(gs),
+                    "risk_block": _risk_reason,
+                },
+            )
+            return
+
         _protection_ok, _protection_reason, _execution_rr = validate_protection_levels(
             decision.direction,
             tp_params.entry_price,
@@ -1164,6 +1184,29 @@ class GoldScalperLive:
             )
             self._write_state("HOLDING", acc_info, decision, _confirm_pos,
                                extra=self._guardian_extra(gs))
+            return
+
+        _confirmed_position_dicts = [
+            mt5_pos_to_dict(raw) for raw in _confirm_positions
+        ]
+        _aggregate_risk_ok, _aggregate_risk_reason = validate_total_open_risk(
+            _confirmed_position_dicts,
+            tp_params.risk_amount,
+            balance,
+            MAX_TOTAL_RISK_PCT,
+        )
+        if not _aggregate_risk_ok:
+            log.warning(f"[{tf}] Refusing entry — {_aggregate_risk_reason}")
+            self._write_state(
+                "HOLDING" if _confirmed_position_dicts else "SCANNING",
+                acc_info,
+                decision,
+                (_confirmed_position_dicts[0] if _confirmed_position_dicts else pos),
+                extra={
+                    **self._guardian_extra(gs),
+                    "risk_block": _aggregate_risk_reason,
+                },
+            )
             return
 
         # 9. ── PLACE ORDER ────────────────────────────────────────────────────

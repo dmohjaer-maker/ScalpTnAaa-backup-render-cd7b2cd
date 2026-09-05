@@ -25,6 +25,7 @@ from live_trading.signals.divergence_engine import analyze_divergence, Divergenc
 from live_trading.trading.entry_guards import validate_directional_alignment
 from live_trading.risk.capital_manager import (
     CapitalInput, CapitalOutput, REQUIRED_ENTRY_RR, calc_trade_parameters,
+    validate_trade_risk,
 )
 from live_trading.config import (
     CONF_HARD_MIN,
@@ -864,6 +865,24 @@ def run_decision_engine(
             regime_label=regime.rules.label, regime_rules=regime.rules,
             quality_filter=quality, blocked_reasons=[rr_reason],
             reasoning=conf_result.reasoning + [rr_reason],
+            trade_params=None, smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
+            entry_filter=ef, divergence=divergence, dxy_signal=dxy_signal,
+        )
+
+    # A broker minimum lot must never turn a 1% strategy into a 6%+ trade.
+    # The capital manager reports the realised stop exposure after lot
+    # normalisation; reject the setup when that exposure exceeds the budget.
+    _risk_ok, _risk_reason = validate_trade_risk(
+        trade_params, account_balance, risk_percent
+    )
+    if not _risk_ok:
+        return DecisionResult(
+            allowed=False, direction=candidate,  # type: ignore
+            confidence=conf_result.confidence, components=conf_result.components,
+            grade="RISK_BLOCKED", regime=regime.regime,
+            regime_label=regime.rules.label, regime_rules=regime.rules,
+            quality_filter=quality, blocked_reasons=[_risk_reason],
+            reasoning=conf_result.reasoning + [_risk_reason],
             trade_params=None, smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
             entry_filter=ef, divergence=divergence, dxy_signal=dxy_signal,
         )

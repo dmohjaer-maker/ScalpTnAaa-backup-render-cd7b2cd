@@ -176,6 +176,9 @@ CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 # Trend, Price Action, and Wyckoff provide the independent confirmations.
 # CONF_HARD_MIN: trades below this confidence % are always rejected.
 RISK_PERCENT      = _float("RISK_PERCENT",      1.0,  lo=0.01, hi=10.0)
+# Account-level stop exposure cap. This includes already-open positions and
+# prevents three broker-minimum lots from quietly stacking excessive risk.
+MAX_TOTAL_RISK_PCT = _float("MAX_TOTAL_RISK_PCT", 3.0, lo=0.1, hi=50.0)
 # MIN_CONFIRMATIONS=2: normally Trend + one additional confirmation.
 # Range regimes add one confirmation because false breakouts are more common.
 MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   2,    lo=1,    hi=10)
