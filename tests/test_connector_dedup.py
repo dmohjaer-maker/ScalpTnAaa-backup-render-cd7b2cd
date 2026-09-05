@@ -220,6 +220,18 @@ class TestPhantomRowRepair:
         assert result == []
         assert dropped == ["1"]
 
+    def test_corrupt_volume_warning_is_rate_limited(self):
+        from live_trading.mt5.connector import _volume_warning_due
+
+        cache = {}
+        assert _volume_warning_due("fallback:42:1000000:0.01", now=100.0, cache=cache)
+        assert not _volume_warning_due(
+            "fallback:42:1000000:0.01", now=101.0, cache=cache
+        )
+        assert _volume_warning_due(
+            "fallback:42:1000000:0.01", now=401.0, cache=cache
+        )
+
 
 class TestOpenPositionsResponse:
     """Malformed OpenedOrders responses must never look like zero positions."""

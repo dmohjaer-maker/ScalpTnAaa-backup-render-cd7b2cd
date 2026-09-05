@@ -753,6 +753,36 @@ def _parse_open_positions_response(
 # anything above this cap is unambiguously corrupted bridge output unless
 # another independent lot field in the same row is sane.
 _MAX_SANE_VOLUME_LOTS = 100.0
+_VOLUME_WARNING_INTERVAL_SECONDS = 300.0
+_volume_warning_last_emitted: dict[str, float] = {}
+
+
+def _volume_warning_due(
+    key: str,
+    now: Optional[float] = None,
+    cache: Optional[dict[str, float]] = None,
+) -> bool:
+    """Rate-limit repeated bridge anomaly warnings without hiding repairs."""
+    warning_cache = _volume_warning_last_emitted if cache is None else cache
+    current = _time.monotonic() if now is None else now
+    previous = warning_cache.get(key)
+    if previous is not None and current - previous < _VOLUME_WARNING_INTERVAL_SECONDS:
+        return False
+    warning_cache[key] = current
+    return True
+
+
+def _log_volume_warning(key: str, message: str) -> None:
+    """Emit one warning per anomaly/ticket every five minutes.
+
+    The bridge anomaly is still repaired on every poll; only the identical
+    warning is suppressed so Render logs remain usable and alerting is not
+    flooded while a position stays open.
+    """
+    if _volume_warning_due(key):
+        log.warning(message)
+    else:
+        log.debug(message)
 
 
 def _volume_from_row(row: dict) -> Tuple[str, float]:
@@ -880,12 +910,14 @@ def _dedupe_positions(
                     repaired["volume"] = known["volume"]
                     repaired["lots"] = known["volume"]
                     repaired["type"] = known["direction"]
-                    log.warning(
+                    _log_volume_warning(
+                        f"repair:{ticket}:{raw_volume!r}:{known['volume']}:"
+                        f"{known['direction']}",
                         f"mt5rest returned ticket {ticket!r} with a corrupted "
                         f"volume ({raw_volume!r}) and type={row.get('type')} — "
                         f"repaired from this robot's own trade log "
                         f"(volume={known['volume']}, direction={known['direction']}) "
-                        f"instead of dropping a position known to be open."
+                        f"instead of dropping a position known to be open.",
                     )
                     result.append(repaired)
                 else:
@@ -896,12 +928,13 @@ def _dedupe_positions(
                     # of the time this really is bridge garbage, but right
                     # after a restart (known_positions not yet repopulated)
                     # it could be a real ticket we just don't recognise yet.
-                    log.warning(
+                    _log_volume_warning(
+                        f"drop:{ticket}:{raw_volume!r}:{row.get('lots')!r}",
                         f"mt5rest returned a lone row for ticket {ticket!r} "
                         f"without a sane lot value (volume={raw_volume!r}, "
                         f"lots={row.get('lots')!r}) "
                         f"— dropping phantom row (direction={row.get('type')}, "
-                        f"openPrice={row.get('openPrice', row.get('price_open'))})"
+                        f"openPrice={row.get('openPrice', row.get('price_open'))})",
                     )
                     dropped_unknown.append(str(ticket))
             else:
@@ -910,10 +943,11 @@ def _dedupe_positions(
                 # any caller can inspect the raw bridge payload.
                 try:
                     if not _primary_volume_is_sane(row):
-                        log.warning(
+                        _log_volume_warning(
+                            f"fallback:{ticket}:{raw_volume!r}:{vol:g}",
                             f"mt5rest returned ticket {ticket!r} with a corrupted "
                             f"volume ({raw_volume!r}); using independent "
-                            f"lots={vol:g} instead."
+                            f"lots={vol:g} instead.",
                         )
                 except (TypeError, ValueError):
                     pass
@@ -926,10 +960,12 @@ def _dedupe_positions(
         ]
         if len(sane) == 1:
             selected = _canonical_position_row(sane[0])
-            log.warning(
+            _log_volume_warning(
+                f"duplicate:{ticket}:{len(group)}:"
+                f"{[row.get('volume', row.get('lots')) for row in group]}",
                 f"mt5rest returned {len(group)} duplicate rows for ticket {ticket} "
                 f"— keeping the one with a plausible volume, dropping the rest "
-                f"(volumes seen: {[row.get('volume', row.get('lots')) for row in group]})"
+                f"(volumes seen: {[row.get('volume', row.get('lots')) for row in group]})",
             )
             result.append(selected)
         else:
@@ -940,10 +976,12 @@ def _dedupe_positions(
                 (row for row in sane if _primary_volume_is_sane(row)),
                 sane[0] if sane else group[0],
             )
-            log.warning(
+            _log_volume_warning(
+                f"duplicate-ambiguous:{ticket}:{len(group)}:"
+                f"{[row.get('volume', row.get('lots')) for row in group]}",
                 f"mt5rest returned {len(group)} duplicate rows for ticket {ticket} "
                 f"with no single plausible volume — keeping the first row only "
-                f"(volumes seen: {[row.get('volume', row.get('lots')) for row in group]})"
+                f"(volumes seen: {[row.get('volume', row.get('lots')) for row in group]})",
             )
             result.append(_canonical_position_row(selected))
     return result, dropped_unknown
