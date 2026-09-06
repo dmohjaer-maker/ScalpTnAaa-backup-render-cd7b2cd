@@ -500,6 +500,44 @@ class MessageFormatter:
                 "⚠️ Live market scan data is not currently available."
             )
 
+        # A connected MT5 account is not the same thing as a completed market
+        # scan.  The robot can be connected and waiting for the next completed
+        # candle, while the HTTP/Redis snapshot only contains account data.
+        # Never turn that incomplete state into a positive trading signal.
+        scan_fields = (
+            "candle_time",
+            "timestamp",
+            "price",
+            "trend",
+            "regime",
+            "smc_signal",
+            "adx",
+            "atr",
+        )
+        missing_scan_fields = [
+            field for field in scan_fields
+            if snapshot.get(field) is None or snapshot.get(field) == ""
+        ]
+        if missing_scan_fields:
+            received = snapshot.get("timestamp") or snapshot.get("_fetched_at") or "—"
+            connection = escape(str(snapshot.get("connection_status", "unknown")))
+            robot_status = snapshot.get("status") or snapshot.get("robot_status")
+            status_line = (
+                f"\n🤖 Robot status: <b>{escape(str(robot_status))}</b>"
+                if robot_status
+                else ""
+            )
+            return (
+                "📡 <b>LATEST MARKET SCAN</b>\n"
+                f"<code>{_DIVIDER}</code>\n\n"
+                "⚠️ <b>No fresh market scan is available.</b>\n"
+                f"🛰️ Received: <code>{escape(str(received))}</code>\n"
+                f"🟢 Connection: <b>{connection}</b>"
+                f"{status_line}\n\n"
+                "ℹ️ Signal confirmation is disabled until a complete "
+                "candle snapshot is received."
+            )
+
         def value(key: str, fallback: str = "—") -> str:
             raw = snapshot.get(key)
             return fallback if raw is None or raw == "" else escape(str(raw))
@@ -584,7 +622,11 @@ class MessageFormatter:
             blocked_reasons = [blocked_reasons]
         if isinstance(reasoning, str):
             reasoning = [reasoning]
-        if blocked_reasons:
+        if not snapshot.get("last_decision"):
+            rejection_lines = [
+                "No signal decision was recorded for this scan."
+            ]
+        elif blocked_reasons:
             rejection_lines = [translate_reason(item) for item in blocked_reasons if item]
         elif str(snapshot.get("smc_signal", "")).upper() == "NEUTRAL":
             rejection_lines = [

@@ -81,6 +81,17 @@ def _health_response(status: str) -> web.Response:
     )
 
 
+def _annotate_status_scan_telemetry(state: dict) -> dict:
+    """Distinguish a live heartbeat from a completed market scan."""
+    has_decision = bool(state.get("last_decision"))
+    has_signal_time = bool(state.get("last_signal_time"))
+    state["scan_status"] = "READY" if has_decision and has_signal_time else "NO_FRESH_SCAN"
+    state["signal_confirmation_available"] = bool(
+        has_decision and has_signal_time
+    )
+    return state
+
+
 def _heartbeat_is_fresh(value: object, now: datetime | None = None) -> bool:
     """Return whether a state heartbeat is recent enough to prove liveness."""
     heartbeat = _parse_heartbeat(value)
@@ -207,7 +218,10 @@ async def _status(req: web.Request):
                         # Fresh Redis data — return immediately
                         return web.Response(
                             status=200,
-                            text=json.dumps(state, default=str),
+                            text=json.dumps(
+                                _annotate_status_scan_telemetry(state),
+                                default=str,
+                            ),
                             content_type="application/json",
                         )
                 else:
@@ -234,7 +248,10 @@ async def _status(req: web.Request):
             local_state["_data_age_seconds"] = -1
         return web.Response(
             status=200,
-            text=json.dumps(local_state, default=str),
+            text=json.dumps(
+                _annotate_status_scan_telemetry(local_state),
+                default=str,
+            ),
             content_type="application/json",
         )
 
@@ -242,21 +259,24 @@ async def _status(req: web.Request):
     if _redis_stale_fallback is not None:
         return web.Response(
             status=200,
-            text=json.dumps(_redis_stale_fallback, default=str),
+            text=json.dumps(
+                _annotate_status_scan_telemetry(_redis_stale_fallback),
+                default=str,
+            ),
             content_type="application/json",
         )
 
     # 4. Last resort: return in-memory supervisor status (no data = truly unknown)
     return web.Response(
         status=200,
-        text=json.dumps({
+        text=json.dumps(_annotate_status_scan_telemetry({
             "status": _robot_status.lower(),
             "connection_status": "disconnected",
             "mt5_status": "disconnected",
             "last_heartbeat": None,
             "_data_fresh": False,
             "_data_age_seconds": -1,
-        }),
+        })),
         content_type="application/json",
     )
 
@@ -305,6 +325,28 @@ def _build_snapshot_from_state(state: dict, signal_snap: dict | None = None) -> 
                   "candle_time", "timestamp"):
             if k in signal_snap:
                 result[k] = signal_snap[k]
+
+    required_scan_fields = (
+        "candle_time",
+        "timestamp",
+        "price",
+        "regime",
+        "adx",
+        "atr",
+        "smc_signal",
+        "trend",
+    )
+    missing_scan_fields = [
+        field for field in required_scan_fields
+        if result.get(field) is None or result.get(field) == ""
+    ]
+    result["scan_missing_fields"] = missing_scan_fields
+    result["scan_status"] = (
+        "READY" if not missing_scan_fields else "NO_FRESH_SCAN"
+    )
+    result["signal_confirmation_available"] = bool(
+        not missing_scan_fields and result.get("last_decision")
+    )
     return result
 
 
