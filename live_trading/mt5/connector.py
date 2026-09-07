@@ -493,225 +493,190 @@ async def start_mt5_session_keepalive(
 # ── Market data ───────────────────────────────────────────────────────────────
 
 async def fetch_candles(
-    symbol: str, timeframe: str, count: int = 300
-) -> List[OHLCV]:
-    """Fetch completed OHLCV candles using mt5rest's historical-bar API.
+      symbol: str, timeframe: str, count: int = 300
+    ) -> List[OHLCV]:
+      """Fetch completed OHLCV candles and prefer the freshest bridge response.
 
-    PriceHistoryV2 is a range query and, on a newly opened MT5 session, can
-    return only the handful of bars accumulated since the session started.
-    PriceHistoryEx explicitly walks backwards through broker history and
-    returns the requested number of bars, including across market gaps.  Use
-    it first and retain PriceHistoryV2 as a compatibility fallback.
+      PriceHistoryEx is the preferred exact-count endpoint, but some mt5rest
+      sessions return a complete *stale* window after a broker reconnect. In
+      that case PriceHistoryV2 is queried with a wider lookback and merged so a
+      stale cache cannot silently become the active HTF input.
+      """
+      for attempt in range(2):
+          if not _conn_id:
+              if not await ensure_connected():
+                  return []
 
-    Completed-bar filtering is based on the current timeframe boundary rather
-    than blindly dropping the last response row.  Some mt5rest deployments
-    include the open bar and some return closed bars only.
-    """
-    for attempt in range(2):
-        if not _conn_id:
-            if not await ensure_connected():
-                return []
+          tf_min = _TF_MAP.get(timeframe, 5)
+          request_count = max(count + 5, 55)
+          now = datetime.now(timezone.utc)
+          freshness_limit = max(7200, tf_min * 60 * 3)
 
-        tf_min = _TF_MAP.get(timeframe, 5)
-        request_count = max(count + 5, 55)
-        now = datetime.now(timezone.utc)
+          def _raw_epoch(row: dict) -> float | None:
+              raw_time = next(
+                  (
+                      row.get(key)
+                      for key in ("time", "timestamp", "timeStamp", "date")
+                      if row.get(key) is not None
+                  ),
+                  None,
+              )
+              if isinstance(raw_time, (int, float)):
+                  return float(raw_time)
+              if raw_time is None:
+                  return None
+              try:
+                  parsed = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+                  if parsed.tzinfo is None:
+                      parsed = parsed.replace(tzinfo=timezone.utc)
+                  return parsed.timestamp()
+              except (TypeError, ValueError, OverflowError):
+                  return None
 
-        try:
-            sess = _get_session()
-            data = None
+          def _latest_epoch(rows) -> float | None:
+              if not isinstance(rows, list):
+                  return None
+              values = [_raw_epoch(row) for row in rows if isinstance(row, dict)]
+              values = [value for value in values if value is not None]
+              return max(values) if values else None
 
-            # PriceHistoryEx is the important path: unlike PriceHistoryV2 it
-            # requests an exact number of bars backwards and is not limited to
-            # the current session's small in-memory range.
-            async with sess.get(
-                f"{_base_url}/PriceHistoryEx",
-                params={
-                    "id": _conn_id,
-                    "symbol": symbol,
-                    "from": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "numBars": request_count,
-                    "timeFrame": tf_min,
-                    "timeoutSeconds": 60,
-                },
-                timeout=aiohttp.ClientTimeout(total=75),
-            ) as resp:
-                data = await resp.json(content_type=None)
+          try:
+              sess = _get_session()
 
-            if not isinstance(data, list) or len(data) < 2:
-                # Older/private bridge builds may not expose PriceHistoryEx.
-                # Keep the existing range endpoint as a safe fallback.
-                from_dt = now - timedelta(minutes=tf_min * request_count)
-                async with sess.get(
-                    f"{_base_url}/PriceHistoryV2",
-                    params={
-                        "id": _conn_id,
-                        "symbol": symbol,
-                        "from": from_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "to": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "timeFrame": tf_min,
-                        "timeoutSeconds": 60,
-                    },
-                    timeout=aiohttp.ClientTimeout(total=75),
-                ) as resp:
-                    fallback = await resp.json(content_type=None)
-                if isinstance(fallback, list) and len(fallback) > len(data or []):
-                    data = fallback
+              async def _get_rows(endpoint: str, params: dict, timeout_seconds: int = 75):
+                  try:
+                      async with sess.get(
+                          f"{_base_url}/{endpoint}",
+                          params=params,
+                          timeout=aiohttp.ClientTimeout(total=timeout_seconds),
+                      ) as resp:
+                          payload = await resp.json(content_type=None)
+                          return payload if isinstance(payload, list) else []
+                  except Exception as exc:
+                      log.warning(f"{endpoint} candle request failed for {symbol}/{timeframe}: {exc}")
+                      return []
 
-            if not isinstance(data, list):
-                # Error-shaped response — likely stale conn_id.
-                if attempt == 0:
-                    log.warning(
-                        f"fetch_candles unexpected response (stale conn_id?) "
-                        f"— reconnecting and retrying. Response: {str(data)[:200]}"
-                    )
-                    _invalidate_connection()
-                    continue
-                log.error(
-                    f"fetch_candles error-shaped response after reconnect: "
-                    f"{str(data)[:300]}"
-                )
-                return []
+              ex_data = await _get_rows(
+                  "PriceHistoryEx",
+                  {
+                      "id": _conn_id,
+                      "symbol": symbol,
+                      "from": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      "numBars": request_count,
+                      "timeFrame": tf_min,
+                      "timeoutSeconds": 60,
+                  },
+              )
+              candidates: list[tuple[str, list]] = []
+              if ex_data:
+                  candidates.append(("PriceHistoryEx", ex_data))
 
-            # Some broker servers keep PriceHistoryEx on the last completed
-            # session while their "today" feed is already receiving live
-            # bars.  If the newest returned row is materially stale, merge
-            # PriceHistoryToday before deciding that the symbol has no fresh
-            # market data.
-            def _raw_bar_epoch(raw_bar: dict) -> Optional[float]:
-                raw_time = next(
-                    (
-                        raw_bar.get(key)
-                        for key in ("time", "timestamp", "timeStamp", "date")
-                        if raw_bar.get(key) is not None
-                    ),
-                    "",
-                )
-                try:
-                    if isinstance(raw_time, (int, float)):
-                        return float(raw_time)
-                    parsed = datetime.fromisoformat(
-                        str(raw_time).replace("Z", "+00:00")
-                    )
-                    if parsed.tzinfo is None:
-                        parsed = parsed.replace(tzinfo=timezone.utc)
-                    return parsed.timestamp()
-                except (TypeError, ValueError, OverflowError):
-                    return None
+              ex_latest = _latest_epoch(ex_data)
+              ex_age = (now.timestamp() - ex_latest) if ex_latest is not None else None
+              need_range_probe = len(ex_data) < 2 or ex_latest is None or ex_age > freshness_limit
+              if need_range_probe:
+                  # A wider range survives weekends/market gaps and still gives
+                  # the bridge enough room to return count completed bars.
+                  lookback_minutes = max(tf_min * request_count * 3, 14 * 24 * 60)
+                  from_dt = now - timedelta(minutes=lookback_minutes)
+                  v2_data = await _get_rows(
+                      "PriceHistoryV2",
+                      {
+                          "id": _conn_id,
+                          "symbol": symbol,
+                          "from": from_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                          "to": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                          "timeFrame": tf_min,
+                          "timeoutSeconds": 60,
+                      },
+                  )
+                  if v2_data:
+                      candidates.append(("PriceHistoryV2", v2_data))
+                      v2_latest = _latest_epoch(v2_data)
+                      if ex_age is not None and v2_latest is not None and v2_latest > ex_latest:
+                          log.warning(
+                              f"Freshness repair [{symbol}/{timeframe}]: "
+                              f"PriceHistoryEx latest={datetime.fromtimestamp(ex_latest, timezone.utc).isoformat()} "
+                              f"vs PriceHistoryV2 latest={datetime.fromtimestamp(v2_latest, timezone.utc).isoformat()}"
+                          )
 
-            raw_epochs = [
-                epoch for raw_bar in data
-                if isinstance(raw_bar, dict)
-                for epoch in [_raw_bar_epoch(raw_bar)]
-                if epoch is not None
-            ]
-            current_boundary = int(now.timestamp()) - (
-                int(now.timestamp()) % (tf_min * 60)
-            )
-            latest_raw = max(raw_epochs, default=0.0)
-            stale_window = max(2 * 60 * 60, tf_min * 60 * 6)
-            if latest_raw and latest_raw < current_boundary - stale_window:
-                try:
-                    async with sess.get(
-                        f"{_base_url}/PriceHistoryToday",
-                        params={
-                            "id": _conn_id,
-                            "symbol": symbol,
-                            "timeFrame": tf_min,
-                        },
-                        timeout=aiohttp.ClientTimeout(total=45),
-                    ) as resp:
-                        today_data = await resp.json(content_type=None)
-                    if isinstance(today_data, list):
-                        if today_data:
-                            data = data + today_data
-                            log.info(
-                                f"Merged PriceHistoryToday for stale "
-                                f"{symbol}/{timeframe}: {len(today_data)} rows"
-                            )
-                        else:
-                            log.warning(
-                                f"PriceHistoryToday returned no rows for "
-                                f"stale {symbol}/{timeframe}"
-                            )
-                except Exception as today_exc:
-                    log.warning(
-                        f"PriceHistoryToday failed for {symbol}/{timeframe}: "
-                        f"{today_exc}"
-                    )
+              if not candidates:
+                  raise RuntimeError("PriceHistoryEx and PriceHistoryV2 returned no candle rows")
 
-            candles: List[OHLCV] = []
-            for bar in data:
-                # Normalise time to a plain string regardless of what
-                # mt5rest serialises it as (ISO datetime or epoch seconds).
-                raw_time = next(
-                    (
-                        bar.get(key)
-                        for key in ("time", "timestamp", "timeStamp", "date")
-                        if bar.get(key) is not None
-                    ),
-                    "",
-                )
-                if isinstance(raw_time, (int, float)):
-                    t = datetime.fromtimestamp(
-                        raw_time, tz=timezone.utc
-                    ).isoformat()
-                else:
-                    t = str(raw_time)
-                candles.append(OHLCV(
-                    time=t,
-                    open=float(bar.get("openPrice", bar.get("open", 0.0))),
-                    high=float(bar.get("highPrice", bar.get("high", 0.0))),
-                    low=float(bar.get("lowPrice", bar.get("low", 0.0))),
-                    close=float(bar.get("closePrice", bar.get("close", 0.0))),
-                    volume=float(bar.get("tickVolume", bar.get("volume", 0))),
-                ))
+              # Merge by timestamp so a fresh V2 tail can repair an older Ex
+              # window without throwing away older bars needed for EMA-200.
+              merged: dict[float | str, dict] = {}
+              for source, rows in candidates:
+                  for row in rows:
+                      if not isinstance(row, dict):
+                          continue
+                      epoch = _raw_epoch(row)
+                      key = epoch if epoch is not None else f"{source}:{len(merged)}"
+                      merged[key] = row
+              data = list(merged.values())
 
-            candles.sort(key=lambda candle: candle.time)
-            deduplicated: List[OHLCV] = []
-            seen_times: set[str] = set()
-            for candle in candles:
-                if candle.time in seen_times:
-                    continue
-                seen_times.add(candle.time)
-                deduplicated.append(candle)
+              candles: List[OHLCV] = []
+              for bar in data:
+                  raw_time = next(
+                      (
+                          bar.get(key)
+                          for key in ("time", "timestamp", "timeStamp", "date")
+                          if bar.get(key) is not None
+                      ),
+                      "",
+                  )
+                  if isinstance(raw_time, (int, float)):
+                      t = datetime.fromtimestamp(raw_time, tz=timezone.utc).isoformat()
+                  else:
+                      t = str(raw_time)
+                  candles.append(OHLCV(
+                      time=t,
+                      open=float(bar.get("openPrice", bar.get("open", 0.0))),
+                      high=float(bar.get("highPrice", bar.get("high", 0.0))),
+                      low=float(bar.get("lowPrice", bar.get("low", 0.0))),
+                      close=float(bar.get("closePrice", bar.get("close", 0.0))),
+                      volume=float(bar.get("tickVolume", bar.get("volume", 0))),
+                  ))
 
-            # Keep only bars strictly before the currently open timeframe
-            # boundary.  This works for both response conventions.
-            current_epoch = int(now.timestamp())
-            boundary_epoch = current_epoch - (current_epoch % (tf_min * 60))
-            completed: List[OHLCV] = []
-            for candle in deduplicated:
-                try:
-                    parsed = datetime.fromisoformat(
-                        candle.time.replace("Z", "+00:00")
-                    )
-                    if parsed.tzinfo is None:
-                        parsed = parsed.replace(tzinfo=timezone.utc)
-                    if int(parsed.timestamp()) < boundary_epoch:
-                        completed.append(candle)
-                except (TypeError, ValueError, OverflowError):
-                    # Preserve an unparseable row rather than silently
-                    # returning no history; the downstream count guard will
-                    # reject it if the bridge response is unusable.
-                    completed.append(candle)
+              candles.sort(key=lambda candle: candle.time)
+              deduplicated: List[OHLCV] = []
+              seen_times: set[str] = set()
+              for candle in candles:
+                  if candle.time in seen_times:
+                      continue
+                  seen_times.add(candle.time)
+                  deduplicated.append(candle)
 
-            result = completed[-count:] if len(completed) > count else completed
-            if len(result) < min(count, 50):
-                log.warning(
-                    f"Historical candles insufficient for {symbol}/{timeframe}: "
-                    f"received={len(result)} requested={count} "
-                    f"(PriceHistoryEx/V2)"
-                )
-            return result
+              current_epoch = int(now.timestamp())
+              boundary_epoch = current_epoch - (current_epoch % (tf_min * 60))
+              completed: List[OHLCV] = []
+              for candle in deduplicated:
+                  try:
+                      parsed = datetime.fromisoformat(candle.time.replace("Z", "+00:00"))
+                      if parsed.tzinfo is None:
+                          parsed = parsed.replace(tzinfo=timezone.utc)
+                      if int(parsed.timestamp()) < boundary_epoch:
+                          completed.append(candle)
+                  except (TypeError, ValueError, OverflowError):
+                      completed.append(candle)
 
-        except Exception as exc:
-            if attempt == 0:
-                log.warning(f"fetch_candles error (attempt 1) — reconnecting: {exc}")
-                _invalidate_connection()
-                continue
-            log.error(f"fetch_candles error after reconnect: {exc}")
-            return []
-    return []
+              completed.sort(key=lambda candle: candle.time)
+              result = completed[-count:] if len(completed) > count else completed
+              if len(result) < min(count, 50):
+                  log.warning(
+                      f"Historical candles insufficient for {symbol}/{timeframe}: "
+                      f"received={len(result)} requested={count} (PriceHistoryEx/V2)"
+                  )
+              return result
+
+          except Exception as exc:
+              if attempt == 0:
+                  log.warning(f"fetch_candles error (attempt 1) — reconnecting: {exc}")
+                  _invalidate_connection()
+                  continue
+              log.error(f"fetch_candles error after reconnect: {exc}")
+              return []
+      return []
 
 
 async def get_symbol_list() -> List[str]:
