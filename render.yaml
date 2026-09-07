@@ -127,11 +127,11 @@ services:
       - key: SL_SPREAD_BUFFER_MULT
         value: "1.50"
       - key: TP_RR
-        value: "2.00"
+        value: "1.20"
       - key: TP_MIN_RR
-        value: "2.00"
+        value: "1.20"
       - key: TP_MAX_RR
-        value: "2.00"
+        value: "1.80"
       - key: TP_APPROACH_ATR_MULT
         value: "0.15"
       # STABLE v4.0.4 values -- these are the actual settings the bot has been
@@ -142,7 +142,7 @@ services:
       # matched the dashboard-configured production values below -- a fresh
       # deploy from the old file would NOT have reproduced current behavior.
       - key: MIN_CONFIRMATIONS
-        value: "2"
+        value: "1"
       - key: REQUIRE_PRICE_ACTION
         value: "false"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
