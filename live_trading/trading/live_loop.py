@@ -2101,8 +2101,8 @@ class GoldScalperLive:
                 self._guardian_extra(self._last_guardian_status)
             )
         if self._last_mtf_telemetry:
-              merged_extra["mtf_telemetry"] = dict(self._last_mtf_telemetry)
-            if self._last_trailing_statuses:
+            merged_extra["mtf_telemetry"] = dict(self._last_mtf_telemetry)
+        if self._last_trailing_statuses:
             merged_extra["trailing_stop"] = {
                 "enabled": self.trailing_enabled,
                 # Keyed by position ticket id so the panel can show every
