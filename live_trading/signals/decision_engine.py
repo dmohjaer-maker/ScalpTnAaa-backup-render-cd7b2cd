@@ -484,6 +484,42 @@ def _candidate_direction(
     return "NEUTRAL"
 
 
+def _allows_htf_continuation(
+    candidate: str,
+    trend_dir: str,
+    htf_direction: str,
+    htf_strength: str,
+    smc: SmcResult,
+    pa: PriceActionResult,
+) -> bool:
+    """Allow a higher-timeframe continuation through a neutral local EMA.
+
+    A neutral local EMA is common during a pullback.  Treating it as a hard
+    counter-trend veto was forcing the live engine to ignore a strong H1
+    direction even when the local SMC/price-action setup agreed with it.
+    This exception is intentionally narrow:
+
+    * the local EMA must be neutral (never override an opposing local trend);
+    * the H1 bias must be BUY/SELL and at least MODERATE;
+    * the candidate must match that bias; and
+    * SMC or Price Action must provide the local directional confirmation.
+
+    Wyckoff phase alone is not enough to authorize this path.
+    """
+    if trend_dir != "NEUTRAL":
+        return False
+    if htf_direction not in {"BUY", "SELL"}:
+        return False
+    if htf_strength not in {"STRONG", "MODERATE"}:
+        return False
+    if candidate != htf_direction:
+        return False
+    return (
+        smc.smc_signal == candidate
+        or pa.pa_signal == candidate
+    )
+
+
 def _smc_direction_conflict_reason(smc: SmcResult, candidate: str) -> Optional[str]:
     """Return a fail-closed reason when the candidate is not SMC-confirmed.
 
@@ -545,6 +581,8 @@ def run_decision_engine(
     entry_price_override: Optional[float] = None,
     spread: float = 0.0,
     symbol: str = "XAUUSD",
+    htf_direction: str = "NEUTRAL",
+    htf_strength: str = "WEAK",
 ) -> DecisionResult:
 
     # Every engine receives the active instrument.  XAUUSD and EURUSD share
@@ -570,7 +608,19 @@ def run_decision_engine(
     # without allowing a one-vote setup through.
     trend_dir = ("BUY" if trend.trend == "BULLISH" else
                  "SELL" if trend.trend == "BEARISH" else "NEUTRAL")
-    if trend_dir != candidate and not ALLOW_COUNTER_TREND_TRADES:
+    htf_continuation = _allows_htf_continuation(
+        candidate=candidate,
+        trend_dir=trend_dir,
+        htf_direction=htf_direction,
+        htf_strength=htf_strength,
+        smc=smc,
+        pa=pa,
+    )
+    if (
+        trend_dir != candidate
+        and not ALLOW_COUNTER_TREND_TRADES
+        and not htf_continuation
+    ):
         trend_reason = (
             f"Trend filter: {candidate} conflicts with EMA trend "
             f"{trend.trend} — counter-trend entry blocked"
@@ -588,6 +638,7 @@ def run_decision_engine(
             local_trend=trend.trend,
             smc_trend=smc.trend,
             smc_signal=smc.smc_signal,
+            htf_direction=htf_direction,
         )
         if not _alignment_ok:
             return _make_neutral(
@@ -615,7 +666,13 @@ def run_decision_engine(
             dxy_signal=dxy_signal,
         )
 
-    effective_min_confirmations = min_confirmations
+    # Strong/moderate HTF continuation setups may use one local confirmation
+    # while the local EMA is neutral.  This fixes the over-filtering caused by
+    # requiring the local EMA and a second vote during an ordinary pullback.
+    # All other setups keep the configured confirmation threshold.
+    effective_min_confirmations = (
+        1 if htf_continuation else min_confirmations
+    )
 
     # Entry filter — minimum confirmation gate. SMC contributes only when it
     # agrees; it is not required and cannot veto the non-SMC setup.
@@ -627,7 +684,9 @@ def run_decision_engine(
         min_confirmations = effective_min_confirmations,
         require_price_action = require_price_action,
         require_smc_price_action_wyckoff = require_smc_price_action_wyckoff,
-        require_trend_alignment = not ALLOW_COUNTER_TREND_TRADES,
+        require_trend_alignment=(
+            not ALLOW_COUNTER_TREND_TRADES and not htf_continuation
+        ),
         candidate_direction = candidate,
     )
     if not ef.allowed:

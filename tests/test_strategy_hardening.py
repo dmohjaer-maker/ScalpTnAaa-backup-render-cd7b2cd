@@ -5,6 +5,8 @@ These tests protect the two strategy-level failure modes found in production:
 2. Wyckoff phase context being promoted to a trade without event + volume proof.
 """
 
+from types import SimpleNamespace
+
 from live_trading.signals import decision_engine
 from live_trading.signals.decision_engine import run_decision_engine
 from live_trading.signals.entry_filter import apply_entry_filter
@@ -61,6 +63,28 @@ def test_non_smc_trend_takes_priority_over_conflicting_smc():
     assert decision_engine._candidate_direction(
         smc, trend=bearish_trend
     ) == "SELL"
+
+
+def test_strong_htf_continuation_can_use_neutral_local_ema():
+    assert decision_engine._allows_htf_continuation(
+        candidate="SELL",
+        trend_dir="NEUTRAL",
+        htf_direction="SELL",
+        htf_strength="STRONG",
+        smc=SimpleNamespace(smc_signal="NEUTRAL"),
+        pa=SimpleNamespace(pa_signal="SELL"),
+    )
+
+
+def test_htf_continuation_never_overrides_opposing_local_trend():
+    assert not decision_engine._allows_htf_continuation(
+        candidate="SELL",
+        trend_dir="BULLISH",
+        htf_direction="SELL",
+        htf_strength="STRONG",
+        smc=SimpleNamespace(smc_signal="SELL"),
+        pa=SimpleNamespace(pa_signal="SELL"),
+    )
 
 
 def _phase_only_candles(prior_direction: str) -> list[OHLCV]:

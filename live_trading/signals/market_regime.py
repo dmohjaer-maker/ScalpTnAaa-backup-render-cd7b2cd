@@ -159,11 +159,27 @@ def detect_market_regime(
             return make("WEAK_TREND_BULL", f"ADX {adx} — developing bull trend")
         return make("WEAK_TREND_BEAR", f"ADX {adx} — developing bear trend")
 
-    if wyckoff.phase == "ACCUMULATION":
+    # A Wyckoff phase is context, not a directional veto by itself.  The
+    # Wyckoff engine deliberately keeps ``wyckoff_signal`` neutral until both
+    # the directional event (Spring/Upthrust) and directional volume are
+    # confirmed.  Using ``phase`` alone here was making an unresolved range
+    # block a valid trend setup (for example: "Distribution does not allow
+    # LONG") even though Wyckoff had not produced a SELL vote.
+    if (
+        wyckoff.phase == "ACCUMULATION"
+        and wyckoff.wyckoff_signal == "BUY"
+    ):
         return make("ACCUMULATION", "Wyckoff Accumulation" +
                     (" + Spring" if wyckoff.spring else ""))
-    if wyckoff.phase == "DISTRIBUTION":
+    if (
+        wyckoff.phase == "DISTRIBUTION"
+        and wyckoff.wyckoff_signal == "SELL"
+    ):
         return make("DISTRIBUTION", "Wyckoff Distribution" +
                     (" + Upthrust" if wyckoff.upthrust else ""))
 
-    return make("RANGE", f"ADX {adx} < 20 — ranging / choppy")
+    return make(
+        "RANGE",
+        f"ADX {adx} < 20 — ranging / choppy "
+        "(Wyckoff phase unconfirmed)",
+    )

@@ -1070,6 +1070,12 @@ class GoldScalperLive:
             require_price_action=REQUIRE_PRICE_ACTION,
             require_smc_price_action_wyckoff=REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
             symbol=symbol,
+            htf_direction=(
+                htf_bias.direction if htf_bias is not None else "NEUTRAL"
+            ),
+            htf_strength=(
+                htf_bias.strength if htf_bias is not None else "WEAK"
+            ),
         )
         self.last_decision = decision
 
@@ -1179,7 +1185,11 @@ class GoldScalperLive:
         # 8. Gate: decision engine
         if not decision.allowed:
             reasons = " | ".join(decision.blocked_reasons or ["No signal"])
-            log.info(f"No trade → {reasons}")
+            log.info(
+                f"No trade [{tf}] local_trend={decision.trend.trend} "
+                f"local_regime={decision.regime} "
+                f"htf={htf_bias.direction if htf_bias else 'NEUTRAL'} → {reasons}"
+            )
             self._write_state(
                 "SCANNING", acc_info, decision, pos,
                 extra=self._guardian_extra(gs),
@@ -1320,6 +1330,12 @@ class GoldScalperLive:
             entry_price_override=_market_entry,
             spread=_spread,
             symbol=symbol,
+            htf_direction=(
+                htf_bias.direction if htf_bias is not None else "NEUTRAL"
+            ),
+            htf_strength=(
+                htf_bias.strength if htf_bias is not None else "WEAK"
+            ),
         )
         if (not _live_decision.allowed
                 or _live_decision.direction != decision.direction):
