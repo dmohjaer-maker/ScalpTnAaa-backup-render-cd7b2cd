@@ -150,6 +150,7 @@ class GoldScalperLive:
         self._last_scan_symbol: str = ""
         self._last_scan_timeframe: str = ""
         self._last_scan_candle_count: int = 0
+        self._bar_diagnostic_logged_at: dict[tuple[str, str, str], datetime] = {}
 
         # Risk Guardian — initialized after mt5rest bridge connects
         self.guardian = RiskGuardian(
@@ -631,6 +632,15 @@ class GoldScalperLive:
 
     # ── Bar detection ─────────────────────────────────────────────────────────
 
+    def _bar_diagnostic(self, symbol: str, timeframe: str, kind: str, message: str) -> None:
+        """Rate-limit repetitive history diagnostics to one per minute."""
+        key = (symbol, timeframe, kind)
+        now = datetime.now(timezone.utc)
+        previous = self._bar_diagnostic_logged_at.get(key)
+        if previous is None or (now - previous).total_seconds() >= 60:
+            self._bar_diagnostic_logged_at[key] = now
+            log.warning(message)
+
     async def _check_new_bars(self) -> list[tuple[str, str, datetime]]:
         """Return new completed bars for every configured symbol/timeframe.
 
@@ -643,6 +653,11 @@ class GoldScalperLive:
                 try:
                     bt = await get_last_completed_bar_time(symbol, tf)
                     if bt is None:
+                        self._bar_diagnostic(
+                            symbol, tf, "missing",
+                            f"No completed broker candle returned for "
+                            f"{symbol}/{tf}; waiting for history feed",
+                        )
                         continue
                     _bt_naive = bt.replace(tzinfo=None) if bt.tzinfo else bt
                     _stale_cutoff = datetime.utcnow() - timedelta(hours=2)
@@ -652,6 +667,12 @@ class GoldScalperLive:
                         log.debug(
                             f"[{symbol}][{tf}] Bar {bt.isoformat()} is stale "
                             "— waiting for MT5 historical data sync"
+                        )
+                        self._bar_diagnostic(
+                            symbol, tf, "stale",
+                            f"Stale broker candle for {symbol}/{tf}: "
+                            f"latest={bt.isoformat()} cutoff="
+                            f"{_stale_cutoff.isoformat()}",
                         )
                         continue
                     prev = self._last_bar_times.get(key)
