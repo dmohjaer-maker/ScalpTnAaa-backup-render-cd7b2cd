@@ -1198,9 +1198,9 @@ class GoldScalperLive:
               )
               return
 
-            if MTF_ENABLED and MTF_REQUIRE_ALIGNMENT:
-            _mtf_ok = htf_bias is not None and htf_bias.direction != "NEUTRAL"
-            _mtf_reason = (
+          if MTF_ENABLED and MTF_REQUIRE_ALIGNMENT:
+              _mtf_ok = htf_bias is not None and htf_bias.direction != "NEUTRAL"
+                _mtf_reason = (
                 "MTF unavailable — no trade" if htf_bias is None else
                 "MTF neutral — no directional context, no trade"
                 if htf_bias.direction == "NEUTRAL" else ""
