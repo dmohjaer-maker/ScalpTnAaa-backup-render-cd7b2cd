@@ -825,77 +825,77 @@ class GoldScalperLive:
             return
 
         # 1b. Fetch HTF candles for Multi-Timeframe filter. A complete but
-          # stale HTF window is not valid context: fail closed instead of silently
-          # trading against a frozen H1 bias.
-          htf_bias: Optional[MtfBias] = None
-          self._last_mtf_telemetry = {
-              "enabled": bool(MTF_ENABLED),
-              "symbol": symbol,
-              "timeframe": MTF_TIMEFRAME,
-              "status": "DISABLED" if not MTF_ENABLED else "PENDING",
-          }
-          if MTF_ENABLED:
-              try:
-                  htf_candles = await fetch_candles(symbol, MTF_TIMEFRAME, MTF_CANDLE_WINDOW)
-                  htf_age_seconds = None
-                  if htf_candles:
-                      try:
-                          _htf_time = datetime.fromisoformat(
-                              str(htf_candles[-1].time).replace("Z", "+00:00")
-                          )
-                          if _htf_time.tzinfo is None:
-                              _htf_time = _htf_time.replace(tzinfo=timezone.utc)
-                          htf_age_seconds = max(
-                              0, int((datetime.now(timezone.utc) - _htf_time).total_seconds())
-                          )
-                      except (TypeError, ValueError, OverflowError):
-                          htf_age_seconds = None
+        # stale HTF window is not valid context: fail closed instead of silently
+        # trading against a frozen H1 bias.
+        htf_bias: Optional[MtfBias] = None
+        self._last_mtf_telemetry = {
+            "enabled": bool(MTF_ENABLED),
+            "symbol": symbol,
+            "timeframe": MTF_TIMEFRAME,
+            "status": "DISABLED" if not MTF_ENABLED else "PENDING",
+        }
+        if MTF_ENABLED:
+            try:
+                htf_candles = await fetch_candles(symbol, MTF_TIMEFRAME, MTF_CANDLE_WINDOW)
+                htf_age_seconds = None
+                if htf_candles:
+                    try:
+                        _htf_time = datetime.fromisoformat(
+                            str(htf_candles[-1].time).replace("Z", "+00:00")
+                        )
+                        if _htf_time.tzinfo is None:
+                            _htf_time = _htf_time.replace(tzinfo=timezone.utc)
+                        htf_age_seconds = max(
+                            0, int((datetime.now(timezone.utc) - _htf_time).total_seconds())
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        htf_age_seconds = None
 
-                  _htf_label = MTF_TIMEFRAME.upper()
-                  if _htf_label.startswith("M"):
-                      _htf_minutes = int(_htf_label[1:])
-                  elif _htf_label.endswith("M"):
-                      _htf_minutes = int(_htf_label[:-1])
-                  elif _htf_label.startswith("H"):
-                      _htf_minutes = int(_htf_label[1:]) * 60
-                  elif _htf_label.startswith("D"):
-                      _htf_minutes = int(_htf_label[1:]) * 1440
-                  else:
-                      _htf_minutes = 60
-                  _htf_freshness_limit = max(7200, _htf_minutes * 180)
+                _htf_label = MTF_TIMEFRAME.upper()
+                if _htf_label.startswith("M"):
+                    _htf_minutes = int(_htf_label[1:])
+                elif _htf_label.endswith("M"):
+                    _htf_minutes = int(_htf_label[:-1])
+                elif _htf_label.startswith("H"):
+                    _htf_minutes = int(_htf_label[1:]) * 60
+                elif _htf_label.startswith("D"):
+                    _htf_minutes = int(_htf_label[1:]) * 1440
+                else:
+                    _htf_minutes = 60
+                _htf_freshness_limit = max(7200, _htf_minutes * 180)
 
-                  self._last_mtf_telemetry.update({
-                      "candle_count": len(htf_candles),
-                      "latest_candle": htf_candles[-1].time if htf_candles else None,
-                      "latest_age_seconds": htf_age_seconds,
-                      "freshness_limit_seconds": _htf_freshness_limit,
-                  })
-                  if len(htf_candles) < 50:
-                      self._last_mtf_telemetry["status"] = "INSUFFICIENT"
-                      log.warning(
-                          f"HTF candles insufficient ({len(htf_candles)}) — no trade"
-                      )
-                  elif htf_age_seconds is None or htf_age_seconds > _htf_freshness_limit:
-                      self._last_mtf_telemetry["status"] = "STALE"
-                      log.warning(
-                          f"HTF candles stale [{symbol}/{MTF_TIMEFRAME}]: "
-                          f"age={htf_age_seconds}s limit={_htf_freshness_limit}s — no trade"
-                      )
-                  else:
-                      htf_bias = compute_mtf_bias(htf_candles, symbol=symbol)
-                      self._last_mtf_telemetry["status"] = "READY"
-                      self._last_mtf_telemetry["bias"] = htf_bias.direction
-                      log.info(
-                          f"[{tf}] HTF ({MTF_TIMEFRAME}) bias: {htf_bias.direction}  "
-                          f"trend={htf_bias.trend}  smc={htf_bias.smc_signal}  "
-                          f"regime={htf_bias.regime}  strength={htf_bias.strength}"
-                      )
-              except Exception as _mtf_exc:
-                  self._last_mtf_telemetry.update({
-                      "status": "ERROR",
-                      "error": str(_mtf_exc)[:300],
-                  })
-                  log.warning(f"MTF fetch/analysis error (fail-safe, no trade): {_mtf_exc}")
+                self._last_mtf_telemetry.update({
+                    "candle_count": len(htf_candles),
+                    "latest_candle": htf_candles[-1].time if htf_candles else None,
+                    "latest_age_seconds": htf_age_seconds,
+                    "freshness_limit_seconds": _htf_freshness_limit,
+                })
+                if len(htf_candles) < 50:
+                    self._last_mtf_telemetry["status"] = "INSUFFICIENT"
+                    log.warning(
+                        f"HTF candles insufficient ({len(htf_candles)}) — no trade"
+                    )
+                elif htf_age_seconds is None or htf_age_seconds > _htf_freshness_limit:
+                    self._last_mtf_telemetry["status"] = "STALE"
+                    log.warning(
+                        f"HTF candles stale [{symbol}/{MTF_TIMEFRAME}]: "
+                        f"age={htf_age_seconds}s limit={_htf_freshness_limit}s — no trade"
+                    )
+                else:
+                    htf_bias = compute_mtf_bias(htf_candles, symbol=symbol)
+                    self._last_mtf_telemetry["status"] = "READY"
+                    self._last_mtf_telemetry["bias"] = htf_bias.direction
+                    log.info(
+                        f"[{tf}] HTF ({MTF_TIMEFRAME}) bias: {htf_bias.direction}  "
+                        f"trend={htf_bias.trend}  smc={htf_bias.smc_signal}  "
+                        f"regime={htf_bias.regime}  strength={htf_bias.strength}"
+                    )
+            except Exception as _mtf_exc:
+                self._last_mtf_telemetry.update({
+                    "status": "ERROR",
+                    "error": str(_mtf_exc)[:300],
+                })
+                log.warning(f"MTF fetch/analysis error (fail-safe, no trade): {_mtf_exc}")
 
         # 2. Account info (live, required for Guardian)
         acc_info = await get_account_info()
