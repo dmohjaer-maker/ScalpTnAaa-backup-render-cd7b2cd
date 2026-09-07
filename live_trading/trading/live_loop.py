@@ -3,7 +3,7 @@ Live Trading Loop — async M5 candle-close event handler via mt5rest bridge.
 
 Flow per tick:
   1. Wait for next M5 candle close
-  2. Fetch 300 closed candles via mt5rest bridge
+  2. Fetch the configured closed-candle history via the mt5rest bridge
   3. Run decision engine (all 7 signal engines)
   4. Gate: RiskGuardian circuit breakers (daily loss / drawdown)
   5. Gate: max open positions + trade allowed + Telegram not paused
@@ -462,26 +462,31 @@ class GoldScalperLive:
     # ── Wyckoff calibration ───────────────────────────────────────────────────
 
     async def _warm_up_history(self) -> None:
-        """Fetch 300 completed candles for every live symbol and scan TF."""
+        """Fetch the configured history for every live symbol and scan TF."""
         timeframes = list(TRADE_TIMEFRAMES)
         if MTF_ENABLED and MTF_TIMEFRAME not in timeframes:
             timeframes.append(MTF_TIMEFRAME)
 
         requests = [
-            (symbol, timeframe)
+            (
+                symbol,
+                timeframe,
+                CANDLE_WINDOW if timeframe in TRADE_TIMEFRAMES
+                else MTF_CANDLE_WINDOW,
+            )
             for symbol in self.symbols
             for timeframe in timeframes
         ]
         results = await asyncio.gather(
             *(
-                fetch_candles(symbol, timeframe, 300)
-                for symbol, timeframe in requests
+                fetch_candles(symbol, timeframe, requested_candles)
+                for symbol, timeframe, requested_candles in requests
             ),
             return_exceptions=True,
         )
 
         now = datetime.now(timezone.utc)
-        for (symbol, timeframe), result in zip(requests, results):
+        for (symbol, timeframe, requested_candles), result in zip(requests, results):
             candles = result if isinstance(result, list) else []
             latest_time = candles[-1].time if candles else None
             latest_age_seconds = None
@@ -499,7 +504,7 @@ class GoldScalperLive:
                     pass
 
             received = len(candles)
-            if received < 300:
+            if received < requested_candles:
                 status = "INSUFFICIENT"
             elif latest_age_seconds is not None and latest_age_seconds > 7200:
                 status = "COMPLETE_BUT_STALE"
@@ -510,7 +515,7 @@ class GoldScalperLive:
             self._history_warmup[key] = {
                 "symbol": symbol,
                 "timeframe": timeframe,
-                "requested_candles": 300,
+                "requested_candles": requested_candles,
                 "received_candles": received,
                 "latest_candle": latest_time,
                 "latest_age_seconds": latest_age_seconds,
@@ -523,7 +528,7 @@ class GoldScalperLive:
             else:
                 log.info(
                     f"History warm-up [{symbol}/{timeframe}]: "
-                    f"{received}/300 candles, status={status}"
+                    f"{received}/{requested_candles} candles, status={status}"
                 )
 
         complete = bool(self._history_warmup) and all(
@@ -532,8 +537,8 @@ class GoldScalperLive:
           )
         log.info(
             f"History warm-up complete: "
-            f"{sum(item['received_candles'] >= 300 for item in self._history_warmup.values())}"
-            f"/{len(self._history_warmup)} datasets contain at least 300 candles"
+            f"{sum(item['received_candles'] >= item['requested_candles'] for item in self._history_warmup.values())}"
+            f"/{len(self._history_warmup)} datasets met their requested history"
         )
         self._write_state(
             "WARMING_UP",
@@ -546,7 +551,7 @@ class GoldScalperLive:
     async def _calibrate_wyckoff(self) -> None:
         log.info("Calibrating Wyckoff config for each active symbol …")
         for symbol in self.symbols:
-            candles = await fetch_candles(symbol, TIMEFRAME, 500)
+            candles = await fetch_candles(symbol, TIMEFRAME, CANDLE_WINDOW)
             if candles:
                 cfg = calibrate_wyckoff(candles, symbol=symbol)
                 self._wyckoff_configs[symbol] = cfg
