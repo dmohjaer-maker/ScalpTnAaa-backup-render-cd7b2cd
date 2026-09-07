@@ -59,3 +59,38 @@ def test_snapshot_allows_confirmation_only_for_complete_scan_with_decision():
     assert result["scan_status"] == "READY"
     assert result["scan_missing_fields"] == []
     assert result["signal_confirmation_available"] is True
+
+
+def test_snapshot_preserves_all_live_positions_and_scan_identity():
+    positions = [
+        {"ticket": 101, "symbol": "XAUUSD"},
+        {"ticket": 102, "symbol": "XAUUSD"},
+        {"ticket": 103, "symbol": "XAUUSD"},
+    ]
+    result = _build_snapshot_from_state(
+        {
+            "status": "WAITING",
+            "connection_status": "connected",
+            "account_info": {"balance": 100.0, "equity": 100.0},
+            "open_position": positions[0],
+            "open_positions": positions,
+            "last_decision": {"allowed": False},
+        },
+        {
+            "symbol": "XAUUSD",
+            "timeframe": "5m",
+            "candle_count": 300,
+            "candle_time": "2026-09-07T01:00:00+00:00",
+            "timestamp": "2026-09-07T01:00:02+00:00",
+            "price": 4400.0,
+            "regime": "RANGE",
+            "adx": 12.0,
+            "atr": 8.0,
+            "smc_signal": "NEUTRAL",
+            "trend": "BEARISH",
+        },
+    )
+
+    assert result["open_positions"] == positions
+    assert result["symbol"] == "XAUUSD"
+    assert result["timeframe"] == "5m"

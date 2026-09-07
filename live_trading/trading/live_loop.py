@@ -681,6 +681,11 @@ class GoldScalperLive:
                         results.append((symbol, tf, _bt_naive))
                 except Exception as _bar_err:
                     log.warning(f"[{symbol}][{tf}] Bar time check failed: {_bar_err}")
+        # The panel exposes the most recently written scan.  Keep the primary
+        # configured market last so an auxiliary EURUSD bar cannot overwrite
+        # the Gold scan immediately after it was produced.
+        primary_symbol = self.symbols[0] if self.symbols else ""
+        results.sort(key=lambda item: item[0] == primary_symbol)
         return results
 
     # ── Per-bar handler ───────────────────────────────────────────────────────

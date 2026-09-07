@@ -292,12 +292,15 @@ def _build_snapshot_from_state(state: dict, signal_snap: dict | None = None) -> 
     account_info = state.get("account_info", {})
     guardian = state.get("guardian", {})
     pos = state.get("open_position")
+    positions = state.get("open_positions")
+    if positions is None:
+        positions = [pos] if pos else []
     result: dict = {
         "account_info":     account_info,
         "connection_status": state.get("connection_status", "disconnected"),
         "today_profit":     float(state.get("today_profit", 0.0)),
         "floating_profit":  float(account_info.get("floating_profit", 0.0)),
-        "open_positions":   [pos] if pos else [],
+        "open_positions":   positions,
         "pending_orders":   [],
         "recent_trades":    state.get("recent_trades", []),
         # Keep the complete latest decision available to the Telegram panel.
@@ -305,6 +308,9 @@ def _build_snapshot_from_state(state: dict, signal_snap: dict | None = None) -> 
         # why a scan did not produce an entry.
         "last_decision":    state.get("last_decision"),
         "last_signal_time": state.get("last_signal_time"),
+        "symbols":          state.get("symbols", []),
+        "active_symbol":    state.get("active_symbol"),
+        "scan_telemetry":   state.get("scan_telemetry", {}),
         "drawdown": {
             "current_percent": float(guardian.get("drawdown_pct", 0.0)),
             "max_percent":     float(
@@ -322,7 +328,8 @@ def _build_snapshot_from_state(state: dict, signal_snap: dict | None = None) -> 
     # Merge per-bar signal fields from the snapshot key when available
     if signal_snap:
         for k in ("price", "regime", "adx", "atr", "smc_signal", "trend",
-                  "candle_time", "timestamp"):
+                  "candle_time", "timestamp", "symbol", "timeframe",
+                  "candle_count"):
             if k in signal_snap:
                 result[k] = signal_snap[k]
 
