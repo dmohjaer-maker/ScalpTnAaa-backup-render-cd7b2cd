@@ -171,19 +171,18 @@ CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 
 # ── Risk & Trade Rules ───────────────────────────────────────────────────────
 # Production defaults — override via Render env vars if needed.
-# MIN_CONFIRMATIONS: minimum confirmations that must agree. SMC is optional
-# when neutral, but any opposing SMC structure/composite is a hard veto.
+# MIN_CONFIRMATIONS: minimum confirmations that must agree. Additional signal
+# engines are optional unless their dedicated gate is enabled.
 # Trend, Price Action, and Wyckoff provide the independent confirmations.
 # CONF_HARD_MIN: trades below this confidence % are always rejected.
 RISK_PERCENT      = _float("RISK_PERCENT",      1.0,  lo=0.01, hi=10.0)
 # Account-level stop exposure cap. This includes already-open positions and
 # prevents three broker-minimum lots from quietly stacking excessive risk.
 MAX_TOTAL_RISK_PCT = _float("MAX_TOTAL_RISK_PCT", 3.0, lo=0.1, hi=50.0)
-# MIN_CONFIRMATIONS=2: normally Trend + one additional confirmation.
-# Range regimes add one confirmation because false breakouts are more common.
+# MIN_CONFIRMATIONS=2: two aligned confirmations are sufficient.
 MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   2,    lo=1,    hi=10)
-# When enabled, every new trade must also have a same-direction Price Action signal.
-# Default false preserves existing behavior until explicitly enabled on Render.
+# Price Action is an optional confirmation; enable this only when every trade
+# must also have a same-direction Price Action signal.
 REQUIRE_PRICE_ACTION = os.getenv("REQUIRE_PRICE_ACTION", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }

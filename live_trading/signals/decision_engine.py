@@ -597,10 +597,9 @@ def run_decision_engine(
                 [_alignment_reason], [_alignment_reason],
             )
 
-    # Detect regime early — needed to set the adaptive confirmation threshold.
-    # RANGE / ACCUMULATION / DISTRIBUTION / HIGH_VOLATILITY markets suppress
-    # PA and Wyckoff signals by design, so we lower the bar to 2 in those
-    # regimes. Trending regimes keep the stricter operator-configured value.
+    # Detect regime for telemetry and downstream regime-specific rules. The
+    # configured minimum confirmation count is not increased for range or
+    # volatile markets: two confirmations remain sufficient.
     regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
 
     # DXY is an active hard directional veto for dollar-sensitive pairs. The
@@ -618,15 +617,7 @@ def run_decision_engine(
             dxy_signal=dxy_signal,
         )
 
-    _RANGE_REGIMES = {"RANGE", "ACCUMULATION", "DISTRIBUTION", "HIGH_VOLATILITY"}
-    if regime.regime in _RANGE_REGIMES:
-        # Range/volatile regimes: require one extra confirmation over the base
-        # minimum.  Structural signals alone (e.g. SMC + Wyckoff without EMA
-        # trend or PA) are insufficient in choppy/ranging markets — at least
-        # one momentum engine must also agree to avoid repeated SL hits.
-        effective_min_confirmations = min(min_confirmations + 1, 4)
-    else:
-        effective_min_confirmations = min_confirmations
+    effective_min_confirmations = min_confirmations
 
     # Entry filter — minimum confirmation gate. SMC contributes only when it
     # agrees; it is not required and cannot veto the non-SMC setup.
