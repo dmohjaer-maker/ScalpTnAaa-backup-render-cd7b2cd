@@ -527,10 +527,10 @@ class GoldScalperLive:
                     f"{received}/300 candles, status={status}"
                 )
 
-        complete = all(
-            item["received_candles"] >= 300
-            for item in self._history_warmup.values()
-        )
+        complete = bool(self._history_warmup) and all(
+              item["status"] == "READY"
+              for item in self._history_warmup.values()
+          )
         log.info(
             f"History warm-up complete: "
             f"{sum(item['received_candles'] >= 300 for item in self._history_warmup.values())}"
@@ -824,28 +824,78 @@ class GoldScalperLive:
             )
             return
 
-        # 1b. Fetch HTF candles for Multi-Timeframe filter (fail-safe: skipped on error)
-        # HTF bias is computed here — before account / guardian checks — so the
-        # fetch latency overlaps with the (slower) account info call that follows.
-        # compute_mtf_bias() never raises; a bad fetch simply yields htf_bias=None.
-        htf_bias: Optional[MtfBias] = None
-        if MTF_ENABLED:
-            try:
-                htf_candles = await fetch_candles(symbol, MTF_TIMEFRAME, MTF_CANDLE_WINDOW)
-                if len(htf_candles) >= 50:
-                    htf_bias = compute_mtf_bias(htf_candles, symbol=symbol)
-                    log.info(
-                        f"[{tf}] HTF ({MTF_TIMEFRAME}) bias: {htf_bias.direction}  "
-                        f"trend={htf_bias.trend}  smc={htf_bias.smc_signal}  "
-                        f"regime={htf_bias.regime}  strength={htf_bias.strength}"
-                    )
-                else:
-                    log.warning(
-                        f"HTF candles insufficient ({len(htf_candles)}) "
-                        f"— MTF filter skipped this bar"
-                    )
-            except Exception as _mtf_exc:
-                log.warning(f"MTF fetch/analysis error (fail-safe, skipping): {_mtf_exc}")
+        # 1b. Fetch HTF candles for Multi-Timeframe filter. A complete but
+          # stale HTF window is not valid context: fail closed instead of silently
+          # trading against a frozen H1 bias.
+          htf_bias: Optional[MtfBias] = None
+          self._last_mtf_telemetry = {
+              "enabled": bool(MTF_ENABLED),
+              "symbol": symbol,
+              "timeframe": MTF_TIMEFRAME,
+              "status": "DISABLED" if not MTF_ENABLED else "PENDING",
+          }
+          if MTF_ENABLED:
+              try:
+                  htf_candles = await fetch_candles(symbol, MTF_TIMEFRAME, MTF_CANDLE_WINDOW)
+                  htf_age_seconds = None
+                  if htf_candles:
+                      try:
+                          _htf_time = datetime.fromisoformat(
+                              str(htf_candles[-1].time).replace("Z", "+00:00")
+                          )
+                          if _htf_time.tzinfo is None:
+                              _htf_time = _htf_time.replace(tzinfo=timezone.utc)
+                          htf_age_seconds = max(
+                              0, int((datetime.now(timezone.utc) - _htf_time).total_seconds())
+                          )
+                      except (TypeError, ValueError, OverflowError):
+                          htf_age_seconds = None
+
+                  _htf_label = MTF_TIMEFRAME.upper()
+                  if _htf_label.startswith("M"):
+                      _htf_minutes = int(_htf_label[1:])
+                  elif _htf_label.endswith("M"):
+                      _htf_minutes = int(_htf_label[:-1])
+                  elif _htf_label.startswith("H"):
+                      _htf_minutes = int(_htf_label[1:]) * 60
+                  elif _htf_label.startswith("D"):
+                      _htf_minutes = int(_htf_label[1:]) * 1440
+                  else:
+                      _htf_minutes = 60
+                  _htf_freshness_limit = max(7200, _htf_minutes * 180)
+
+                  self._last_mtf_telemetry.update({
+                      "candle_count": len(htf_candles),
+                      "latest_candle": htf_candles[-1].time if htf_candles else None,
+                      "latest_age_seconds": htf_age_seconds,
+                      "freshness_limit_seconds": _htf_freshness_limit,
+                  })
+                  if len(htf_candles) < 50:
+                      self._last_mtf_telemetry["status"] = "INSUFFICIENT"
+                      log.warning(
+                          f"HTF candles insufficient ({len(htf_candles)}) — no trade"
+                      )
+                  elif htf_age_seconds is None or htf_age_seconds > _htf_freshness_limit:
+                      self._last_mtf_telemetry["status"] = "STALE"
+                      log.warning(
+                          f"HTF candles stale [{symbol}/{MTF_TIMEFRAME}]: "
+                          f"age={htf_age_seconds}s limit={_htf_freshness_limit}s — no trade"
+                      )
+                  else:
+                      htf_bias = compute_mtf_bias(htf_candles, symbol=symbol)
+                      self._last_mtf_telemetry["status"] = "READY"
+                      self._last_mtf_telemetry["bias"] = htf_bias.direction
+                      log.info(
+                          f"[{tf}] HTF ({MTF_TIMEFRAME}) bias: {htf_bias.direction}  "
+                          f"trend={htf_bias.trend}  smc={htf_bias.smc_signal}  "
+                          f"regime={htf_bias.regime}  strength={htf_bias.strength}"
+                      )
+              except Exception as _mtf_exc:
+                  self._last_mtf_telemetry.update({
+                      "status": "ERROR",
+                      "error": str(_mtf_exc)[:300],
+                  })
+                  log.warning(f"MTF fetch/analysis error (fail-safe, no trade): {_mtf_exc}")
 
         # 2. Account info (live, required for Guardian)
         acc_info = await get_account_info()
@@ -1148,7 +1198,7 @@ class GoldScalperLive:
               )
               return
 
-          if MTF_ENABLED and MTF_REQUIRE_ALIGNMENT:
+            if MTF_ENABLED and MTF_REQUIRE_ALIGNMENT:
             _mtf_ok = htf_bias is not None and htf_bias.direction != "NEUTRAL"
             _mtf_reason = (
                 "MTF unavailable — no trade" if htf_bias is None else
@@ -2050,7 +2100,9 @@ class GoldScalperLive:
             merged_extra.update(
                 self._guardian_extra(self._last_guardian_status)
             )
-        if self._last_trailing_statuses:
+        if self._last_mtf_telemetry:
+              merged_extra["mtf_telemetry"] = dict(self._last_mtf_telemetry)
+            if self._last_trailing_statuses:
             merged_extra["trailing_stop"] = {
                 "enabled": self.trailing_enabled,
                 # Keyed by position ticket id so the panel can show every
