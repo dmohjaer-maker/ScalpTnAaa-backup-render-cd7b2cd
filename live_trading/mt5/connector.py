@@ -151,7 +151,7 @@ async def connect(*args, **kwargs) -> bool:
                 # a reset/timed-out member. This robot uses one account, so
                 # let MTAPI probe the cluster and choose the nearest healthy
                 # member for the login attempt.
-                "connectToNearestByPing": True,
+                "connectToNearestByPing": "true",
             },
             timeout=aiohttp.ClientTimeout(total=SYNC_TIMEOUT),
         ) as resp:
