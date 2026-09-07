@@ -66,10 +66,9 @@ services:
       # the real reason the robot never opened a trade.
       - key: SYMBOL
         value: XAUUSD
-      # Multi-symbol mode preserves SYMBOL as the legacy XAU default while
-      # processing EURUSD on an independent bar cursor and risk/sizing path.
+      # Keep production focused on gold; EURUSD is intentionally disabled.
       - key: SYMBOLS
-        value: "XAUUSD,EURUSD"
+        value: "XAUUSD"
       # Poll transport/bar boundaries more frequently without changing the
       # completed-candle signal semantics.
       - key: BAR_CHECK_INTERVAL
