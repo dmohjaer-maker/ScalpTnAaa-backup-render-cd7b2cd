@@ -169,11 +169,20 @@ def _bos_follow_through_reason(
     candidate: str,
     confirmation_max_age: int = 3,
 ) -> Optional[str]:
-    """Return a block reason when the latest BOS lacks continuation.
+    """Return a block reason while the latest BOS is unresolved.
 
-    A BOS is only actionable when the next closed candle accepts the broken
-    level.  This prevents a single wide candle or a stop-hunt close from
-    authorizing an entry that immediately loses the structure.
+    BOS confirmation is a small state machine reconstructed from closed
+    candles:
+
+    * the breakout candle waits for a subsequent close;
+    * the next few candles may confirm by continuation or by a clean retest;
+    * a decisive close back through the level invalidates the BOS;
+    * if neither happens inside the window, the BOS expires rather than being
+      reused as a late entry.
+
+    The previous implementation treated the very first imperfect confirmation
+    candle as a False BOS.  That rejected valid breakout/retest sequences
+    before the retest had a chance to complete.
     """
     if candidate not in {"BUY", "SELL"} or not candles:
         return None
@@ -184,7 +193,7 @@ def _bos_follow_through_reason(
 
     current_index = len(candles) - 1
     bars_after = current_index - latest.bar_index
-    if bars_after < 0 or bars_after > confirmation_max_age:
+    if bars_after < 0:
         return None
     if bars_after == 0:
         return (
@@ -192,43 +201,113 @@ def _bos_follow_through_reason(
             "one subsequent closed candle"
         )
 
-    confirmation_index = latest.bar_index + 1
-    if confirmation_index >= len(candles):
+    def _atr_at(index: int, period: int = 14) -> float:
+        start = max(1, index - period + 1)
+        trs = [
+            max(candles[i].high - candles[i].low,
+                abs(candles[i].high - candles[i - 1].close),
+                abs(candles[i].low - candles[i - 1].close))
+            for i in range(start, index + 1)
+        ]
+        return sum(trs) / len(trs) if trs else 0.0
+
+    confirmation_start = latest.bar_index + 1
+    confirmation_end = min(
+        current_index,
+        latest.bar_index + confirmation_max_age,
+    )
+    if confirmation_start > confirmation_end:
         return "BOS guard: missing confirmation candle"
 
-    confirmation = candles[confirmation_index]
-    confirmation_range = confirmation.high - confirmation.low
-    body_ratio = (
-        abs(confirmation.close - confirmation.open) / confirmation_range
-        if confirmation_range > 0 else 0.0
-    )
-    directional_body = (
-        confirmation.close > confirmation.open
-        if candidate == "BUY"
-        else confirmation.close < confirmation.open
-    )
-    held_level = (
-        confirmation.close > latest.price
-        if candidate == "BUY"
-        else confirmation.close < latest.price
-    )
-    if not directional_body or not held_level or body_ratio < 0.35:
+    # A small tolerance prevents a spread-sized wick around the level from
+    # being classified as a failed breakout.  The invalidation distance is
+    # still deliberately modest, so a real close back inside the old range
+    # remains a hard False BOS.
+    tolerance = max(_atr_at(confirmation_end) * 0.15, 1e-9)
+    accepted_at: Optional[int] = None
+    invalidated_at: Optional[int] = None
+
+    for index in range(confirmation_start, confirmation_end + 1):
+        candle = candles[index]
+        candle_range = candle.high - candle.low
+        body_ratio = (
+            abs(candle.close - candle.open) / candle_range
+            if candle_range > 0 else 0.0
+        )
+        directional_body = (
+            candle.close > candle.open
+            if candidate == "BUY"
+            else candle.close < candle.open
+        )
+        continuation = (
+            candle.close > latest.price + tolerance
+            if candidate == "BUY"
+            else candle.close < latest.price - tolerance
+        )
+        touched_level = (
+            candle.low <= latest.price + tolerance
+            if candidate == "BUY"
+            else candle.high >= latest.price - tolerance
+        )
+        held_level = (
+            candle.close > latest.price
+            if candidate == "BUY"
+            else candle.close < latest.price
+        )
+        accepted = (
+            directional_body
+            and body_ratio >= 0.25
+            and (
+                continuation
+                or (touched_level and held_level)
+            )
+        )
+        if accepted:
+            accepted_at = index
+            break
+
+        decisive_reclaim = (
+            candle.close < latest.price - tolerance
+            if candidate == "BUY"
+            else candle.close > latest.price + tolerance
+        )
+        opposite_body = (
+            candle.close < candle.open
+            if candidate == "BUY"
+            else candle.close > candle.open
+        )
+        if decisive_reclaim and opposite_body and body_ratio >= 0.25:
+            invalidated_at = index
+            break
+
+    if invalidated_at is not None:
         return (
-            f"False BOS detected: {candidate} breakout lacked "
-            "directional follow-through"
+            f"False BOS detected: {candidate} breakout closed decisively "
+            "back through the level"
         )
 
-    crossed_back = any(
-        (c.close <= latest.price if candidate == "BUY"
-         else c.close >= latest.price)
-        for c in candles[confirmation_index:]
-    )
-    if crossed_back:
-        return (
-            f"False BOS detected: price closed back across the "
-            f"{candidate} breakout level"
+    if accepted_at is not None:
+        crossed_back = any(
+            (c.close <= latest.price if candidate == "BUY"
+             else c.close >= latest.price)
+            for c in candles[accepted_at + 1:]
         )
-    return None
+        if crossed_back:
+            return (
+                f"False BOS detected: price closed back across the "
+                f"{candidate} breakout level"
+            )
+        return None
+
+    if bars_after < confirmation_max_age:
+        return (
+            f"BOS awaiting acceptance: {candidate} needs continuation "
+            "or a successful retest"
+        )
+    return (
+        f"BOS expired: {candidate} breakout had no accepted continuation "
+        f"within {confirmation_max_age} closed bars"
+    )
 
 
 def _breakout_follow_through_reason(

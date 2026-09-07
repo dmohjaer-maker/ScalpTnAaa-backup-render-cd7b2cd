@@ -109,14 +109,31 @@ def calc_adx(candles: List[OHLCV], period: int = 14) -> float:
 
 
 def _detect_pullback(candles: List[OHLCV], trend: TrendResult):
-    if len(candles) < 10:
+    # A one-candle move against the EMA trend is not enough to relabel the
+    # market as a pullback.  The old detector compared only candle -1 with
+    # candle -6, so a single wick or news candle could flip the regime.
+    if len(candles) < 12:
         return None
-    now  = candles[-1].close
-    prev = candles[-6].close
-    st_bull = now > prev * 1.0003
-    st_bear = now < prev * 0.9997
-    if trend.trend == "BULLISH" and st_bear: return "BULL"
-    if trend.trend == "BEARISH" and st_bull: return "BEAR"
+    window = candles[-6:]
+    changes = [
+        window[i].close - window[i - 1].close
+        for i in range(1, len(window))
+    ]
+    net_move = window[-1].close - window[0].close
+    reference = max(abs(window[0].close), 1e-9)
+    net_pct = abs(net_move) / reference
+
+    # Require a majority of counter-trend closes and a meaningful net move.
+    # This is intentionally below the full trend threshold: it detects a
+    # retracement, not a confirmed reversal.
+    if trend.trend == "BULLISH":
+        counter_moves = sum(change < 0 for change in changes)
+        if counter_moves >= 3 and net_move < 0 and net_pct >= 0.0005:
+            return "BULL"
+    if trend.trend == "BEARISH":
+        counter_moves = sum(change > 0 for change in changes)
+        if counter_moves >= 3 and net_move > 0 and net_pct >= 0.0005:
+            return "BEAR"
     return None
 
 

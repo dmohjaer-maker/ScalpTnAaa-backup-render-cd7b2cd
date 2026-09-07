@@ -27,3 +27,19 @@ def test_structure_event_older_than_24_closed_bars_is_late():
 def test_structure_event_at_24_closed_bars_is_still_fresh():
     candles = _flat_candles()
     assert _is_late_entry(candles, len(candles) - 25) is False
+
+
+def test_bos_can_complete_after_a_soft_first_confirmation_candle():
+    from live_trading.signals.decision_engine import _bos_follow_through_reason
+
+    bos = SmcBos("BUY", 100.0, 1, "2026-08-11T12:01:00+00:00")
+    candles = [
+        OHLCV("2026-08-11T12:00:00+00:00", 99.4, 99.6, 99.2, 99.4, 100.0),
+        OHLCV("2026-08-11T12:01:00+00:00", 99.7, 100.5, 99.5, 100.3, 100.0),
+        # A soft retest candle: it does not decisively reclaim the old level.
+        OHLCV("2026-08-11T12:02:00+00:00", 100.0, 100.2, 99.7, 99.95, 100.0),
+        # The next close accepts the breakout.
+        OHLCV("2026-08-11T12:03:00+00:00", 99.95, 100.5, 99.8, 100.3, 100.0),
+    ]
+
+    assert _bos_follow_through_reason(candles, _smc([bos]), "BUY") is None

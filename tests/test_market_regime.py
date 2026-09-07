@@ -1,7 +1,10 @@
 """Regression tests for directional regime gating."""
 
 from live_trading.signals.gold_engine import OHLCV
-from live_trading.signals.market_regime import detect_market_regime
+from live_trading.signals.market_regime import (
+    _detect_pullback,
+    detect_market_regime,
+)
 from live_trading.signals.trend_engine import TrendResult
 from live_trading.signals.wyckoff_engine import WyckoffResult
 
@@ -61,3 +64,25 @@ def test_confirmed_distribution_keeps_short_only_context():
     assert result.regime == "DISTRIBUTION"
     assert result.rules.allow_long is False
     assert result.rules.allow_short is True
+
+
+def test_pullback_requires_consensus_not_one_countertrend_candle():
+    candles = _flat_candles(12)
+    closes = [100.0, 99.95, 100.0, 100.05, 100.10, 100.15]
+    for i, close in enumerate(closes, start=len(candles) - len(closes)):
+        candles[i] = OHLCV(
+            time=candles[i].time,
+            open=close,
+            high=close + 0.1,
+            low=close - 0.1,
+            close=close,
+            volume=100.0,
+        )
+
+    assert _detect_pullback(candles, TrendResult(
+        ema50=100.0,
+        ema100=99.0,
+        ema200=98.0,
+        trend="BULLISH",
+        strength="STRONG",
+    )) is None

@@ -99,9 +99,18 @@ def _is_late_entry(candles: List[OHLCV], last_bos_bar: Optional[int]) -> bool:
     price  = closes[-1]
     curr   = candles[-1]
     prev   = candles[-2]
-    atr = max(curr.high - curr.low,
-              abs(curr.high - prev.close),
-              abs(curr.low  - prev.close))
+    # Use a short ATR average instead of the current candle's range.  A single
+    # quiet candle made the old extension test hypersensitive and labelled a
+    # normal continuation as "late".
+    trs = [
+        max(c.high - c.low,
+            abs(c.high - candles[i - 1].close),
+            abs(c.low  - candles[i - 1].close))
+        for i, c in enumerate(candles[1:], start=1)
+    ]
+    atr_window = trs[-14:] if trs else []
+    atr = sum(atr_window) / len(atr_window) if atr_window else 0.0
+    atr = max(atr, 1e-9)
     if abs(price - _calc_ema50(closes)) > LATE_EXTENSION_MULT * atr:
         return True
     if n >= MOMENTUM_BARS + 1:
@@ -111,7 +120,13 @@ def _is_late_entry(candles: List[OHLCV], last_bos_bar: Optional[int]) -> bool:
         if all_bull or all_bear:
             bodies    = [abs(c.close - c.open) for c in recent]
             shrinking = all(bodies[i] <= bodies[i - 1] for i in range(1, len(bodies)))
-            if shrinking:
+            # A decaying streak is only late when it has already travelled a
+            # meaningful distance and is visibly stretched from EMA50.  Small
+            # orderly candles inside the trend are continuation/pullback
+            # conditions, not a reason to discard the whole setup.
+            streak_move = abs(price - recent[0].open)
+            ema_extension = abs(price - _calc_ema50(closes))
+            if shrinking and streak_move >= 1.5 * atr and ema_extension >= 1.0 * atr:
                 return True
     if last_bos_bar is not None and (n - 1) - last_bos_bar > STRUCTURE_MAX_AGE_BARS:
         return True
