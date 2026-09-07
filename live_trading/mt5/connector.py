@@ -572,6 +572,66 @@ async def fetch_candles(
                 )
                 return []
 
+            # Some broker servers keep PriceHistoryEx on the last completed
+            # session while their "today" feed is already receiving live
+            # bars.  If the newest returned row is materially stale, merge
+            # PriceHistoryToday before deciding that the symbol has no fresh
+            # market data.
+            def _raw_bar_epoch(raw_bar: dict) -> Optional[float]:
+                raw_time = raw_bar.get("time", "")
+                try:
+                    if isinstance(raw_time, (int, float)):
+                        return float(raw_time)
+                    parsed = datetime.fromisoformat(
+                        str(raw_time).replace("Z", "+00:00")
+                    )
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    return parsed.timestamp()
+                except (TypeError, ValueError, OverflowError):
+                    return None
+
+            raw_epochs = [
+                epoch for raw_bar in data
+                if isinstance(raw_bar, dict)
+                for epoch in [_raw_bar_epoch(raw_bar)]
+                if epoch is not None
+            ]
+            current_boundary = int(now.timestamp()) - (
+                int(now.timestamp()) % (tf_min * 60)
+            )
+            latest_raw = max(raw_epochs, default=0.0)
+            stale_window = max(2 * 60 * 60, tf_min * 60 * 6)
+            if latest_raw and latest_raw < current_boundary - stale_window:
+                try:
+                    async with sess.get(
+                        f"{_base_url}/PriceHistoryToday",
+                        params={
+                            "id": _conn_id,
+                            "symbol": symbol,
+                            "timeFrame": tf_min,
+                        },
+                        timeout=aiohttp.ClientTimeout(total=45),
+                    ) as resp:
+                        today_data = await resp.json(content_type=None)
+                    if isinstance(today_data, list):
+                        if today_data:
+                            data = data + today_data
+                            log.info(
+                                f"Merged PriceHistoryToday for stale "
+                                f"{symbol}/{timeframe}: {len(today_data)} rows"
+                            )
+                        else:
+                            log.warning(
+                                f"PriceHistoryToday returned no rows for "
+                                f"stale {symbol}/{timeframe}"
+                            )
+                except Exception as today_exc:
+                    log.warning(
+                        f"PriceHistoryToday failed for {symbol}/{timeframe}: "
+                        f"{today_exc}"
+                    )
+
             candles: List[OHLCV] = []
             for bar in data:
                 # Normalise time to a plain string regardless of what
