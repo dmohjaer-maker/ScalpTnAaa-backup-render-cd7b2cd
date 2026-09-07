@@ -578,7 +578,14 @@ async def fetch_candles(
             # PriceHistoryToday before deciding that the symbol has no fresh
             # market data.
             def _raw_bar_epoch(raw_bar: dict) -> Optional[float]:
-                raw_time = raw_bar.get("time", "")
+                raw_time = next(
+                    (
+                        raw_bar.get(key)
+                        for key in ("time", "timestamp", "timeStamp", "date")
+                        if raw_bar.get(key) is not None
+                    ),
+                    "",
+                )
                 try:
                     if isinstance(raw_time, (int, float)):
                         return float(raw_time)
@@ -636,7 +643,14 @@ async def fetch_candles(
             for bar in data:
                 # Normalise time to a plain string regardless of what
                 # mt5rest serialises it as (ISO datetime or epoch seconds).
-                raw_time = bar.get("time", "")
+                raw_time = next(
+                    (
+                        bar.get(key)
+                        for key in ("time", "timestamp", "timeStamp", "date")
+                        if bar.get(key) is not None
+                    ),
+                    "",
+                )
                 if isinstance(raw_time, (int, float)):
                     t = datetime.fromtimestamp(
                         raw_time, tz=timezone.utc
