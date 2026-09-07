@@ -151,6 +151,7 @@ class GoldScalperLive:
         self._last_scan_timeframe: str = ""
         self._last_scan_candle_count: int = 0
         self._bar_diagnostic_logged_at: dict[tuple[str, str, str], datetime] = {}
+        self._history_warmup: dict[str, dict] = {}
 
         # Risk Guardian — initialized after mt5rest bridge connects
         self.guardian = RiskGuardian(
@@ -413,6 +414,17 @@ class GoldScalperLive:
                     f"{_position_exc}"
                 )
 
+            # Fetch a full 300-closed-candle warm-up for every configured
+            # symbol/timeframe before the first trading loop.  This makes
+            # history availability explicit for EURUSD as well as XAUUSD,
+            # instead of waiting for each symbol's next bar boundary.
+            self._write_state(
+                "WARMING_UP",
+                self._last_acc_info,
+                extra={"history_warmup_status": "IN_PROGRESS"},
+            )
+            await self._warm_up_history()
+
             _checkpoint("before calibrate_wyckoff")
             await self._calibrate_wyckoff()
             _checkpoint("after calibrate_wyckoff")
@@ -448,6 +460,88 @@ class GoldScalperLive:
                 log.debug("Adaptive trailing task cancelled in start() finally.")
 
     # ── Wyckoff calibration ───────────────────────────────────────────────────
+
+    async def _warm_up_history(self) -> None:
+        """Fetch 300 completed candles for every live symbol and scan TF."""
+        timeframes = list(TRADE_TIMEFRAMES)
+        if MTF_ENABLED and MTF_TIMEFRAME not in timeframes:
+            timeframes.append(MTF_TIMEFRAME)
+
+        requests = [
+            (symbol, timeframe)
+            for symbol in self.symbols
+            for timeframe in timeframes
+        ]
+        results = await asyncio.gather(
+            *(
+                fetch_candles(symbol, timeframe, 300)
+                for symbol, timeframe in requests
+            ),
+            return_exceptions=True,
+        )
+
+        now = datetime.now(timezone.utc)
+        for (symbol, timeframe), result in zip(requests, results):
+            candles = result if isinstance(result, list) else []
+            latest_time = candles[-1].time if candles else None
+            latest_age_seconds = None
+            if latest_time:
+                try:
+                    parsed = datetime.fromisoformat(
+                        str(latest_time).replace("Z", "+00:00")
+                    )
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    latest_age_seconds = max(
+                        0, int((now - parsed).total_seconds())
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    pass
+
+            received = len(candles)
+            if received < 300:
+                status = "INSUFFICIENT"
+            elif latest_age_seconds is not None and latest_age_seconds > 7200:
+                status = "COMPLETE_BUT_STALE"
+            else:
+                status = "READY"
+
+            key = f"{symbol}/{timeframe}"
+            self._history_warmup[key] = {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "requested_candles": 300,
+                "received_candles": received,
+                "latest_candle": latest_time,
+                "latest_age_seconds": latest_age_seconds,
+                "status": status,
+            }
+            if isinstance(result, Exception):
+                log.warning(
+                    f"History warm-up failed [{symbol}/{timeframe}]: {result}"
+                )
+            else:
+                log.info(
+                    f"History warm-up [{symbol}/{timeframe}]: "
+                    f"{received}/300 candles, status={status}"
+                )
+
+        complete = all(
+            item["received_candles"] >= 300
+            for item in self._history_warmup.values()
+        )
+        log.info(
+            f"History warm-up complete: "
+            f"{sum(item['received_candles'] >= 300 for item in self._history_warmup.values())}"
+            f"/{len(self._history_warmup)} datasets contain at least 300 candles"
+        )
+        self._write_state(
+            "WARMING_UP",
+            self._last_acc_info,
+            extra={
+                "history_warmup_status": "COMPLETE" if complete else "INCOMPLETE",
+            },
+        )
 
     async def _calibrate_wyckoff(self) -> None:
         log.info("Calibrating Wyckoff config for each active symbol …")
@@ -1948,6 +2042,7 @@ class GoldScalperLive:
         merged_extra.update(self._external_filter_extra())
         merged_extra["symbols"] = list(self.symbols)
         merged_extra["active_symbol"] = self._active_symbol
+        merged_extra["history_warmup"] = self._history_warmup
         merged_extra["scan_telemetry"] = {
             "symbol": self._last_scan_symbol,
             "timeframe": self._last_scan_timeframe,

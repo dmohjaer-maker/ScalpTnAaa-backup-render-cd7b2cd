@@ -311,6 +311,8 @@ def _build_snapshot_from_state(state: dict, signal_snap: dict | None = None) -> 
         "symbols":          state.get("symbols", []),
         "active_symbol":    state.get("active_symbol"),
         "scan_telemetry":   state.get("scan_telemetry", {}),
+        "history_warmup":   state.get("history_warmup", {}),
+        "history_warmup_status": state.get("history_warmup_status"),
         "drawdown": {
             "current_percent": float(guardian.get("drawdown_pct", 0.0)),
             "max_percent":     float(
