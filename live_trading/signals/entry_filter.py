@@ -58,7 +58,9 @@ def apply_entry_filter(
     pa_ok    = pa_signal      == direction
     wyc_ok   = wyckoff_signal == direction
 
-    count = sum([smc_ok, trend_ok, pa_ok, wyc_ok])
+    # Only SMC, EMA Trend, and Price Action may authorize an entry alone.
+    # Wyckoff remains an additional confidence signal, never a standalone gate.
+    count = sum([smc_ok, trend_ok, pa_ok])
     # When requested, trend alignment remains a hard safety rule. Flexible mode
     # deliberately leaves this false so two independent non-trend confirmations
     # can authorize a setup while EMA is neutral.
