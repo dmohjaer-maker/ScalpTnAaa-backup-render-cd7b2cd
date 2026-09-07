@@ -68,6 +68,24 @@ def test_buy_skips_invalid_candidate_after_deep_retracement():
     assert candidate is None
 
 
+def test_buy_catches_up_if_the_first_broker_modify_was_missed():
+    config = _config()
+    candidate = compute_staircase_sl(
+        "BUY",
+        entry=100,
+        risk_distance=10,
+        current_price=104,
+        atr=2,
+        cfg=config,
+        favorable_extreme=110,
+        current_sl=90,
+    )
+    # The high-water candidate is above the current bid, so use the best
+    # still-valid catch-up stop.  The live loop's ratchet check will reject
+    # this if the broker already has a tighter SL.
+    assert candidate == 102.4
+
+
 def test_sell_uses_low_water_mark_and_locks_profit():
     candidate = compute_staircase_sl(
         "SELL",

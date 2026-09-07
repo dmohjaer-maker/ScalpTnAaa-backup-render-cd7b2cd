@@ -79,6 +79,7 @@ def compute_staircase_sl(
     favorable_extreme: Optional[float] = None,
     spread:         float = 0.0,    # current ask-bid spread in price units
     symbol:         str = "XAUUSD",
+    current_sl:     Optional[float] = None,
 ) -> Optional[float]:
     """Return an adaptive candidate SL price, or None if not yet triggered.
 
@@ -161,13 +162,30 @@ def compute_staircase_sl(
     adaptive_gap = min(adaptive_gap, risk_distance * max(cfg.max_gap_r, 0.0))
     if is_buy:
         # Never submit a BUY SL above the live bid after a sharp retracement.
-        candidate = max(entry + lock_floor, extreme - adaptive_gap)
-        if candidate > current_price - adaptive_gap:
+        raw_candidate = max(entry + lock_floor, extreme - adaptive_gap)
+        live_ceiling = current_price - adaptive_gap
+        if raw_candidate > live_ceiling:
+            # Catch up from the old SL when a broker modification was missed
+            # during a favorable peak. should_apply still rejects any lower
+            # candidate when the broker already has a tighter SL.
+            if current_sl is None:
+                return None
+            candidate = live_ceiling
+        else:
+            candidate = raw_candidate
+        if candidate <= 0:
             return None
     else:
         # Never submit a SELL SL below the live ask after a sharp retracement.
-        candidate = min(entry - lock_floor, extreme + adaptive_gap)
-        if candidate < current_price + adaptive_gap:
+        raw_candidate = min(entry - lock_floor, extreme + adaptive_gap)
+        live_floor = current_price + adaptive_gap
+        if raw_candidate < live_floor:
+            if current_sl is None:
+                return None
+            candidate = live_floor
+        else:
+            candidate = raw_candidate
+        if candidate <= 0:
             return None
 
     return price_round(candidate, symbol)

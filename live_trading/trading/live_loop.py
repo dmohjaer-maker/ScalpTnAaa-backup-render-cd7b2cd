@@ -37,7 +37,8 @@ from live_trading.config import (
     DAILY_LOSS_LIMIT_PCT, MAX_DRAWDOWN_PCT, SLIPPAGE_POINTS,
     STATE_FILE, GUARDIAN_STATE_FILE,
     TRAIL_ENABLED, TRAIL_ACTIVATION_R, TRAIL_STEP_R,
-    TRAIL_LOCK_BUFFER_R, TRAIL_ATR_GAP_MULT, TRAIL_SPREAD_GAP_MULT,
+    TRAIL_LOCK_BUFFER_R, TRAIL_LOCK_SLOPE, TRAIL_MAX_LOCK_R,
+    TRAIL_ATR_GAP_MULT, TRAIL_SPREAD_GAP_MULT,
     TRAIL_MAX_GAP_R, TRAIL_MIN_STEP_PRICE,
     TRAIL_CHECK_INTERVAL,
     MTF_ENABLED, MTF_REQUIRE_ALIGNMENT, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
@@ -185,6 +186,8 @@ class GoldScalperLive:
             activation_r=TRAIL_ACTIVATION_R,
             step_r=TRAIL_STEP_R,
             lock_buffer_r=TRAIL_LOCK_BUFFER_R,
+            lock_slope=TRAIL_LOCK_SLOPE,
+            max_lock_r=TRAIL_MAX_LOCK_R,
             atr_gap_mult=TRAIL_ATR_GAP_MULT,
             spread_gap_mult=TRAIL_SPREAD_GAP_MULT,
             max_gap_r=TRAIL_MAX_GAP_R,
@@ -1758,6 +1761,7 @@ class GoldScalperLive:
                 spread=max(0.0, float(quote.get("ask", 0.0)) -
                           float(quote.get("bid", 0.0))),
                 symbol=symbol,
+                current_sl=float(pos.get("sl", 0.0)),
             )
 
             r_now = r_multiple_of(
