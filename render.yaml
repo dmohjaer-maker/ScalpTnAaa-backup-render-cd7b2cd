@@ -79,7 +79,7 @@ services:
       - key: TIMEFRAME
         value: "5m"
       - key: CANDLE_WINDOW
-        value: "300"
+        value: "700"
       # Option 4: old BOS/CHoCH events cannot authorize live entries.
       - key: STRUCTURE_MAX_AGE_BARS
         value: "24"
