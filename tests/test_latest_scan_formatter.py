@@ -43,6 +43,8 @@ def test_complete_scan_without_decision_does_not_confirm_entry():
 def test_complete_scan_with_allowed_decision_can_confirm_entry():
     text = MessageFormatter.latest_scan(
         _complete_snapshot(
+            symbol="XAUUSD",
+            timeframe="M5",
             last_decision={
                 "allowed": True,
                 "blocked_reasons": [],
@@ -52,3 +54,26 @@ def test_complete_scan_with_allowed_decision_can_confirm_entry():
     )
 
     assert "Valid signal; entry conditions confirmed." in text
+    assert "Symbol:" in text
+    assert "XAUUSD" in text
+    assert "M5" in text
+
+
+def test_incomplete_scan_explains_candle_warmup_and_symbol():
+    text = MessageFormatter.latest_scan(
+        {
+            "connection_status": "connected",
+            "symbol": "XAUUSD",
+            "timeframe": "M5",
+            "scan_telemetry": {
+                "status": "INSUFFICIENT_CANDLES",
+                "symbol": "XAUUSD",
+                "timeframe": "M5",
+                "candle_count": 6,
+            },
+        }
+    )
+
+    assert "No fresh market scan is available." in text
+    assert "XAUUSD" in text
+    assert "6/50" in text

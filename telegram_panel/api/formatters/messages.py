@@ -522,6 +522,23 @@ class MessageFormatter:
             received = snapshot.get("timestamp") or snapshot.get("_fetched_at") or "—"
             connection = escape(str(snapshot.get("connection_status", "unknown")))
             robot_status = snapshot.get("status") or snapshot.get("robot_status")
+            telemetry = snapshot.get("scan_telemetry") or {}
+            scan_symbol = snapshot.get("symbol") or telemetry.get("symbol")
+            scan_timeframe = snapshot.get("timeframe") or telemetry.get("timeframe")
+            scan_count = telemetry.get("candle_count", snapshot.get("candle_count"))
+            diagnostic_line = ""
+            if scan_symbol:
+                diagnostic_line = (
+                    f"\n📍 Symbol: <b>{escape(str(scan_symbol))}</b>"
+                    + (
+                        f"  |  TF: <b>{escape(str(scan_timeframe))}</b>"
+                        if scan_timeframe else ""
+                    )
+                )
+            if telemetry.get("status") == "INSUFFICIENT_CANDLES":
+                diagnostic_line += (
+                    f"\n📚 Candle warm-up: <b>{escape(str(scan_count or 0))}/50</b>"
+                )
             status_line = (
                 f"\n🤖 Robot status: <b>{escape(str(robot_status))}</b>"
                 if robot_status
@@ -533,6 +550,7 @@ class MessageFormatter:
                 "⚠️ <b>No fresh market scan is available.</b>\n"
                 f"🛰️ Received: <code>{escape(str(received))}</code>\n"
                 f"🟢 Connection: <b>{connection}</b>"
+                f"{diagnostic_line}"
                 f"{status_line}\n\n"
                 "ℹ️ Signal confirmation is disabled until a complete "
                 "candle snapshot is received."
@@ -642,6 +660,8 @@ class MessageFormatter:
         lines = [
             "📡 <b>LATEST MARKET SCAN</b>",
             f"<code>{_DIVIDER}</code>",
+            f"📍 Symbol: <b>{value('symbol', '—')}</b>"
+            + (f"  |  TF: <b>{value('timeframe')}</b>" if snapshot.get("timeframe") else ""),
             f"🕒 Candle: <code>{value('candle_time')}</code>",
             f"🛰️ Received: <code>{value('timestamp', value('_fetched_at'))}</code>",
             f"💵 Price: <b>{number('price')}</b>",

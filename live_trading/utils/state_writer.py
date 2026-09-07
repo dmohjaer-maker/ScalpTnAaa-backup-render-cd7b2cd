@@ -112,8 +112,15 @@ def write_robot_state(
     trade_history:     List[dict],
     loop_count:        int,
     last_signal_time:  Optional[str] = None,
+    open_positions:    Optional[List[dict]] = None,
     extra:             Optional[dict] = None,
 ) -> None:
+
+    # Prefer the complete broker-sourced list when available.  The singular
+    # field is retained for compatibility with older panel views.
+    live_positions = open_positions if open_positions is not None else (
+        [open_position] if open_position else []
+    )
 
     pos_data = None
     if open_position:
@@ -226,8 +233,8 @@ def write_robot_state(
         "loop_count":        loop_count,
         # Uptime in seconds since engine start (tracked module-level)
         "uptime_seconds":    _get_uptime_seconds(),
-        # Active trades count: 1 if there is an open position, else 0
-        "active_trades":     1 if open_position else 0,
+        # Active trades count comes from the full broker-sourced list.
+        "active_trades":     len(live_positions),
         "pending_orders":    0,
         # Legacy format (used by some panel views)
         "account": _account_dict,
@@ -252,6 +259,7 @@ def write_robot_state(
         # NOT the floating P&L (equity-balance) which is a common confusion.
         "today_profit":     round(_today_profit, 2),
         "open_position":    pos_data,
+        "open_positions":   live_positions,
         "last_decision":    dec_data,
         "recent_trades":    trade_history[-MAX_TRADE_HISTORY:],
         "trade_count":      len(trade_history),
@@ -281,6 +289,9 @@ def write_mt5_snapshot(
     atr:             float,
     smc_signal:      str,
     trend:           str,
+    symbol:          str = "",
+    timeframe:       str = "",
+    candle_count:    int = 0,
     # FIX: Full account snapshot added so the Redis snapshot key contains real
     # account data.  The panel's MT5Service reads this key first; without these
     # fields it always got empty account_info → balance USD 0.00.
@@ -294,6 +305,9 @@ def write_mt5_snapshot(
     snap = {
         "timestamp":       _now_iso(),
         "candle_time":     candle_time,
+        "symbol":          symbol,
+        "timeframe":       timeframe,
+        "candle_count":    int(candle_count or 0),
         "price":           price,
         "regime":          regime,
         "adx":             round(adx, 1),

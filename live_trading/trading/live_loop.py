@@ -73,7 +73,7 @@ from live_trading.mt5.connector import (
     start_connection_watchdog, start_mt5_session_keepalive,
     fetch_candles, get_account_balance, get_account_info,
     get_open_positions, get_last_completed_bar_time,
-    get_current_quote, mt5_pos_to_dict,
+    get_current_quote, mt5_pos_to_dict, resolve_symbol_name,
 )
 from live_trading.mt5.executor import (
     place_market_order, close_position, modify_position, TradeResult
@@ -143,6 +143,13 @@ class GoldScalperLive:
         self.last_decision: Optional[DecisionResult] = None
         self._last_news_filter: Optional[dict] = None
         self._last_dxy_filter: Optional[dict] = None
+        # Broker-sourced position cache used by every state write. Without
+        # this cache, between-bar WAITING writes can replace a truthful
+        # multi-position snapshot with open_position=None.
+        self._last_open_positions: list[dict] = []
+        self._last_scan_symbol: str = ""
+        self._last_scan_timeframe: str = ""
+        self._last_scan_candle_count: int = 0
 
         # Risk Guardian — initialized after mt5rest bridge connects
         self.guardian = RiskGuardian(
@@ -225,6 +232,29 @@ class GoldScalperLive:
             self._write_state("DISCONNECTED",
                               extra={"error": "mt5rest connection failed after retries"})
             return False  # non-False return signals failure to main.py for sys.exit(1)
+
+        # Resolve broker-specific suffixes before creating cursors or sending
+        # history/order requests. Never substitute an unrelated symbol.
+        resolved_symbols = [
+            await resolve_symbol_name(configured_symbol)
+            for configured_symbol in self.symbols
+        ]
+        resolved_symbols = list(dict.fromkeys(resolved_symbols))
+        if resolved_symbols != self.symbols:
+            log.info(
+                f"Broker symbol resolution: {self.symbols} -> {resolved_symbols}"
+            )
+            self.symbols = resolved_symbols
+            self._active_symbol = self.symbols[0]
+            self._last_bar_times = {
+                (symbol, tf): None
+                for symbol in self.symbols
+                for tf in TRADE_TIMEFRAMES
+            }
+            self._last_entry_by_symbol = {
+                symbol: {"bar_time": None, "direction": ""}
+                for symbol in self.symbols
+            }
 
         # ── MTAPI keepalive task — prevents Render free-tier sleep ─────────────
         # Store the handle so we can cancel it when the engine stops; without
@@ -365,6 +395,22 @@ class GoldScalperLive:
                             "Could not fetch balance for Guardian initialization — "
                             "Guardian will block trades until account data is available"
                         )
+
+            # Seed the position cache before the first RUNNING/WAITING state
+            # write so the panel cannot report zero positions during the
+            # history warm-up window after a restart.
+            try:
+                _raw_positions = await get_open_positions(
+                    "", self._known_open_tickets()
+                )
+                self._last_open_positions = [
+                    mt5_pos_to_dict(_raw) for _raw in _raw_positions
+                ]
+            except RuntimeError as _position_exc:
+                log.warning(
+                    f"Could not seed open-position cache at startup: "
+                    f"{_position_exc}"
+                )
 
             _checkpoint("before calibrate_wyckoff")
             await self._calibrate_wyckoff()
@@ -634,8 +680,27 @@ class GoldScalperLive:
         )
         # 1. Fetch candles for this timeframe (M5 / M10 / M15 / M20)
         candles = await fetch_candles(symbol, tf, CANDLE_WINDOW)
+        self._last_scan_symbol = symbol
+        self._last_scan_timeframe = tf
+        self._last_scan_candle_count = len(candles)
         if len(candles) < 50:
-            log.warning(f"Only {len(candles)} candles returned — skipping bar")
+            log.warning(
+                f"Insufficient history [{symbol}/{tf}]: received={len(candles)} "
+                f"required=50 — skipping bar"
+            )
+            self._write_state(
+                "WAITING",
+                self._last_acc_info,
+                extra={
+                    "scan_telemetry": {
+                        "status": "INSUFFICIENT_CANDLES",
+                        "symbol": symbol,
+                        "timeframe": tf,
+                        "candle_count": len(candles),
+                        "required_candles": 50,
+                    }
+                },
+            )
             return
 
         # 1b. Fetch HTF candles for Multi-Timeframe filter (fail-safe: skipped on error)
@@ -786,6 +851,7 @@ class GoldScalperLive:
             self._write_state("WAITING", acc_info)
             return
         all_pos_dicts = [mt5_pos_to_dict(p) for p in raw_positions]
+        self._last_open_positions = all_pos_dicts
         pos_dicts = [
             p for p in all_pos_dicts
             if str(p.get("symbol", "")).upper() == symbol.upper()
@@ -885,6 +951,9 @@ class GoldScalperLive:
             atr=_snap_atr,
             smc_signal=decision.smc.smc_signal,
             trend=decision.trend.trend,
+            symbol=symbol,
+            timeframe=tf,
+            candle_count=len(candles),
             # FIX: Full account data so the panel shows real balance, not USD 0.00
             account_info=_snap_account_info,
             open_positions=all_pos_dicts,
@@ -1853,6 +1922,16 @@ class GoldScalperLive:
         merged_extra.update(self._external_filter_extra())
         merged_extra["symbols"] = list(self.symbols)
         merged_extra["active_symbol"] = self._active_symbol
+        merged_extra["scan_telemetry"] = {
+            "symbol": self._last_scan_symbol,
+            "timeframe": self._last_scan_timeframe,
+            "candle_count": self._last_scan_candle_count,
+            "status": (
+                "READY"
+                if self._last_scan_candle_count >= 50
+                else "WARMING_UP"
+            ),
+        }
         if extra:
             merged_extra.update(extra)
 
@@ -1863,6 +1942,7 @@ class GoldScalperLive:
             account_info     = acc_info or {},
             trade_history    = self.trade_history,
             loop_count       = self.loop_count,
+            open_positions   = self._last_open_positions,
             last_signal_time = (
                 max(
                     (bt for bt in self._last_bar_times.values() if bt is not None),

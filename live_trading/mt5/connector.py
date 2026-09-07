@@ -76,6 +76,13 @@ _MT5_KEEPALIVE_TASK: asyncio.Task | None = None
 _MT5_KEEPALIVE_INTERVAL_S:    float = 60.0     # 1 min — keep broker session alive
 _MT5_SESSION_REFRESH_AGE_S:   float = 14400.0  # 4 hours — proactively refresh conn_id
 
+# Broker symbol metadata changes far less often than prices.  Cache it for a
+# short period so a restart can resolve broker suffixes (for example
+# XAUUSD.r/XAUUSDm) without making a symbol-list request on every bar.
+_SYMBOL_CACHE: list[str] = []
+_SYMBOL_CACHE_AT: float = 0.0
+_SYMBOL_CACHE_TTL_S: float = 900.0
+
 
 def _get_reconnect_lock() -> asyncio.Lock:
     """Lazily create the reconnect lock on the running event loop."""
@@ -488,9 +495,17 @@ async def start_mt5_session_keepalive(
 async def fetch_candles(
     symbol: str, timeframe: str, count: int = 300
 ) -> List[OHLCV]:
-    """Fetch OHLCV candles via GET /PriceHistoryV2 (ISO datetime range).
+    """Fetch completed OHLCV candles using mt5rest's historical-bar API.
 
-    FIX: retries once with a fresh ConnectEx on stale-conn_id errors.
+    PriceHistoryV2 is a range query and, on a newly opened MT5 session, can
+    return only the handful of bars accumulated since the session started.
+    PriceHistoryEx explicitly walks backwards through broker history and
+    returns the requested number of bars, including across market gaps.  Use
+    it first and retain PriceHistoryV2 as a compatibility fallback.
+
+    Completed-bar filtering is based on the current timeframe boundary rather
+    than blindly dropping the last response row.  Some mt5rest deployments
+    include the open bar and some return closed bars only.
     """
     for attempt in range(2):
         if not _conn_id:
@@ -498,79 +513,122 @@ async def fetch_candles(
                 return []
 
         tf_min = _TF_MAP.get(timeframe, 5)
-
-        # Request slightly more bars than needed to account for the current open bar
-        request_count = count + 5
-        now      = datetime.now(timezone.utc)
-        from_dt  = now - timedelta(minutes=tf_min * request_count)
-
-        from_str = from_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-        to_str   = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        request_count = max(count + 5, 55)
+        now = datetime.now(timezone.utc)
 
         try:
             sess = _get_session()
+            data = None
+
+            # PriceHistoryEx is the important path: unlike PriceHistoryV2 it
+            # requests an exact number of bars backwards and is not limited to
+            # the current session's small in-memory range.
             async with sess.get(
-                f"{_base_url}/PriceHistoryV2",
+                f"{_base_url}/PriceHistoryEx",
                 params={
-                    "id":        _conn_id,
-                    "symbol":    symbol,
-                    "from":      from_str,
-                    "to":        to_str,
+                    "id": _conn_id,
+                    "symbol": symbol,
+                    "from": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "numBars": request_count,
                     "timeFrame": tf_min,
+                    "timeoutSeconds": 60,
                 },
-                timeout=aiohttp.ClientTimeout(total=60),
+                timeout=aiohttp.ClientTimeout(total=75),
             ) as resp:
                 data = await resp.json(content_type=None)
 
-                if not isinstance(data, list):
-                    # Error-shaped response — likely stale conn_id.
-                    if attempt == 0:
-                        log.warning(
-                            f"fetch_candles unexpected response (stale conn_id?) "
-                            f"— reconnecting and retrying. Response: {str(data)[:200]}"
-                        )
-                        _invalidate_connection()
-                        continue
-                    log.error(f"fetch_candles unexpected response after reconnect: {str(data)[:300]}")
-                    return []
+            if not isinstance(data, list) or len(data) < 2:
+                # Older/private bridge builds may not expose PriceHistoryEx.
+                # Keep the existing range endpoint as a safe fallback.
+                from_dt = now - timedelta(minutes=tf_min * request_count)
+                async with sess.get(
+                    f"{_base_url}/PriceHistoryV2",
+                    params={
+                        "id": _conn_id,
+                        "symbol": symbol,
+                        "from": from_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "to": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "timeFrame": tf_min,
+                        "timeoutSeconds": 60,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=75),
+                ) as resp:
+                    fallback = await resp.json(content_type=None)
+                if isinstance(fallback, list) and len(fallback) > len(data or []):
+                    data = fallback
 
-                candles: List[OHLCV] = []
-                for bar in data:
-                    # Normalise time to a plain string regardless of what
-                    # mt5rest serialises it as (ISO string, integer timestamp,
-                    # or datetime).  OHLCV.time is typed str; a non-string here
-                    # would crash candle.time.replace() in
-                    # get_last_completed_bar_time() and also break the sort
-                    # key when types are mixed across bars.
-                    t = str(bar.get("time", ""))
-                    candles.append(OHLCV(
-                        time=t,
-                        open=float(bar.get("openPrice",  0.0)),
-                        high=float(bar.get("highPrice",  0.0)),
-                        low=float(bar.get("lowPrice",    0.0)),
-                        close=float(bar.get("closePrice", 0.0)),
-                        volume=float(bar.get("tickVolume", bar.get("volume", 0))),
-                    ))
+            if not isinstance(data, list):
+                # Error-shaped response — likely stale conn_id.
+                if attempt == 0:
+                    log.warning(
+                        f"fetch_candles unexpected response (stale conn_id?) "
+                        f"— reconnecting and retrying. Response: {str(data)[:200]}"
+                    )
+                    _invalidate_connection()
+                    continue
+                log.error(
+                    f"fetch_candles error-shaped response after reconnect: "
+                    f"{str(data)[:300]}"
+                )
+                return []
 
-                # Sort and deduplicate by timestamp before removing the open bar.
-                # The bridge can return overlapping pages with duplicate candles;
-                # feeding those into indicators shifts the entire signal window.
-                candles.sort(key=lambda candle: candle.time)
-                deduplicated: List[OHLCV] = []
-                seen_times: set[str] = set()
-                for candle in candles:
-                    if candle.time in seen_times:
-                        continue
-                    seen_times.add(candle.time)
-                    deduplicated.append(candle)
-                candles = deduplicated
+            candles: List[OHLCV] = []
+            for bar in data:
+                # Normalise time to a plain string regardless of what
+                # mt5rest serialises it as (ISO datetime or epoch seconds).
+                raw_time = bar.get("time", "")
+                if isinstance(raw_time, (int, float)):
+                    t = datetime.fromtimestamp(
+                        raw_time, tz=timezone.utc
+                    ).isoformat()
+                else:
+                    t = str(raw_time)
+                candles.append(OHLCV(
+                    time=t,
+                    open=float(bar.get("openPrice", bar.get("open", 0.0))),
+                    high=float(bar.get("highPrice", bar.get("high", 0.0))),
+                    low=float(bar.get("lowPrice", bar.get("low", 0.0))),
+                    close=float(bar.get("closePrice", bar.get("close", 0.0))),
+                    volume=float(bar.get("tickVolume", bar.get("volume", 0))),
+                ))
 
-                # Drop the last bar (may be the still-open current bar)
-                if candles:
-                    candles = candles[:-1]
+            candles.sort(key=lambda candle: candle.time)
+            deduplicated: List[OHLCV] = []
+            seen_times: set[str] = set()
+            for candle in candles:
+                if candle.time in seen_times:
+                    continue
+                seen_times.add(candle.time)
+                deduplicated.append(candle)
 
-                # Return only the last `count` completed bars
-                return candles[-count:] if len(candles) > count else candles
+            # Keep only bars strictly before the currently open timeframe
+            # boundary.  This works for both response conventions.
+            current_epoch = int(now.timestamp())
+            boundary_epoch = current_epoch - (current_epoch % (tf_min * 60))
+            completed: List[OHLCV] = []
+            for candle in deduplicated:
+                try:
+                    parsed = datetime.fromisoformat(
+                        candle.time.replace("Z", "+00:00")
+                    )
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    if int(parsed.timestamp()) < boundary_epoch:
+                        completed.append(candle)
+                except (TypeError, ValueError, OverflowError):
+                    # Preserve an unparseable row rather than silently
+                    # returning no history; the downstream count guard will
+                    # reject it if the bridge response is unusable.
+                    completed.append(candle)
+
+            result = completed[-count:] if len(completed) > count else completed
+            if len(result) < min(count, 50):
+                log.warning(
+                    f"Historical candles insufficient for {symbol}/{timeframe}: "
+                    f"received={len(result)} requested={count} "
+                    f"(PriceHistoryEx/V2)"
+                )
+            return result
 
         except Exception as exc:
             if attempt == 0:
@@ -580,6 +638,84 @@ async def fetch_candles(
             log.error(f"fetch_candles error after reconnect: {exc}")
             return []
     return []
+
+
+async def get_symbol_list() -> List[str]:
+    """Return the broker's exact symbol names for suffix-aware resolution."""
+    global _SYMBOL_CACHE, _SYMBOL_CACHE_AT
+    now = _time.monotonic()
+    if _SYMBOL_CACHE and now - _SYMBOL_CACHE_AT < _SYMBOL_CACHE_TTL_S:
+        return list(_SYMBOL_CACHE)
+    if not _conn_id:
+        if not await ensure_connected():
+            return []
+    try:
+        sess = _get_session()
+        async with sess.get(
+            f"{_base_url}/SymbolList",
+            params={"id": _conn_id},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            data = await resp.json(content_type=None)
+        if isinstance(data, list):
+            _SYMBOL_CACHE = [
+                str(item).strip() for item in data
+                if str(item).strip()
+            ]
+            _SYMBOL_CACHE_AT = now
+            log.info(
+                f"Broker symbol catalog loaded: {len(_SYMBOL_CACHE)} symbols"
+            )
+            return list(_SYMBOL_CACHE)
+        log.warning(f"SymbolList returned unexpected response: {str(data)[:200]}")
+    except Exception as exc:
+        log.warning(f"SymbolList request failed: {exc}")
+    return []
+
+
+async def resolve_symbol_name(configured: str) -> str:
+    """Resolve a configured symbol to the broker's exact spelling.
+
+    Exact case-insensitive matches win.  For common FX/metals symbols, a
+    suffix/prefix variant is accepted only when its base matches exactly;
+    unrelated symbols are never substituted silently.
+    """
+    requested = str(configured or "").strip().upper()
+    if not requested:
+        return requested
+    symbols = await get_symbol_list()
+    if not symbols:
+        return requested
+    by_upper = {item.upper(): item for item in symbols}
+    if requested in by_upper:
+        return by_upper[requested]
+
+    base = requested.replace(".", "").replace("-", "").replace("_", "")
+    candidates = []
+    for item in symbols:
+        normalized = item.upper().replace(".", "").replace("-", "").replace("_", "")
+        if normalized.startswith(base) or base.startswith(normalized):
+            candidates.append(item)
+    if len(candidates) == 1:
+        log.warning(
+            f"Resolved configured symbol {requested} to broker symbol "
+            f"{candidates[0]}"
+        )
+        return candidates[0]
+    if candidates:
+        # Prefer the shortest exact-base suffix variant, which is the least
+        # surprising broker naming convention.
+        chosen = sorted(candidates, key=lambda value: (len(value), value))[0]
+        log.warning(
+            f"Resolved configured symbol {requested} to broker symbol "
+            f"{chosen} from candidates={candidates[:8]}"
+        )
+        return chosen
+    log.error(
+        f"Configured symbol {requested} was not found in broker SymbolList; "
+        "historical scan will remain unavailable until the symbol is corrected."
+    )
+    return requested
 
 
 async def get_account_info() -> dict:
