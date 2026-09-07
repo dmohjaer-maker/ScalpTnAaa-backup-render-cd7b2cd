@@ -1181,7 +1181,26 @@ class GoldScalperLive:
         # A professional entry needs a usable, directional HTF context.
         # Fetch/analysis failure, insufficient data, or a neutral HTF is a
         # no-trade condition when MTF_REQUIRE_ALIGNMENT is enabled.
-        # Never allow a stale/failed HTF dataset to pass in flexible mode. The\n        # existing directional alignment check below still applies when HTF is\n        # fresh and MTF_REQUIRE_ALIGNMENT is enabled.\n        if MTF_ENABLED and self._last_mtf_telemetry.get("status") != "READY":\n            _mtf_status = self._last_mtf_telemetry.get("status", "UNAVAILABLE")\n            _mtf_reason = f"MTF {_mtf_status.lower()} — no trade"\n            log.info(f"⛔  {_mtf_reason}")\n            self._write_state(\n                "SCANNING", acc_info, decision, pos,\n                extra={\n                    **self._guardian_extra(gs),\n                    "mtf_telemetry": dict(self._last_mtf_telemetry),\n                    "mtf_blocked": _mtf_reason,\n                },\n            )\n            return\n\n        if MTF_ENABLED and MTF_REQUIRE_ALIGNMENT:\n            _mtf_ok = htf_bias is not None and htf_bias.direction != "NEUTRAL"\n            _mtf_reason = (
+        # Never allow a stale/failed HTF dataset to pass in flexible mode. The
+        # existing directional alignment check below still applies when HTF is
+        # fresh and MTF_REQUIRE_ALIGNMENT is enabled.
+        if MTF_ENABLED and self._last_mtf_telemetry.get("status") != "READY":
+            _mtf_status = self._last_mtf_telemetry.get("status", "UNAVAILABLE")
+            _mtf_reason = f"MTF {_mtf_status.lower()} — no trade"
+            log.info(f"⛔  {_mtf_reason}")
+            self._write_state(
+                "SCANNING", acc_info, decision, pos,
+                extra={
+                    **self._guardian_extra(gs),
+                    "mtf_telemetry": dict(self._last_mtf_telemetry),
+                    "mtf_blocked": _mtf_reason,
+                },
+            )
+            return
+
+        if MTF_ENABLED and MTF_REQUIRE_ALIGNMENT:
+            _mtf_ok = htf_bias is not None and htf_bias.direction != "NEUTRAL"
+            _mtf_reason = (
                 "MTF unavailable — no trade" if htf_bias is None else
                 "MTF neutral — no directional context, no trade"
                 if htf_bias.direction == "NEUTRAL" else ""
