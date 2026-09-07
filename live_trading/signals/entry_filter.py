@@ -3,7 +3,8 @@ Entry Filter — Minimum confirmation gate with advisory SMC context.
 
 SMC is intentionally a soft confirmation: an aligned SMC signal strengthens a
 setup, but a neutral/missing SMC signal must not veto an otherwise-confirmed
-trade. Trend alignment remains a hard safety gate.
+trade. Trend alignment is a hard safety gate only when the caller requests
+it; flexible mode can use two non-trend confirmations while EMA is neutral.
 """
 from dataclasses import dataclass
 from typing import Literal
@@ -58,8 +59,9 @@ def apply_entry_filter(
     wyc_ok   = wyckoff_signal == direction
 
     count = sum([smc_ok, trend_ok, pa_ok, wyc_ok])
-    # Trend alignment is a hard safety rule.  No confirmation count or
-    # alternate entry mode may authorize a counter-trend trade.
+    # When requested, trend alignment remains a hard safety rule. Flexible mode
+    # deliberately leaves this false so two independent non-trend confirmations
+    # can authorize a setup while EMA is neutral.
     if require_trend_alignment and not trend_ok:
         allowed = False
     elif require_smc_price_action_wyckoff:

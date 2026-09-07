@@ -562,16 +562,14 @@ def run_decision_engine(
             ["No directional Trend, Price Action, or Wyckoff signal"],
         )
 
-    # Hard trend gate: a trade must follow the local EMA trend.
-    # Counter-trend and unresolved (NEUTRAL) setups are rejected before
-    # confidence, regime, or confirmation votes are evaluated.
+    # A directional EMA trend is still preferred, but a NEUTRAL local trend
+    # is handled by the confirmation gate below.  In flexible mode
+    # (ALLOW_COUNTER_TREND_TRADES=true), two independent aligned confirmations
+    # may authorize an entry while the local EMA is neutral.  This keeps the
+    # filter from blocking valid higher-timeframe/SMC setups during a pullback
+    # without allowing a one-vote setup through.
     trend_dir = ("BUY" if trend.trend == "BULLISH" else
                  "SELL" if trend.trend == "BEARISH" else "NEUTRAL")
-    if trend_dir == "NEUTRAL":
-        trend_reason = "Trend filter: EMA trend is NEUTRAL — entry blocked"
-        return _make_neutral(
-            smc, wyckoff, pa, trend, [trend_reason], [trend_reason]
-        )
     if trend_dir != candidate and not ALLOW_COUNTER_TREND_TRADES:
         trend_reason = (
             f"Trend filter: {candidate} conflicts with EMA trend "

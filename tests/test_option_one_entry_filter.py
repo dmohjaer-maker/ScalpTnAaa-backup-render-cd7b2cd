@@ -22,6 +22,39 @@ def test_option_one_blocks_when_trend_is_neutral():
     assert result.confirmation_count == 3
 
 
+def test_flexible_mode_allows_two_aligned_confirmations_with_neutral_trend():
+    result = apply_entry_filter(
+        smc_signal="BUY",
+        ema_trend="NEUTRAL",
+        pa_signal="BUY",
+        wyckoff_signal="NEUTRAL",
+        min_confirmations=2,
+        require_trend_alignment=False,
+        candidate_direction="BUY",
+    )
+
+    assert result.allowed is True
+    assert result.direction == "BUY"
+    assert result.confirmation_count == 2
+    assert result.trend is False
+
+
+def test_flexible_mode_still_blocks_one_confirmation_with_neutral_trend():
+    result = apply_entry_filter(
+        smc_signal="BUY",
+        ema_trend="NEUTRAL",
+        pa_signal="NEUTRAL",
+        wyckoff_signal="NEUTRAL",
+        min_confirmations=2,
+        require_trend_alignment=False,
+        candidate_direction="BUY",
+    )
+
+    assert result.allowed is False
+    assert result.direction == "NEUTRAL"
+    assert result.confirmation_count == 1
+
+
 def test_option_one_allows_when_all_engines_and_trend_align():
     result = apply_entry_filter(
         smc_signal="BUY",
