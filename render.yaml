@@ -90,6 +90,11 @@ services:
       # neutral HTF context may still pass in flexible mode.
       - key: STRICT_ENTRY_MODE
         value: "false"
+      # Explicitly allow entries that oppose a confirmed directional context.
+      # All other confirmation, quote, risk, protection, position, news, and
+      # guardian gates remain active.
+      - key: ALLOW_COUNTER_TREND_TRADES
+        value: "true"
       - key: MTF_ENABLED
         value: "true"
       - key: MTF_REQUIRE_ALIGNMENT

@@ -32,6 +32,7 @@ from live_trading.config import (
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
     ENTRY_TRIGGER_MAX_AGE_BARS,
     STRICT_ENTRY_MODE,
+    ALLOW_COUNTER_TREND_TRADES,
 )
 
 # Marginal confidence R:R floor: trades with confidence between CONF_HARD_MIN
@@ -571,7 +572,7 @@ def run_decision_engine(
         return _make_neutral(
             smc, wyckoff, pa, trend, [trend_reason], [trend_reason]
         )
-    if trend_dir != candidate:
+    if trend_dir != candidate and not ALLOW_COUNTER_TREND_TRADES:
         trend_reason = (
             f"Trend filter: {candidate} conflicts with EMA trend "
             f"{trend.trend} — counter-trend entry blocked"
@@ -583,17 +584,18 @@ def run_decision_engine(
     # SMC is a hard directional veto. It remains optional when neutral, but a
     # confirmed opposing structure or composite signal is never allowed to
     # authorize a counter-trend entry.
-    _alignment_ok, _alignment_reason = validate_directional_alignment(
-        candidate,
-        local_trend=trend.trend,
-        smc_trend=smc.trend,
-        smc_signal=smc.smc_signal,
-    )
-    if not _alignment_ok:
-        return _make_neutral(
-            smc, wyckoff, pa, trend,
-            [_alignment_reason], [_alignment_reason],
+    if not ALLOW_COUNTER_TREND_TRADES:
+        _alignment_ok, _alignment_reason = validate_directional_alignment(
+            candidate,
+            local_trend=trend.trend,
+            smc_trend=smc.trend,
+            smc_signal=smc.smc_signal,
         )
+        if not _alignment_ok:
+            return _make_neutral(
+                smc, wyckoff, pa, trend,
+                [_alignment_reason], [_alignment_reason],
+            )
 
     # Detect regime early — needed to set the adaptive confirmation threshold.
     # RANGE / ACCUMULATION / DISTRIBUTION / HIGH_VOLATILITY markets suppress
@@ -636,7 +638,7 @@ def run_decision_engine(
         min_confirmations = effective_min_confirmations,
         require_price_action = require_price_action,
         require_smc_price_action_wyckoff = require_smc_price_action_wyckoff,
-        require_trend_alignment = True,
+        require_trend_alignment = not ALLOW_COUNTER_TREND_TRADES,
         candidate_direction = candidate,
     )
     if not ef.allowed:

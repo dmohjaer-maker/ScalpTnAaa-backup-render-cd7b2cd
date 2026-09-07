@@ -213,6 +213,13 @@ STRUCTURE_MAX_AGE_BARS = _int("STRUCTURE_MAX_AGE_BARS", 24, lo=3, hi=100)
 STRICT_ENTRY_MODE = os.getenv("STRICT_ENTRY_MODE", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
+# When enabled, directional alignment gates may not reject a trade solely
+# because its proposed direction opposes a confirmed local/SMC/HTF direction.
+# Neutral trend, quote, confirmation, risk, protection, and guardian gates stay
+# active.
+ALLOW_COUNTER_TREND_TRADES = os.getenv(
+    "ALLOW_COUNTER_TREND_TRADES", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 # A strict setup trigger is intentionally configurable for fast scalp markets.
 ENTRY_TRIGGER_MAX_AGE_BARS = _int("ENTRY_TRIGGER_MAX_AGE_BARS", 2, lo=0, hi=10)
 # Market orders are priced from the live bid/ask. In flexible mode these are

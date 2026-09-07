@@ -44,6 +44,7 @@ from live_trading.config import (
     TRADE_TIMEFRAMES,
     MAX_ENTRY_DRIFT_ATR, MAX_SPREAD_ATR, STRICT_ENTRY_MODE,
     MAX_TOTAL_RISK_PCT,
+    ALLOW_COUNTER_TREND_TRADES,
 )
 from live_trading.logger import get_logger
 from live_trading.signals.gold_engine import calc_atr
@@ -1205,7 +1206,7 @@ class GoldScalperLive:
                 "MTF neutral — no directional context, no trade"
                 if htf_bias.direction == "NEUTRAL" else ""
             )
-            if _mtf_ok:
+            if _mtf_ok and not ALLOW_COUNTER_TREND_TRADES:
                 _mtf_ok, _mtf_reason = mtf_allows_trade(htf_bias, decision.direction)
             if not _mtf_ok:
                 log.info(f"⛔  {_mtf_reason}")
@@ -1227,7 +1228,11 @@ class GoldScalperLive:
                 }
                 self._write_state("SCANNING", acc_info, decision, pos, extra=_mtf_extra)
                 return
-        elif MTF_ENABLED and htf_bias is not None:
+        elif (
+            MTF_ENABLED
+            and htf_bias is not None
+            and not ALLOW_COUNTER_TREND_TRADES
+        ):
             _mtf_ok, _mtf_reason = mtf_allows_trade(htf_bias, decision.direction)
             if not _mtf_ok:
                 log.info(f"⛔  {_mtf_reason}")
@@ -1361,32 +1366,31 @@ class GoldScalperLive:
                               extra=self._guardian_extra(gs))
             return
 
-        # FINAL DIRECTIONAL SAFETY: no signal engine or stale decision may
-        # bypass the counter-trend policy. This is deliberately placed after
-        # all recalculation and protection checks, immediately before the
-        # broker API call.
-        _direction_ok, _direction_reason = validate_directional_alignment(
-            decision.direction,
-            local_trend=decision.trend.trend,
-            smc_trend=decision.smc.trend,
-            smc_signal=decision.smc.smc_signal,
-            htf_direction=(
-                htf_bias.direction if htf_bias is not None else "NEUTRAL"
-            ),
-        )
-        if not _direction_ok:
-            log.warning(f"[{tf}] FINAL COUNTER-TREND BLOCK — {_direction_reason}")
-            self._write_state(
-                "SCANNING",
-                acc_info,
-                decision,
-                pos,
-                extra={
-                    **self._guardian_extra(gs),
-                    "counter_trend_block": _direction_reason,
-                },
+        # Optional directional veto: all quote, protection, risk, position,
+        # news, and guardian checks above remain active regardless of this flag.
+        if not ALLOW_COUNTER_TREND_TRADES:
+            _direction_ok, _direction_reason = validate_directional_alignment(
+                decision.direction,
+                local_trend=decision.trend.trend,
+                smc_trend=decision.smc.trend,
+                smc_signal=decision.smc.smc_signal,
+                htf_direction=(
+                    htf_bias.direction if htf_bias is not None else "NEUTRAL"
+                ),
             )
-            return
+            if not _direction_ok:
+                log.warning(f"[{tf}] FINAL COUNTER-TREND BLOCK — {_direction_reason}")
+                self._write_state(
+                    "SCANNING",
+                    acc_info,
+                    decision,
+                    pos,
+                    extra={
+                        **self._guardian_extra(gs),
+                        "counter_trend_block": _direction_reason,
+                    },
+                )
+                return
 
         # 8c. Safety re-check: confirm we are still flat immediately before
         # sending the order.
