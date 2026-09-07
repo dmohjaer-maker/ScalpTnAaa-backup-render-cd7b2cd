@@ -146,6 +146,12 @@ async def connect(*args, **kwargs) -> bool:
                 "password": password,
                 "server":   host,
                 "connectTimeoutSeconds": 60,
+                # MTAPI's cluster selection is random by default. During a
+                # broker-side cluster incident that can repeatedly land on
+                # a reset/timed-out member. This robot uses one account, so
+                # let MTAPI probe the cluster and choose the nearest healthy
+                # member for the login attempt.
+                "connectToNearestByPing": True,
             },
             timeout=aiohttp.ClientTimeout(total=SYNC_TIMEOUT),
         ) as resp:
