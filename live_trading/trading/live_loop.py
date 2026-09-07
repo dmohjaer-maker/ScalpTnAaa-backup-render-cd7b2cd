@@ -125,13 +125,11 @@ class GoldScalperLive:
             for symbol in self.symbols
             for tf in TRADE_TIMEFRAMES
         }
-        # Guard against opening multiple trades in the same tick when several
-        # timeframes close simultaneously (e.g. M20+M10+M5 all fire at :20).
-        # Without this, _on_new_bar() is called N times in one iteration of
-        # _run_loop() and each call may see 0 open positions from mt5rest (the
-        # bridge has not yet registered the trade placed by the previous call),
-        # causing N trades to open instead of 1.
-        self._trade_opened_this_tick: bool = False
+        # Guard against opening multiple trades for the same symbol in one
+        # tick when several timeframes close simultaneously (e.g.
+        # M20+M10+M5 all fire at :20). This is intentionally per-symbol:
+        # XAUUSD and EURUSD may each open one entry on the same tick.
+        self._trade_opened_this_tick: set[str] = set()
         # tracks the last successfully placed trade (direction + bar_time)
         # so the post-SL cooldown gate can detect same-direction re-entry.
         # Cooldown is isolated per symbol so a gold entry never suppresses EUR.
@@ -652,10 +650,11 @@ class GoldScalperLive:
                     self._reconnect_attempts = 0
 
                 # Reset the within-tick trade guard before processing this
-                # tick's bars.  All _on_new_bar() calls that share this tick
+                # tick's bars. All _on_new_bar() calls that share this tick
                 # (e.g. M20+M10+M5 closing simultaneously) will see the same
-                # flag and only the first successful placement will go through.
-                self._trade_opened_this_tick = False
+                # per-symbol set, so each symbol can open at most one entry
+                # while duplicate entries for that symbol remain blocked.
+                self._trade_opened_this_tick.clear()
                 new_bars = await self._check_new_bars()
                 _checkpoint(f"loop#{self.loop_count} new_bars={len(new_bars)}")
                 if new_bars:
@@ -1138,29 +1137,33 @@ class GoldScalperLive:
             },
         )
 
-        # 7. Gate: max positions
-        if len(raw_positions) >= MAX_OPEN_TRADES:
-            log.info(f"Max positions ({MAX_OPEN_TRADES}) open — skipping entry")
+        # 7. Gate: max positions per symbol. Positions on other symbols do
+        # not consume this symbol's entry allowance.
+        if len(pos_dicts) >= MAX_OPEN_TRADES:
+            log.info(
+                f"[{symbol}] Max positions ({MAX_OPEN_TRADES}) open — "
+                "skipping entry"
+            )
             self._write_state(
                 "HOLDING", acc_info, decision, pos,
                 extra=self._guardian_extra(gs),
             )
             return
 
-        # 7b. Gate: within-tick duplicate-entry guard
+        # 7b. Gate: within-tick duplicate-entry guard, isolated per symbol
         # When TRADE_TIMEFRAMES has N entries and several TFs close at the
         # same bar boundary (e.g. M20+M15+M10+M5 all fire at minute :60),
         # _on_new_bar is called N times inside the same _run_loop iteration.
         # The mt5rest bridge may not yet reflect the position opened by the
         # first call when the second call runs its get_open_positions() check
         # above — so the max-positions gate can pass N times in a row and N
-        # trades get placed.  This flag is reset once per tick (before the
-        # for-loop in _run_loop) and set to True by the first successful
-        # placement, blocking all subsequent calls in the same tick.
-        if self._trade_opened_this_tick:
+        # trades get placed. This set is reset once per tick (before the
+        # for-loop in _run_loop) and records the symbol after a successful
+        # placement, blocking subsequent calls for that symbol only.
+        if symbol.upper() in self._trade_opened_this_tick:
             log.info(
-                f"[{tf}] Skipping entry — a trade was already opened "
-                f"earlier this tick (multi-TF boundary guard)"
+                f"[{tf}] Skipping {symbol} entry — a trade was already "
+                "opened earlier this tick (multi-TF boundary guard)"
             )
             self._write_state(
                 "HOLDING", acc_info, decision, pos,
@@ -1423,23 +1426,31 @@ class GoldScalperLive:
             self._write_state("WAITING", acc_info, decision, pos,
                                extra=self._guardian_extra(gs))
             return
-        # Re-check the cap, but do not treat every existing position as a
-        # duplicate: up to MAX_OPEN_TRADES independent scalp positions are
-        # intentional. Only a newly appeared position while the earlier scan
-        # was flat is treated as a bridge race and blocks this entry.
-        if len(_confirm_positions) >= MAX_OPEN_TRADES:
+        # Re-check the per-symbol cap, but do not treat every existing
+        # position as a duplicate: up to MAX_OPEN_TRADES independent scalp
+        # positions are intentional for EACH symbol. Only a newly appeared
+        # position for the current symbol while the earlier scan was flat is
+        # treated as a bridge race and blocks this entry.
+        _confirmed_position_dicts = [
+            mt5_pos_to_dict(raw) for raw in _confirm_positions
+        ]
+        _confirmed_symbol_positions = [
+            p for p in _confirmed_position_dicts
+            if str(p.get("symbol", "")).upper() == symbol.upper()
+        ]
+        if len(_confirmed_symbol_positions) >= MAX_OPEN_TRADES:
             log.info(
-                f"Pre-order safety re-check reached max positions "
-                f"({MAX_OPEN_TRADES}) — aborting entry"
+                f"Pre-order safety re-check reached max positions for "
+                f"{symbol} ({MAX_OPEN_TRADES}) — aborting entry"
             )
-            _confirm_pos = mt5_pos_to_dict(_confirm_positions[0])
+            _confirm_pos = _confirmed_symbol_positions[0]
             self._write_state("HOLDING", acc_info, decision, _confirm_pos,
                                extra=self._guardian_extra(gs))
             return
-        if not raw_positions and _confirm_positions:
-            _confirm_pos = mt5_pos_to_dict(_confirm_positions[0])
+        if not pos_dicts and _confirmed_symbol_positions:
+            _confirm_pos = _confirmed_symbol_positions[0]
             log.warning(
-                f"Pre-order safety re-check found position "
+                f"Pre-order safety re-check found {symbol} position "
                 f"{_confirm_pos.get('id')} that was missing from the earlier "
                 f"flat scan — aborting entry to avoid a bridge-race duplicate."
             )
@@ -1447,9 +1458,6 @@ class GoldScalperLive:
                                extra=self._guardian_extra(gs))
             return
 
-        _confirmed_position_dicts = [
-            mt5_pos_to_dict(raw) for raw in _confirm_positions
-        ]
         _aggregate_risk_ok, _aggregate_risk_reason = validate_total_open_risk(
             _confirmed_position_dicts,
             tp_params.risk_amount,
@@ -1491,9 +1499,10 @@ class GoldScalperLive:
         )
 
         if result.success:
-            # Block all further _on_new_bar calls in this tick from opening
-            # another position (covers the multi-TF same-bar-boundary race).
-            self._trade_opened_this_tick = True
+            # Block further _on_new_bar calls for this symbol in this tick
+            # (covers the multi-TF same-bar-boundary race). Other symbols
+            # remain eligible independently.
+            self._trade_opened_this_tick.add(symbol.upper())
             self._last_entry_by_symbol[symbol] = {
                 "bar_time": bar_time,
                 "direction": decision.direction,
