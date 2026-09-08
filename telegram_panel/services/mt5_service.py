@@ -129,7 +129,7 @@ class MT5Service:
                     breakeven_activated=raw.get("be_done", False),
                     trailing_stop_active=raw.get("trail_active", False),
                 )
-                pos.strategy = self._get_trade_strategy(pos.ticket)
+                pos.strategy = raw.get("strategy") or self._get_trade_strategy(pos.ticket)
                 positions.append(pos)
             except Exception as e:
                 logger.warning(f"Failed to parse position: {e}")
