@@ -366,41 +366,111 @@ class MessageFormatter:
 
     @staticmethod
     def trade_opened(pos: Position) -> str:
-        text = (
-            f"📈 <b>TRADE OPENED</b>\n"
-            f"<code>{_DIVIDER}</code>\n"
-            f"{pos.direction_icon} {pos.direction.value} · {pos.symbol}\n"
-            f"📦 Volume: {pos.volume}L @ {pos.open_price:.5f}\n"
-            f"🛑 SL: {pos.stop_loss or '—'}  🎯 TP: {pos.take_profit or '—'}\n"
-            f"🎫 Ticket: #{pos.ticket}"
-        )
-        strategy = pos.strategy
-        if strategy:
-            grade = strategy.get("grade", "—")
-            confidence = strategy.get("confidence")
-            regime_label = strategy.get("regime_label", "—")
-            confirmations = strategy.get("confirmations") or []
-            count = strategy.get("confirmation_count", len(confirmations))
-            total = strategy.get("confirmation_total", 4)
-            signals = strategy.get("signals") or []
+        """Render a rich, branch-structured Telegram trade card.
 
-            grade_icons = {"PRIME": "🥇", "HIGH": "🥈", "MARGINAL": "🥉"}
-            grade_icon = grade_icons.get(grade, "🔹")
+        Strategy data is optional because older positions or a temporarily
+        unavailable Redis instance may not have the explanation attached.
+        """
+        def _safe(value):
+            return escape(str(value)) if value not in (None, "") else "—"
 
-            lines = [
-                f"\n<code>{_DIVIDER}</code>",
-                f"🧠 <b>Strategy</b>",
-                f"{grade_icon} Grade: <b>{grade}</b>"
-                + (f"  ·  Confidence: <b>{confidence:.1f}%</b>" if confidence is not None else ""),
-                f"📊 Regime: {regime_label}",
-                f"✅ Confirmations ({count}/{total}): " + (", ".join(confirmations) if confirmations else "—"),
-            ]
-            if signals:
-                lines.append("🔎 Signals:")
-                lines.extend(f"  • {s}" for s in signals)
-            text += "\n" + "\n".join(lines)
-        return text
+        def _num(value, digits: int = 2):
+            if value in (None, ""):
+                return "—"
+            try:
+                return f"{float(value):.{digits}f}"
+            except (TypeError, ValueError):
+                return _safe(value)
 
+        def _pct(value):
+            return "—" if value in (None, "") else f"{_num(value, 1)}%"
+
+        def _yes_no(value):
+            return "✅ Yes" if value else "—"
+
+        direction = _safe(getattr(getattr(pos, "direction", None), "value", getattr(pos, "direction", "—")))
+        symbol = _safe(getattr(pos, "symbol", "—"))
+        strategy = pos.strategy or {}
+        market = strategy.get("market") or {}
+        risk = strategy.get("risk") or {}
+        engines = strategy.get("engines") or {}
+        smc = engines.get("smc") or {}
+        pa = engines.get("price_action") or {}
+        wyckoff = engines.get("wyckoff") or {}
+        score_breakdown = strategy.get("score_breakdown") or {}
+        confirmations = strategy.get("confirmations") or []
+        method = strategy.get("version") or "Multi-Engine Confluence"
+        grade = strategy.get("grade", "—")
+        grade_icon = {"PRIME": "🥇", "HIGH": "🥈", "MARGINAL": "🥉"}.get(grade, "🔹")
+        confidence = strategy.get("confidence")
+        score_total = strategy.get("score_total", confidence)
+        timeframe = strategy.get("timeframe") or "—"
+        side_icon = getattr(pos, "direction_icon", "🟢" if direction == "BUY" else "🔴")
+
+        def _score(label, key):
+            item = score_breakdown.get(key) or {}
+            score = item.get("score") if isinstance(item, dict) else None
+            maximum = item.get("max") if isinstance(item, dict) else None
+            if score is None or maximum in (None, 0):
+                return f"{label}: {_num(score, 1)}"
+            share = float(score) / float(maximum) * 100.0
+            return f"{label}: {_num(score, 1)}/{_num(maximum, 0)} ({share:.0f}%)"
+
+        def _join(values):
+            return ", ".join(_safe(value) for value in values) if values else "—"
+
+        lines = [
+            "<code>╭────────────────────────────────╮</code>",
+            f"│ 🚀 <b>TRADE OPENED</b>  ·  {side_icon} <b>{direction}</b>",
+            f"│ ├─ 💎 <b>Symbol:</b> {symbol}  ·  <b>TF:</b> {_safe(timeframe)}",
+            f"│ ├─ 📦 <b>Volume:</b> {_num(pos.volume, 2)} lots  ·  <b>Entry:</b> {_num(pos.open_price, 5)}",
+            f"│ ├─ 🛑 <b>Stop Loss:</b> {_num(pos.stop_loss, 5)}",
+            f"│ ├─ 🎯 <b>Take Profit:</b> {_num(pos.take_profit, 5)}",
+            f"│ └─ 🎫 <b>Ticket:</b> #{_safe(pos.ticket)}",
+            "<code>├────────────────────────────────┤</code>",
+            "│ 🧠 <b>STRATEGY & CONFLUENCE</b>",
+            f"│ ├─ 🧬 <b>Method:</b> {_safe(method)}",
+            f"│ ├─ {grade_icon} <b>Grade:</b> {_safe(grade)}  ·  <b>Confidence:</b> {_pct(confidence)}",
+            f"│ ├─ 📊 <b>Total score:</b> {_pct(score_total)}  ·  <b>Confirmations:</b> {len(confirmations)}/{strategy.get('confirmation_total', 4)}",
+            f"│ └─ ✅ <b>Confirmed by:</b> {_join(confirmations)}",
+            "<code>├────────────────────────────────┤</code>",
+            "│ 🌍 <b>MARKET STATE</b>",
+            f"│ ├─ 🧭 <b>Regime:</b> {_safe(market.get('regime_label') or market.get('regime'))}",
+            f"│ ├─ 📈 <b>Trend:</b> {_safe(market.get('trend'))} · {_safe(market.get('trend_strength'))}",
+            f"│ ├─ ⚡ <b>ADX:</b> {_num(market.get('adx'), 1)}  ·  <b>Session:</b> {_safe(market.get('session'))}",
+            f"│ ├─ 💵 <b>DXY:</b> {_safe(market.get('dxy'))}",
+            f"│ └─ 📐 <b>EMA 50/100/200:</b> {_num(market.get('ema50'), 2)} / {_num(market.get('ema100'), 2)} / {_num(market.get('ema200'), 2)}",
+            "<code>├────────────────────────────────┤</code>",
+            "│ 🔬 <b>SCORING BREAKDOWN</b>",
+            f"│ ├─ {_score('SMC', 'smc')}  ·  {_score('Trend', 'trend')}",
+            f"│ ├─ {_score('Price Action', 'price_action')}  ·  {_score('Wyckoff', 'wyckoff')}",
+            f"│ ├─ {_score('Liquidity', 'liquidity')}  ·  {_score('Volatility', 'volatility')}",
+            f"│ └─ {_score('Divergence', 'divergence')}  ·  {_score('DXY', 'dxy')}",
+            "<code>├────────────────────────────────┤</code>",
+            "│ 🧩 <b>SETUP EVIDENCE</b>",
+            f"│ ├─ 🏗️ <b>SMC:</b> {_safe(smc.get('vote'))} · BOS {_safe(smc.get('bos_count', 0))} · CHoCH {_safe(smc.get('choch_count', 0))} · Sweeps {_safe(smc.get('sweep_count', 0))}",
+            f"│ ├─ 🕯️ <b>Price Action:</b> {_safe(pa.get('vote'))} · {_join(pa.get('patterns') or [])}",
+            f"│ └─ 📚 <b>Wyckoff:</b> {_safe(wyckoff.get('phase'))} · {_safe(wyckoff.get('vote'))} · Spring {_yes_no(wyckoff.get('spring'))} · Volume {_yes_no(wyckoff.get('volume_confirmed'))}",
+            "<code>├────────────────────────────────┤</code>",
+            "│ 🛡️ <b>RISK & PROTECTION</b>",
+            f"│ ├─ 💰 <b>Risk:</b> {_num(risk.get('risk_amount'), 2)} USD  ·  {_pct(risk.get('risk_percent'))} of balance",
+            f"│ ├─ ⚖️ <b>R:R:</b> {_num(risk.get('rr'), 2)}  ·  <b>SL distance:</b> {_num(risk.get('sl_distance'), 2)} USD",
+            f"│ └─ 🔁 <b>Break-even:</b> {_num(risk.get('break_even_at'), 5)}  ·  <b>Trailing:</b> {_num(risk.get('trailing_stop_distance'), 2)}",
+        ]
+
+        signals = strategy.get("signals") or []
+        if signals:
+            lines.extend([
+                "<code>├────────────────────────────────┤</code>",
+                "│ 📝 <b>DECISION NOTES</b>",
+            ])
+            for signal in signals[:6]:
+                lines.append(f"│ ├─ {_safe(signal)}")
+
+        lines.append("<code>╰────────────────────────────────╯</code>")
+        text = "\n".join(lines)
+        # Telegram hard-limits messages to 4096 characters.
+        return text if len(text) <= 3900 else text[:3880] + "\n…"
     @staticmethod
     def trade_closed(trade: TradeRecord) -> str:
         pnl_icon = "💰" if trade.net_profit >= 0 else "🔻"
