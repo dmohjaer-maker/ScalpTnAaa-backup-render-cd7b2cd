@@ -81,9 +81,9 @@ services:
       # Primary execution timeframe for short-term XAUUSD scalps.
       - key: TIMEFRAME
         value: "1m"
-      # 700 one-minute candles gives the indicators ~11h of context.
+      # 300 candles gives the 1m/5m scalping indicators a focused context.
       - key: CANDLE_WINDOW
-        value: "700"
+        value: "300"
       # Option 4: old BOS/CHoCH events cannot authorize live entries.
       # On 1m, 12 bars keeps BOS/CHoCH actionable for roughly 12 minutes.
       - key: STRUCTURE_MAX_AGE_BARS
