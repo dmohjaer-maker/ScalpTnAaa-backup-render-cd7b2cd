@@ -6,6 +6,7 @@ from live_trading.risk.capital_manager import (
     validate_trade_risk,
     validate_total_open_risk,
 )
+import live_trading.risk.capital_manager as capital_manager
 
 
 def _input(**overrides):
@@ -39,6 +40,17 @@ def test_wider_stop_reduces_lot_size_to_keep_risk_constant():
     assert result.risk_amount == round(
         result.lot_size * result.sl_distance_usd * 100, 2
     )
+
+
+def test_fixed_lot_size_uses_exact_volume_and_reports_real_risk():
+    previous = capital_manager.FIXED_LOT_SIZE
+    capital_manager.FIXED_LOT_SIZE = 0.02
+    try:
+        lot, risk = capital_manager._calc_lot_size(10.0, 489.0, 3.0, "XAUUSD")
+    finally:
+        capital_manager.FIXED_LOT_SIZE = previous
+    assert lot == 0.02
+    assert risk == 20.0
 
 
 def test_structure_buffer_is_outside_selected_sell_resistance():

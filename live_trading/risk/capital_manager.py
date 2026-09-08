@@ -62,6 +62,12 @@ LOT_DOLLAR_PER_UNIT = 100
 FOREX_DOLLAR_PER_UNIT = 100_000
 MIN_LOT = 0.01
 MAX_LOT = 50.0
+# When non-zero, use this exact broker volume instead of percentage-based
+# sizing.  The downstream risk gates still validate the realised stop-loss
+# exposure, so a fixed volume can never bypass the account risk cap.
+FIXED_LOT_SIZE = _bounded_env_float(
+    "FIXED_LOT_SIZE", 0.0, 0.0, MAX_LOT
+)
 # A broker's minimum lot can force the realised stop-loss exposure above the
 # configured percentage.  That is not an acceptable reason to place a trade:
 # the fail-closed gate below rejects it instead of silently risking 5–10%.
@@ -386,6 +392,10 @@ def _calc_lot_size(
 ) -> tuple[float, float]:
     if not isfinite(sl_dist_usd) or sl_dist_usd <= 0 or balance <= 0 or risk_pct <= 0:
         return MIN_LOT, 0.0
+    if FIXED_LOT_SIZE > 0:
+        lot_size = _r4(FIXED_LOT_SIZE)
+        actual_risk = _r2(lot_size * sl_dist_usd * _price_unit_value(symbol))
+        return lot_size, actual_risk
     risk_amount = balance * risk_pct / 100.0
     raw_lot = risk_amount / (sl_dist_usd * _price_unit_value(symbol))
     # Round down before the executor's broker-step normalisation so the
