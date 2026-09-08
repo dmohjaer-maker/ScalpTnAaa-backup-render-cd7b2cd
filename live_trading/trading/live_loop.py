@@ -1535,7 +1535,13 @@ class GoldScalperLive:
                 "bar_time": bar_time,
                 "direction": decision.direction,
             }
-            strategy = describe_strategy(decision)
+            strategy = describe_strategy(
+                decision,
+                account_balance=balance,
+                symbol=symbol,
+                timeframe=tf,
+                opened_at=bar_time.isoformat(),
+            )
             entry_log = {
                 "position_id": result.position_id,
                 "symbol":       symbol,
@@ -1587,6 +1593,10 @@ class GoldScalperLive:
                 "tp":         tp_params.take_profit,
                 "profit":     0.0,
                 "comment":    COMMENT,
+                # Keep the explanation in the immediate snapshot too; this
+                # makes file-based/local panel deployments reliable even when
+                # the Redis strategy key is temporarily unavailable.
+                "strategy":   strategy,
             }
             # ROOT-CAUSE FIX: push the newly opened position into the live
             # Redis snapshot immediately. write_mt5_snapshot() above (step 6)
