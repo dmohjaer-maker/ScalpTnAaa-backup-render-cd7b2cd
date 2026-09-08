@@ -105,7 +105,7 @@ services:
       - key: MAX_SPREAD_ATR
         value: "0.50"
       - key: RISK_PERCENT
-        value: "1.0"
+        value: "3.0"
       # Fail closed when the broker's 0.01 minimum lot would exceed the
       # configured single-trade risk budget.
       - key: MAX_SINGLE_TRADE_RISK_MULTIPLIER
