@@ -390,6 +390,45 @@ def _breakout_follow_through_reason(
     )
 
 
+def _bos_failure_allows_independent_setup(
+    reason: str,
+    candidate: str,
+    entry_filter: EntryFilterResult,
+    trend_dir: str,
+    htf_direction: str,
+    htf_strength: str,
+) -> bool:
+    """Decide whether a failed BOS should only invalidate the BOS vote.
+
+    A BOS failure must not authorize a trade by itself.  It should, however,
+    be possible for an independent setup to survive it:
+
+    * an expired BOS can fall back to an aligned EMA + strong/moderate HTF
+      continuation;
+    * a decisive false BOS needs stricter independent evidence: EMA and Price
+      Action must agree.
+
+    This prevents a stale structural event from vetoing every continuation
+    setup while keeping a bare false breakout blocked.
+    """
+    if candidate not in {"BUY", "SELL"}:
+        return False
+    aligned_htf = (
+        htf_direction == candidate
+        and htf_strength in {"STRONG", "MODERATE"}
+    )
+    aligned_trend = entry_filter.trend and trend_dir == candidate
+    aligned_pa = entry_filter.price_action
+
+    if reason.startswith("BOS expired"):
+        return (aligned_trend and aligned_htf) or (
+            aligned_trend and aligned_pa
+        )
+    if reason.startswith("False BOS"):
+        return aligned_trend and aligned_pa
+    return False
+
+
 def _weak_volume_breakout_reason(
     candles: List[OHLCV],
     smc: SmcResult,
@@ -820,10 +859,18 @@ def run_decision_engine(
         candles, smc, candidate
     )
     if bos_follow_through_reason:
-        return _make_neutral(
-            smc, wyckoff, pa, trend,
-            [bos_follow_through_reason], [bos_follow_through_reason],
-        )
+        if not _bos_failure_allows_independent_setup(
+            bos_follow_through_reason,
+            candidate,
+            ef,
+            trend_dir,
+            htf_direction,
+            htf_strength,
+        ):
+            return _make_neutral(
+                smc, wyckoff, pa, trend,
+                [bos_follow_through_reason], [bos_follow_through_reason],
+            )
 
     breakout_follow_through_reason = _breakout_follow_through_reason(
         candles, pa, candidate

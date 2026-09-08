@@ -1,6 +1,10 @@
 """Tests for closed-candle BOS follow-through confirmation."""
 
-from live_trading.signals.decision_engine import _bos_follow_through_reason
+from live_trading.signals.decision_engine import (
+    _bos_failure_allows_independent_setup,
+    _bos_follow_through_reason,
+)
+from live_trading.signals.entry_filter import EntryFilterResult
 from live_trading.signals.gold_engine import OHLCV
 from live_trading.signals.smc_engine import SmcBos, SmcResult
 
@@ -33,6 +37,18 @@ def _smc(bos: SmcBos) -> SmcResult:
         mitigation_blocks=[],
         smc_signal=bos.type,
         smc_score=0.8,
+    )
+
+
+def _filter(*, trend=False, price_action=False) -> EntryFilterResult:
+    return EntryFilterResult(
+        allowed=True,
+        direction="SELL",
+        confirmation_count=int(trend) + int(price_action),
+        smc=False,
+        trend=trend,
+        price_action=price_action,
+        wyckoff=False,
     )
 
 
@@ -89,3 +105,33 @@ def test_old_confirmed_bos_does_not_block_newer_setup():
         "BUY",
     )
     assert reason is None
+
+
+def test_expired_bos_can_fall_back_to_aligned_htf_trend():
+    assert _bos_failure_allows_independent_setup(
+        "BOS expired: SELL breakout had no accepted continuation within 3 closed bars",
+        "SELL",
+        _filter(trend=True),
+        "SELL",
+        "SELL",
+        "STRONG",
+    )
+
+
+def test_false_bos_still_requires_independent_price_action():
+    assert not _bos_failure_allows_independent_setup(
+        "False BOS detected: SELL breakout closed decisively back through the level",
+        "SELL",
+        _filter(trend=True),
+        "SELL",
+        "SELL",
+        "STRONG",
+    )
+    assert _bos_failure_allows_independent_setup(
+        "False BOS detected: SELL breakout closed decisively back through the level",
+        "SELL",
+        _filter(trend=True, price_action=True),
+        "SELL",
+        "SELL",
+        "STRONG",
+    )
