@@ -231,10 +231,10 @@ ENTRY_TRIGGER_MAX_AGE_BARS = _int("ENTRY_TRIGGER_MAX_AGE_BARS", 2, lo=0, hi=10)
 # soft diagnostic thresholds; strict mode enforces them as hard vetoes.
 MAX_ENTRY_DRIFT_ATR = _float("MAX_ENTRY_DRIFT_ATR", 0.20, lo=0.0, hi=2.0)
 MAX_SPREAD_ATR = _float("MAX_SPREAD_ATR", 0.20, lo=0.0, hi=2.0)
-# Hard ceiling is three simultaneous positions per symbol; Render may lower it
+# Hard ceiling is five simultaneous positions per symbol; Render may lower it
 # but not raise it beyond the requested scalp limit. Positions on different
 # symbols have independent allowances, subject to the account-level risk cap.
-MAX_OPEN_TRADES   = _int("MAX_OPEN_TRADES", 3, lo=1, hi=3)
+MAX_OPEN_TRADES   = _int("MAX_OPEN_TRADES", 5, lo=1, hi=5)
 
 USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() == "true"
 # ── Multi-Timeframe (HTF) Filter ─────────────────────────────────────────────
