@@ -130,9 +130,9 @@ services:
       # Existing stop exposure plus a new trade may not exceed 3% of balance.
       - key: MAX_TOTAL_RISK_PCT
         value: "3.0"
-      # One concurrent XAUUSD scalp prevents 1m signal stacking.
+      # Up to five concurrent XAUUSD scalps are allowed; risk caps still apply.
       - key: MAX_OPEN_TRADES
-        value: "1"
+        value: "5"
       # Bounded XAUUSD M5 initial-stop calibration: enough room for normal
       # candle noise, while preventing a distant historical swing from
       # creating an untradeable stop.
