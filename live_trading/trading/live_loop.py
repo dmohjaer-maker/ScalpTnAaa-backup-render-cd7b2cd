@@ -63,6 +63,7 @@ from live_trading.risk.trailing_stop import (
     TrailingConfig, compute_staircase_sl, should_apply, r_multiple_of,
 )
 from live_trading.signals.decision_engine import run_decision_engine, DecisionResult, describe_strategy
+from live_trading.ai_shadow import score_decision
 from live_trading.signals.mtf_filter import compute_mtf_bias, mtf_allows_trade, MtfBias
 from live_trading.signals.news_filter import check_news_filter
 from live_trading.signals.dxy_filter import get_dxy_signal
@@ -153,6 +154,7 @@ class GoldScalperLive:
         self._bar_diagnostic_logged_at: dict[tuple[str, str, str], datetime] = {}
         self._history_warmup: dict[str, dict] = {}
         self._last_mtf_telemetry: dict = {}
+        self._last_ai_telemetry: dict = {}
 
         # Risk Guardian — initialized after mt5rest bridge connects
         self.guardian = RiskGuardian(
@@ -1081,6 +1083,8 @@ class GoldScalperLive:
             ),
         )
         self.last_decision = decision
+        # AI observes the decision in shadow mode; it never gates or places trades.
+        self._last_ai_telemetry = score_decision(decision)
 
         # 6. Write MT5 snapshot for Telegram panel
         last_c = candles[-1]
@@ -2140,6 +2144,8 @@ class GoldScalperLive:
             )
         if self._last_mtf_telemetry:
             merged_extra["mtf_telemetry"] = dict(self._last_mtf_telemetry)
+        if self._last_ai_telemetry:
+            merged_extra["ai_shadow"] = dict(self._last_ai_telemetry)
         if self._last_trailing_statuses:
             merged_extra["trailing_stop"] = {
                 "enabled": self.trailing_enabled,
