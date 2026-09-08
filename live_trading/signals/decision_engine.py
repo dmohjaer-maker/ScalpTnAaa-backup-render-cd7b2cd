@@ -424,8 +424,8 @@ def _bos_failure_allows_independent_setup(
         return (aligned_trend and aligned_htf) or (
             aligned_trend and aligned_pa
         )
-    if reason.startswith("False BOS"):
-        return aligned_trend and aligned_pa
+    if reason.startswith(("False BOS", "False reversal")):
+        return aligned_trend and (aligned_pa or aligned_htf)
     return False
 
 
@@ -843,10 +843,18 @@ def run_decision_engine(
 
     false_reversal_reason = _false_reversal_reason(candles, smc, candidate)
     if false_reversal_reason:
-        return _make_neutral(
-            smc, wyckoff, pa, trend,
-            [false_reversal_reason], [false_reversal_reason],
-        )
+        if not _bos_failure_allows_independent_setup(
+            false_reversal_reason,
+            candidate,
+            ef,
+            trend_dir,
+            htf_direction,
+            htf_strength,
+        ):
+            return _make_neutral(
+                smc, wyckoff, pa, trend,
+                [false_reversal_reason], [false_reversal_reason],
+            )
 
     liquidity_sweep_reason = _liquidity_sweep_reason(candles, smc, candidate)
     if liquidity_sweep_reason:

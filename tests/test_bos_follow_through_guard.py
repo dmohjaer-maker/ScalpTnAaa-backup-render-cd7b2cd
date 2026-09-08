@@ -124,13 +124,21 @@ def test_false_bos_still_requires_independent_price_action():
         "SELL",
         _filter(trend=True),
         "SELL",
+        "NEUTRAL",
+        "NEUTRAL",
+    )
+    assert _bos_failure_allows_independent_setup(
+        "False BOS detected: SELL breakout closed decisively back through the level",
+        "SELL",
+        _filter(trend=True, price_action=True),
+        "SELL",
         "SELL",
         "STRONG",
     )
     assert _bos_failure_allows_independent_setup(
         "False BOS detected: SELL breakout closed decisively back through the level",
         "SELL",
-        _filter(trend=True, price_action=True),
+        _filter(trend=True),
         "SELL",
         "SELL",
         "STRONG",
