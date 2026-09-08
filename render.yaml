@@ -89,6 +89,10 @@ services:
       # neutral HTF context may still pass in flexible mode.
       - key: STRICT_ENTRY_MODE
         value: "false"
+      # Aggressive signal mode relaxes quality vetoes but keeps risk and
+      # execution protections mandatory.
+      - key: AGGRESSIVE_ENTRY_MODE
+        value: "true"
       # Explicitly allow entries that oppose a confirmed directional context.
       # All other confirmation, quote, risk, protection, position, news, and
       # guardian gates remain active.

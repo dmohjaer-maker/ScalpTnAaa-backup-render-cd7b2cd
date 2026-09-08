@@ -212,6 +212,12 @@ STRUCTURE_MAX_AGE_BARS = _int("STRUCTURE_MAX_AGE_BARS", 24, lo=3, hi=100)
 STRICT_ENTRY_MODE = os.getenv("STRICT_ENTRY_MODE", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
+# Aggressive mode relaxes signal-quality vetoes while preserving all monetary
+# protections: risk sizing, stop loss, position limits, spread/slippage checks,
+# and the Risk Guardian remain mandatory.
+AGGRESSIVE_ENTRY_MODE = os.getenv("AGGRESSIVE_ENTRY_MODE", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 # When enabled, directional alignment gates may not reject a trade solely
 # because its proposed direction opposes a confirmed local/SMC/HTF direction.
 # Neutral trend, quote, confirmation, risk, protection, and guardian gates stay

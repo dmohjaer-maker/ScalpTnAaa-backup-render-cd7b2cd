@@ -33,6 +33,7 @@ from live_trading.config import (
     ENTRY_TRIGGER_MAX_AGE_BARS,
     STRICT_ENTRY_MODE,
     ALLOW_COUNTER_TREND_TRADES,
+    AGGRESSIVE_ENTRY_MODE,
 )
 
 # Marginal confidence R:R floor: trades with confidence between CONF_HARD_MIN
@@ -773,8 +774,11 @@ def run_decision_engine(
     # feed fails open to NEUTRAL, so an outage never blocks trading; only a
     # confirmed opposing dollar trend blocks the candidate direction.
     if (
-        (candidate == "BUY" and dxy_signal == "BULLISH_DXY")
-        or (candidate == "SELL" and dxy_signal == "BEARISH_DXY")
+        not AGGRESSIVE_ENTRY_MODE
+        and (
+            (candidate == "BUY" and dxy_signal == "BULLISH_DXY")
+            or (candidate == "SELL" and dxy_signal == "BEARISH_DXY")
+        )
     ):
         dxy_reason = (
             f"DXY filter: {dxy_signal} opposes {symbol} {candidate} — entry blocked"
@@ -842,7 +846,7 @@ def run_decision_engine(
         return _make_neutral(smc, wyckoff, pa, trend, [reason], [reason])
 
     false_reversal_reason = _false_reversal_reason(candles, smc, candidate)
-    if false_reversal_reason:
+    if false_reversal_reason and not AGGRESSIVE_ENTRY_MODE:
         if not _bos_failure_allows_independent_setup(
             false_reversal_reason,
             candidate,
@@ -866,7 +870,7 @@ def run_decision_engine(
     bos_follow_through_reason = _bos_follow_through_reason(
         candles, smc, candidate
     )
-    if bos_follow_through_reason:
+    if bos_follow_through_reason and not AGGRESSIVE_ENTRY_MODE:
         if not _bos_failure_allows_independent_setup(
             bos_follow_through_reason,
             candidate,
@@ -883,17 +887,17 @@ def run_decision_engine(
     breakout_follow_through_reason = _breakout_follow_through_reason(
         candles, pa, candidate
     )
-    if breakout_follow_through_reason:
+    if breakout_follow_through_reason and not AGGRESSIVE_ENTRY_MODE:
         return _make_neutral(
             smc, wyckoff, pa, trend,
             [breakout_follow_through_reason],
             [breakout_follow_through_reason],
         )
 
-    if candidate == "BUY"  and not regime.rules.allow_long:
+    if candidate == "BUY" and not AGGRESSIVE_ENTRY_MODE and not regime.rules.allow_long:
         return _make_neutral(smc, wyckoff, pa, trend,
                              [f'Regime "{regime.rules.label}" does not allow LONG'])
-    if candidate == "SELL" and not regime.rules.allow_short:
+    if candidate == "SELL" and not AGGRESSIVE_ENTRY_MODE and not regime.rules.allow_short:
         return _make_neutral(smc, wyckoff, pa, trend,
                              [f'Regime "{regime.rules.label}" does not allow SHORT'])
 
@@ -930,7 +934,7 @@ def run_decision_engine(
     # so both event types share the same freshness gate.
     quality  = apply_quality_filter(candles, candidate, conf_result.confidence,
                                     last_structure_bar, regime.adx, regime.atr_ratio)
-    if not quality.allowed:
+    if not quality.allowed and not AGGRESSIVE_ENTRY_MODE:
         return DecisionResult(
             allowed=False, direction=candidate,  # type: ignore
             confidence=conf_result.confidence, components=conf_result.components,
@@ -944,7 +948,7 @@ def run_decision_engine(
     weak_volume_reason = _weak_volume_breakout_reason(
         candles, smc, pa, candidate, quality.is_weak_volume
     )
-    if weak_volume_reason:
+    if weak_volume_reason and not AGGRESSIVE_ENTRY_MODE:
         quality.allowed = False
         quality.blocked_reasons.append(weak_volume_reason)
         return DecisionResult(
@@ -1072,7 +1076,10 @@ def run_decision_engine(
         )
 
     # Marginal confidence check
-    min_conf = regime.rules.min_confidence
+    min_conf = (
+        CONF_HARD_MIN if AGGRESSIVE_ENTRY_MODE
+        else regime.rules.min_confidence
+    )
     if conf_result.confidence < min_conf:
         if trade_params.risk_reward_ratio < CONF_MARGINAL_RR:
             return DecisionResult(
