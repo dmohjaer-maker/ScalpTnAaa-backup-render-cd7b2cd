@@ -50,7 +50,8 @@ if MIN_SL_ATR_MULT > MAX_SL_ATR_MULT:
 SPREAD_BUFFER_MULT = _bounded_env_float("SL_SPREAD_BUFFER_MULT", 1.50, 0.50, 6.00)
 # Use the nearest valid structural target. A 1.2R floor protects
 # execution quality while the 1.8R cap prevents oversized scalp targets.
-REQUIRED_ENTRY_RR = 1.2
+# Every new trade must target at least 2R: risk 1 unit to seek 2 units.
+REQUIRED_ENTRY_RR = 2.0
 FIXED_TP_RR = _bounded_env_float("TP_RR", 1.2, 0.80, 6.00)
 TP_MIN_RR = _bounded_env_float("TP_MIN_RR", 1.2, 0.80, 4.00)
 TP_MAX_RR = _bounded_env_float("TP_MAX_RR", 1.80, 1.00, 8.00)
