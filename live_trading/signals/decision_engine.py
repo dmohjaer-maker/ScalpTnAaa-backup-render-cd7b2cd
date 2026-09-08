@@ -1127,41 +1127,168 @@ def run_decision_engine(
     )
 
 
-def describe_strategy(decision: "DecisionResult") -> dict:
-    """Build a human-readable summary of *why* this trade was taken.
+def describe_strategy(
+    decision: "DecisionResult",
+    *,
+    account_balance: Optional[float] = None,
+    symbol: str = "",
+    timeframe: str = "",
+    opened_at: Optional[str] = None,
+) -> dict:
+    """Build a complete, human-readable explanation for a just-opened trade.
 
-    Purely derived from data the decision engine already computed — it adds
-    no new signal logic and cannot change whether a trade is taken. Intended
-    to travel alongside a just-opened trade (e.g. published to Redis by the
-    live loop) so the Telegram panel can explain the trade in its
-    "TRADE OPENED" notification instead of showing only price/volume/SL/TP.
+    This is a presentation-only projection of values already calculated by the
+    decision engine. It never adds a signal or changes the entry decision.
     """
+    def _number(value, digits: int = 2):
+        try:
+            return round(float(value), digits)
+        except (TypeError, ValueError):
+            return None
+
     ef = decision.entry_filter
-    _ENGINE_NAMES = {
-        "smc":          "Smart Money Concepts (structure)",
-        "trend":        "Trend (EMA alignment)",
+    qf = decision.quality_filter
+    rules = decision.regime_rules
+    components = decision.components
+    trade = decision.trade_params
+    smc = decision.smc
+    pa = decision.pa
+    wyckoff = decision.wyckoff
+    trend = decision.trend
+
+    engine_names = {
+        "smc": "Smart Money Concepts",
+        "trend": "EMA Trend Alignment",
         "price_action": "Price Action",
-        "wyckoff":      "Wyckoff",
+        "wyckoff": "Wyckoff",
     }
-    if ef is not None:
-        confirmations = [
-            label for key, label in _ENGINE_NAMES.items() if getattr(ef, key)
-        ]
-        confirmation_count = ef.confirmation_count
-    else:
-        confirmations = []
-        confirmation_count = 0
+    confirmations = [
+        label for key, label in engine_names.items()
+        if ef is not None and bool(getattr(ef, key, False))
+    ]
+    confirmation_count = ef.confirmation_count if ef is not None else 0
+
+    def _event_summary(event):
+        if event is None:
+            return None
+        event_type = getattr(event, "type", "EVENT")
+        price = _number(getattr(event, "price", None), 2)
+        return {
+            "type": event_type,
+            "price": price,
+            "time": getattr(event, "time", None),
+        }
+
+    patterns = []
+    for attr, label in (
+        ("bullish_engulf", "Bullish engulfing"),
+        ("bearish_engulf", "Bearish engulfing"),
+        ("bullish_pin_bar", "Bullish pin bar"),
+        ("bearish_pin_bar", "Bearish pin bar"),
+        ("strong_bullish", "Strong bullish candle"),
+        ("strong_bearish", "Strong bearish candle"),
+        ("bullish_pullback", "Bullish pullback"),
+        ("bearish_pullback", "Bearish pullback"),
+        ("valid_bull_breakout", "Valid bullish breakout"),
+        ("valid_bear_breakout", "Valid bearish breakout"),
+        ("fake_bull_breakout", "Fake bullish breakout"),
+        ("fake_bear_breakout", "Fake bearish breakout"),
+    ):
+        if bool(getattr(pa, attr, False)):
+            patterns.append(label)
+
+    risk_amount = _number(getattr(trade, "risk_amount", None), 2) if trade else None
+    risk_percent = None
+    try:
+        if account_balance and risk_amount is not None and float(account_balance) > 0:
+            risk_percent = round(risk_amount / float(account_balance) * 100.0, 2)
+    except (TypeError, ValueError, ZeroDivisionError):
+        pass
+
+    score_breakdown = {
+        "smc": {"score": _number(components.smc_score, 1), "max": 35.0},
+        "trend": {"score": _number(components.trend_score, 1), "max": 20.0},
+        "price_action": {"score": _number(components.pa_score, 1), "max": 20.0},
+        "wyckoff": {"score": _number(components.wyckoff_score, 1), "max": 15.0},
+        "liquidity": {"score": _number(components.liquidity_score, 1), "max": 5.0},
+        "volatility": {"score": _number(components.volatility_score, 1), "max": 5.0},
+        "divergence": {"score": _number(getattr(components, "divergence_score", 0.0), 1), "max": 10.0},
+        "dxy": {"score": _number(getattr(components, "dxy_score", 0.0), 1), "max": 5.0},
+    }
 
     return {
-        "direction":           decision.direction,
-        "grade":               decision.grade,
-        "confidence":          round(decision.confidence, 1),
-        "regime":              decision.regime,
-        "regime_label":        decision.regime_label,
-        "confirmations":       confirmations,
-        "confirmation_count":  confirmation_count,
-        "confirmation_total":  4,
-        # Top signal-level reasons behind the confidence score (e.g. "BOS
-        # confirmed", "Strong EMA alignment (50/100/200)", "Spring confirmed").
-        "signals":             list(decision.reasoning[:6]),
+        "version": "GoldScalperPro Multi-Engine Confluence",
+        "symbol": symbol,
+        "timeframe": timeframe or getattr(smc, "timeframe", ""),
+        "opened_at": opened_at,
+        "direction": decision.direction,
+        "grade": decision.grade,
+        "confidence": _number(decision.confidence, 1),
+        "score_total": _number(components.total, 1),
+        "score_breakdown": score_breakdown,
+        "confirmations": confirmations,
+        "confirmation_count": confirmation_count,
+        "confirmation_total": 4,
+        "signals": list(decision.reasoning[:8]),
+        "market": {
+            "regime": decision.regime,
+            "regime_label": decision.regime_label,
+            "description": getattr(getattr(decision, "regime_rules", None), "label", ""),
+            "trend": getattr(trend, "trend", "NEUTRAL"),
+            "trend_strength": getattr(trend, "strength", "WEAK"),
+            "adx": _number(getattr(qf, "adx", None), 1),
+            "session": getattr(qf, "session_quality", "—"),
+            "dxy": getattr(decision, "dxy_signal", "NEUTRAL"),
+            "ema50": _number(getattr(trend, "ema50", None), 2),
+            "ema100": _number(getattr(trend, "ema100", None), 2),
+            "ema200": _number(getattr(trend, "ema200", None), 2),
+            "min_confidence": _number(getattr(rules, "min_confidence", None), 1),
+            "min_rr": _number(getattr(rules, "min_rr", None), 2),
+        },
+        "engines": {
+            "smc": {
+                "vote": getattr(smc, "smc_signal", "NEUTRAL"),
+                "score": _number(getattr(smc, "smc_score", None), 1),
+                "trend": getattr(smc, "trend", "NEUTRAL"),
+                "bos_count": len(getattr(smc, "bos_signals", []) or []),
+                "choch_count": len(getattr(smc, "choch_signals", []) or []),
+                "sweep_count": len(getattr(smc, "liquidity_sweeps", []) or []),
+                "order_block_count": len(getattr(smc, "order_blocks", []) or []),
+                "fvg_count": len(getattr(smc, "fair_value_gaps", []) or []),
+                "latest_bos": _event_summary((getattr(smc, "bos_signals", []) or [])[-1] if getattr(smc, "bos_signals", []) else None),
+                "latest_choch": _event_summary((getattr(smc, "choch_signals", []) or [])[-1] if getattr(smc, "choch_signals", []) else None),
+            },
+            "trend": {
+                "vote": getattr(trend, "trend", "NEUTRAL"),
+                "strength": getattr(trend, "strength", "WEAK"),
+            },
+            "price_action": {
+                "vote": getattr(pa, "pa_signal", "NEUTRAL"),
+                "score": _number(getattr(pa, "pa_score", None), 1),
+                "patterns": patterns,
+            },
+            "wyckoff": {
+                "phase": getattr(wyckoff, "phase", "NEUTRAL"),
+                "vote": getattr(wyckoff, "wyckoff_signal", "NEUTRAL"),
+                "score": _number(getattr(wyckoff, "wyckoff_score", None), 2),
+                "spring": bool(getattr(wyckoff, "spring", False)),
+                "upthrust": bool(getattr(wyckoff, "upthrust", False)),
+                "volume_confirmed": bool(getattr(wyckoff, "volume_confirmed", False)),
+            },
+        },
+        "risk": {
+            "account_balance": _number(account_balance, 2),
+            "risk_amount": risk_amount,
+            "risk_percent": risk_percent,
+            "entry": _number(getattr(trade, "entry_price", None), 5) if trade else None,
+            "stop_loss": _number(getattr(trade, "stop_loss", None), 5) if trade else None,
+            "take_profit": _number(getattr(trade, "take_profit", None), 5) if trade else None,
+            "lot_size": _number(getattr(trade, "lot_size", None), 2) if trade else None,
+            "rr": _number(getattr(trade, "risk_reward_ratio", None), 2) if trade else None,
+            "sl_distance": _number(getattr(trade, "sl_distance_usd", None), 2) if trade else None,
+            "sl_distance_pips": _number(getattr(trade, "sl_distance_pips", None), 1) if trade else None,
+            "break_even_at": _number(getattr(trade, "break_even_at", None), 5) if trade else None,
+            "trailing_stop_distance": _number(getattr(trade, "trailing_stop_distance", None), 2) if trade else None,
+        },
     }
+
