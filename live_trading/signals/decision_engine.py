@@ -34,6 +34,7 @@ from live_trading.config import (
     STRICT_ENTRY_MODE,
     ALLOW_COUNTER_TREND_TRADES,
     AGGRESSIVE_ENTRY_MODE,
+    FAST_SCALP_MODE,
 )
 
 # Marginal confidence R:R floor: trades with confidence between CONF_HARD_MIN
@@ -788,10 +789,12 @@ def run_decision_engine(
             dxy_signal=dxy_signal,
         )
 
-    # HTF continuation can affect directional handling, but it must never
-    # bypass the two-engine entry requirement. Clamp the effective threshold
-    # so no caller or runtime override can authorize a one-vote entry.
-    effective_min_confirmations = max(2, min_confirmations)
+    # HTF continuation can affect directional handling, but it must not
+    # silently change the configured confirmation policy. Normal mode keeps
+    # the two-engine floor; FAST_SCALP_MODE is an explicit compatibility
+    # override for the former rapid-scalp profile.
+    confirmation_floor = 1 if FAST_SCALP_MODE else 2
+    effective_min_confirmations = max(confirmation_floor, min_confirmations)
 
     # Entry filter — every aligned directional engine contributes one vote.
     # The configured minimum is therefore a true two-engine requirement.
