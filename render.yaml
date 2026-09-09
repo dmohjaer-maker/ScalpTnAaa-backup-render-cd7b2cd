@@ -88,13 +88,16 @@ services:
       # On 5m, 24 bars keeps BOS/CHoCH actionable for roughly two hours.
       - key: STRUCTURE_MAX_AGE_BARS
         value: "24"
-      # Redeploy trigger: flexible entry mode remains the production default.
-      # The global counter-trend guard is always active. Keep the HTF context
-      # active so a known opposing higher-timeframe bias is also blocked, while
-      # neutral HTF context may still pass in flexible mode.
-      # Strict quote/entry-drift checks are appropriate for 5m execution.
-      - key: STRICT_ENTRY_MODE
+      # Explicit compatibility profile for the former rapid XAUUSD scalp
+      # cadence. It lowers only the signal-density floor; all monetary and
+      # execution protections remain active in code.
+      - key: FAST_SCALP_MODE
         value: "true"
+      # Flexible quote mode keeps valid live quotes mandatory while treating
+      # transient spread/drift thresholds as diagnostics rather than a hard
+      # stop to every fast scalp.
+      - key: STRICT_ENTRY_MODE
+        value: "false"
       # Aggressive signal mode relaxes quality vetoes but keeps risk and
       # execution protections mandatory.
       - key: AGGRESSIVE_ENTRY_MODE
@@ -104,8 +107,10 @@ services:
       # guardian gates remain active.
       - key: ALLOW_COUNTER_TREND_TRADES
         value: "true"
+      # The former rapid profile did not require a second timeframe fetch on
+      # every entry. The local M1/M5 signals remain fully active.
       - key: MTF_ENABLED
-        value: "true"
+        value: "false"
       - key: MTF_REQUIRE_ALIGNMENT
         value: "false"
       # 15m directional context for the 5m execution engine.
@@ -122,7 +127,7 @@ services:
       - key: RISK_PERCENT
         value: "3.0"
       - key: FIXED_LOT_SIZE
-        value: "0"
+        value: "0.01"
       # Fail closed when the broker's 0.01 minimum lot would exceed the
       # configured single-trade risk budget.
       - key: MAX_SINGLE_TRADE_RISK_MULTIPLIER
@@ -139,17 +144,19 @@ services:
       - key: SL_ATR_BUFFER_MULT
         value: "0.10"
       - key: SL_MIN_ATR_MULT
-        value: "1.25"
+        value: "0.75"
       - key: SL_MAX_ATR_MULT
-        value: "2.75"
+        value: "1.50"
       - key: SL_SPREAD_BUFFER_MULT
         value: "1.50"
       - key: TP_RR
-        value: "1.30"
+        value: "1.20"
       - key: TP_MIN_RR
         value: "1.20"
       - key: TP_MAX_RR
-        value: "1.80"
+        value: "1.60"
+      - key: REQUIRED_ENTRY_RR
+        value: "1.20"
       - key: TP_APPROACH_ATR_MULT
         value: "0.15"
       # STABLE v4.0.4 values -- these are the actual settings the bot has been
@@ -160,13 +167,13 @@ services:
       # matched the dashboard-configured production values below -- a fresh
       # deploy from the old file would NOT have reproduced current behavior.
       - key: MIN_CONFIRMATIONS
-        value: "2"
+        value: "1"
       - key: REQUIRE_PRICE_ACTION
         value: "false"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
         value: "false"
       - key: CONF_HARD_MIN
-        value: "32"
+        value: "28"
       - key: DAILY_LOSS_LIMIT_PCT
         value: "4.0"
       - key: MAX_DRAWDOWN_PCT
@@ -200,9 +207,10 @@ services:
         value: "1.0"
       # TRADE_TIMEFRAMES / QUALITY_ADX_MIN are read by the live engine and
       # were set on the live service but missing from this manifest.
-      # 5m execution + 15m context. Parsed highest-first.
+      # M1 gives the former rapid cadence; M5 remains as a slower confirmation
+      # opportunity when both boundaries close together.
       - key: TRADE_TIMEFRAMES
-        value: "5m"
+        value: "M1,M5"
       - key: QUALITY_ADX_MIN
         value: "12"
       # External market filters: high-impact USD news blackout and DXY
