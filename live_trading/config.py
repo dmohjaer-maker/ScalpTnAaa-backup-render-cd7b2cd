@@ -300,7 +300,7 @@ USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() 
 MTF_ENABLED       = _required_true("MTF_ENABLED")
 # Strict mode can require a directional higher-timeframe bias. Even in
 # flexible mode, a known opposing HTF bias is always blocked.
-MTF_REQUIRE_ALIGNMENT = _required_true("MTF_REQUIRE_ALIGNMENT")
+MTF_REQUIRE_ALIGNMENT = _bool_env("MTF_REQUIRE_ALIGNMENT", "false")
 MTF_TIMEFRAME     = _timeframe("MTF_TIMEFRAME", "5m")
 MTF_CANDLE_WINDOW = _int("MTF_CANDLE_WINDOW",    300, lo=50, hi=1000)
 
