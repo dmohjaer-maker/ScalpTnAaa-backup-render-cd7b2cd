@@ -96,14 +96,14 @@ def _trade_timeframes(name: str, default: str) -> list[str]:
     """Parse a comma-separated list of timeframe labels, validate each entry
     against _VALID_TIMEFRAMES, and return them sorted highest-first.
 
-    Example:  TRADE_TIMEFRAMES=M20,M15,M10,5m  →  ["M20","M15","M10","5m"]
+    Example:  TRADE_TIMEFRAMES=5m  →  ["5m"]
     """
     raw = os.getenv(name, default)
     tfs = [tf.strip() for tf in raw.split(",") if tf.strip()]
     if not tfs:
         print(
             f"ERROR: {name} is empty. Provide a comma-separated list "
-            f"of timeframes, e.g. M20,M15,M10,5m",
+            f"of timeframes, e.g. 5m",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -264,10 +264,10 @@ MTF_CANDLE_WINDOW = _int("MTF_CANDLE_WINDOW",    300, lo=50, hi=1000)
 # computed on H1 regardless of which trade TFs are active, because H1
 # represents the directional context for the whole session.
 #
-# Recommended:  "M20,M15,M10,5m"  (4 TFs = ~2-4 entries/day per TF)
-# Conservative: "M15,5m"           (2 TFs = cleaner, fewer signals)
-# Aggressive:   "M20,M15,M10,5m"   (same as recommended)
-TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M20,M15,M10,5m")
+# Primary and entry timeframe: "5m" (single active entry timeframe)
+# Higher-timeframe context remains separate under MTF_TIMEFRAME.
+# No 1m entry timeframe is enabled.
+TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "5m")
 
 
 
