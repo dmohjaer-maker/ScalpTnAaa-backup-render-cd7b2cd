@@ -71,13 +71,21 @@ def _parse_heartbeat(value: object) -> datetime | None:
 
 
 def _health_response(status: str) -> web.Response:
+    \"\"\"Return a liveness response for Render's process health check.
+
+    Render calls /health to decide whether to restart the web service. A
+    temporary broker/bridge outage is recoverable by the in-process supervisor
+    and must not cause Render to kill the process mid-reconnect. Keep this
+    endpoint liveness-only; the degraded marker remains visible to operators,
+    while /status exposes the detailed connection state.
+    \"\"\"
     normalized = status.upper()
-    # RETRY_IN_* removed from unhealthy check: process is alive and retrying.
-    unhealthy = normalized in _UNHEALTHY_STATUSES
+    degraded = normalized in _UNHEALTHY_STATUSES
+    suffix = \" degraded=true\" if degraded else \"\"
     return web.Response(
-        status=503 if unhealthy else 200,
-        text=f"OK status={status}",
-        content_type="text/plain",
+        status=200,
+        text=f\"OK status={status}{suffix}\",
+        content_type=\"text/plain\",
     )
 
 
