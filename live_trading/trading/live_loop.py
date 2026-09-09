@@ -1966,7 +1966,7 @@ class GoldScalperLive:
                 _g = globals()
                 try:
                     if "min_confirmations" in payload:
-                        v = int(float(payload["min_confirmations"]))
+                        v = max(2, int(float(payload["min_confirmations"])))
                         _live_cfg.MIN_CONFIRMATIONS = v; _g["MIN_CONFIRMATIONS"] = v
                     log.info(f"🔧 Strategy config updated via Telegram: {payload}")
                 except Exception as _upd_err:
