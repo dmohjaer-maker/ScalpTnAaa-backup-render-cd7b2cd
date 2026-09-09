@@ -206,7 +206,7 @@ services:
       # M1 gives the former rapid cadence; M5 remains as a slower confirmation
       # opportunity when both boundaries close together.
       - key: TRADE_TIMEFRAMES
-        value: "M1,M5"
+        value: "5m"
       - key: QUALITY_ADX_MIN
         value: "12"
       # External market filters: high-impact USD news blackout and DXY
