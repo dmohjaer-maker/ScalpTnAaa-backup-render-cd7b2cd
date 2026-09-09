@@ -171,7 +171,7 @@ services:
       - key: CONF_HARD_MIN
         value: "28"
       - key: DAILY_LOSS_LIMIT_PCT
-        value: "4.0"
+        value: "5.0"
       - key: MAX_DRAWDOWN_PCT
         value: "12.0"
       - key: SLIPPAGE_POINTS
