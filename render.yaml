@@ -163,7 +163,7 @@ services:
       # matched the dashboard-configured production values below -- a fresh
       # deploy from the old file would NOT have reproduced current behavior.
       - key: MIN_CONFIRMATIONS
-        value: "1"
+        value: "2"
       - key: REQUIRE_PRICE_ACTION
         value: "false"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
