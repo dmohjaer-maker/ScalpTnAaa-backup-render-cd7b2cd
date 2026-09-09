@@ -179,8 +179,18 @@ RISK_PERCENT      = _float("RISK_PERCENT",      1.0,  lo=0.01, hi=10.0)
 # Account-level stop exposure cap. This includes already-open positions and
 # prevents three broker-minimum lots from quietly stacking excessive risk.
 MAX_TOTAL_RISK_PCT = _float("MAX_TOTAL_RISK_PCT", 3.0, lo=0.1, hi=50.0)
-# MIN_CONFIRMATIONS=2: two aligned confirmations are sufficient.
-MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   2,    lo=2,    hi=10)
+# FAST_SCALP_MODE is an explicit compatibility mode for the former rapid
+# XAUUSD scalp profile. It may lower the confirmation floor to one aligned
+# engine, but it never bypasses quote, protection, risk, position, or guardian
+# checks.
+FAST_SCALP_MODE = os.getenv("FAST_SCALP_MODE", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+# Normal mode requires two aligned confirmations. Fast mode is opt-in and
+# defaults to one so the Render profile can reproduce the former cadence.
+MIN_CONFIRMATIONS = _int(
+    "MIN_CONFIRMATIONS", 1 if FAST_SCALP_MODE else 2, lo=1, hi=10
+)
 # Price Action is an optional confirmation; enable this only when every trade
 # must also have a same-direction Price Action signal.
 REQUIRE_PRICE_ACTION = os.getenv("REQUIRE_PRICE_ACTION", "false").strip().lower() in {
