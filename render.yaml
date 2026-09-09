@@ -71,7 +71,7 @@ services:
         value: "XAUUSD"
       # Poll transport/bar boundaries more frequently without changing the
       # completed-candle signal semantics.
-      # 1m scalping transport poll: signal decisions still happen once per
+      # 5m execution transport poll: signal decisions still happen once per
       # completed candle, while quote/protection tasks remain independent.
       - key: BAR_CHECK_INTERVAL
         value: "2"
@@ -80,19 +80,19 @@ services:
       # FIX: TIMEFRAME and CANDLE_WINDOW are now env-configurable (fix #4).
       # Primary execution timeframe for short-term XAUUSD scalps.
       - key: TIMEFRAME
-        value: "1m"
-      # 300 candles gives the 1m/5m scalping indicators a focused context.
+        value: "5m"
+      # 300 candles gives the 5m scalping indicators a focused context.
       - key: CANDLE_WINDOW
         value: "300"
       # Option 4: old BOS/CHoCH events cannot authorize live entries.
-      # On 1m, 12 bars keeps BOS/CHoCH actionable for roughly 12 minutes.
+      # On 5m, 24 bars keeps BOS/CHoCH actionable for roughly two hours.
       - key: STRUCTURE_MAX_AGE_BARS
-        value: "12"
+        value: "24"
       # Redeploy trigger: flexible entry mode remains the production default.
       # The global counter-trend guard is always active. Keep the HTF context
       # active so a known opposing higher-timeframe bias is also blocked, while
       # neutral HTF context may still pass in flexible mode.
-      # Strict quote/entry-drift checks are appropriate for 1m execution.
+      # Strict quote/entry-drift checks are appropriate for 5m execution.
       - key: STRICT_ENTRY_MODE
         value: "true"
       # Aggressive signal mode relaxes quality vetoes but keeps risk and
@@ -108,7 +108,7 @@ services:
         value: "true"
       - key: MTF_REQUIRE_ALIGNMENT
         value: "false"
-      # 15m directional context for the 1m execution engine.
+      # 15m directional context for the 5m execution engine.
       - key: MTF_TIMEFRAME
         value: "M15"
       - key: MTF_CANDLE_WINDOW
@@ -160,7 +160,7 @@ services:
       # matched the dashboard-configured production values below -- a fresh
       # deploy from the old file would NOT have reproduced current behavior.
       - key: MIN_CONFIRMATIONS
-        value: "1"
+        value: "2"
       - key: REQUIRE_PRICE_ACTION
         value: "false"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
@@ -200,9 +200,9 @@ services:
         value: "1.0"
       # TRADE_TIMEFRAMES / QUALITY_ADX_MIN are read by the live engine and
       # were set on the live service but missing from this manifest.
-      # 1m execution + 5m confirmation + 15m context. Parsed highest-first.
+      # 5m execution + 15m context. Parsed highest-first.
       - key: TRADE_TIMEFRAMES
-        value: "M15,5m,1m"
+        value: "5m"
       - key: QUALITY_ADX_MIN
         value: "12"
       # External market filters: high-impact USD news blackout and DXY
@@ -211,7 +211,7 @@ services:
         value: "15"
       - key: NEWS_BLOCK_AFTER_MIN
         value: "30"
-      # Refresh the external dollar filter often enough for 1m scalps.
+      # Refresh the external dollar filter often enough for 5m scalps.
       - key: DXY_CACHE_TTL_S
         value: "60"
       - key: PYTHON_VERSION
