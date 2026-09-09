@@ -33,6 +33,7 @@ from live_trading.config import (
     MAX_OPEN_TRADES, COMMENT,
     BAR_CHECK_INTERVAL, RECONNECT_DELAY, SYNC_TIMEOUT,
     MIN_CONFIRMATIONS, REQUIRE_PRICE_ACTION, REQUIRE_SMC_CONFIRMATION,
+    REQUIRE_SMC_OR_PA_TRIGGER, BLOCK_RANGE_ENTRIES,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF, USE_ATR_HIGH_VOL_FILTER,
     DAILY_LOSS_LIMIT_PCT, MAX_DRAWDOWN_PCT, SLIPPAGE_POINTS,
     STATE_FILE, GUARDIAN_STATE_FILE,
@@ -1075,6 +1076,7 @@ class GoldScalperLive:
             dxy_signal=dxy_result.signal,
             require_price_action=REQUIRE_PRICE_ACTION,
             require_smc_confirmation=REQUIRE_SMC_CONFIRMATION,
+            require_smc_or_pa_trigger=REQUIRE_SMC_OR_PA_TRIGGER,
             require_smc_price_action_wyckoff=REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
             symbol=symbol,
             htf_direction=(
@@ -1336,6 +1338,7 @@ class GoldScalperLive:
             dxy_signal=dxy_result.signal,
             require_price_action=REQUIRE_PRICE_ACTION,
             require_smc_confirmation=REQUIRE_SMC_CONFIRMATION,
+            require_smc_or_pa_trigger=REQUIRE_SMC_OR_PA_TRIGGER,
             require_smc_price_action_wyckoff=REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
             entry_price_override=_market_entry,
             spread=_spread,
