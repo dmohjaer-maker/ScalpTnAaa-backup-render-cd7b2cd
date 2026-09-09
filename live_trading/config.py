@@ -133,6 +133,45 @@ def _timeframe(name: str, default: str) -> str:
     return val
 
 
+def _one_minute_timeframe(name: str) -> str:
+    """Return the canonical one-minute timeframe or fail closed."""
+    value = os.getenv(name, "1m").strip()
+    if value != "1m":
+        print(
+            f"ERROR: {name} must be exactly '1m' for the locked one-minute profile; "
+            f"received {value!r}. Fix it in the Render dashboard and redeploy.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return "1m"
+
+
+def _required_true(name: str) -> bool:
+    """Read a safety-critical switch and reject attempts to disable it."""
+    value = os.getenv(name, "true").strip().lower()
+    if value not in {"1", "true", "yes", "on"}:
+        print(
+            f"ERROR: {name} is mandatory for the locked one-minute profile and "
+            f"cannot be disabled; received {value!r}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return True
+
+
+def _one_minute_trade_timeframes(name: str) -> list[str]:
+    """Require exactly one canonical entry timeframe: 1m."""
+    value = os.getenv(name, "1m").strip()
+    if value != "1m":
+        print(
+            f"ERROR: {name} must be exactly '1m' for the locked one-minute profile; "
+            f"received {value!r}. Fix it in the Render dashboard and redeploy.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return ["1m"]
+
+
 # ── MT5 bridge URL ────────────────────────────────────────────────────────────
 MTAPI_URL     = os.getenv("MTAPI_URL",     "")
 
@@ -166,14 +205,14 @@ def _symbols() -> list[str]:
 
 SYMBOL        = os.getenv("SYMBOL", "XAUUSD").strip().upper() or "XAUUSD"
 SYMBOLS       = _symbols()
-TIMEFRAME     = _timeframe("TIMEFRAME", "5m")
+TIMEFRAME     = _one_minute_timeframe("TIMEFRAME")
 CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 
 # ── Risk & Trade Rules ───────────────────────────────────────────────────────
-# Production defaults — override via Render env vars if needed.
-# MIN_CONFIRMATIONS: minimum confirmations that must agree. Additional signal
-# engines are optional unless their dedicated gate is enabled.
-# Trend, Price Action, and Wyckoff provide the independent confirmations.
+# Locked one-minute production profile. Smart Money and Price Action are
+# fail-closed mandatory gates; disabling either one aborts startup.
+# MIN_CONFIRMATIONS is kept at two or higher so the dual-engine contract cannot
+# be weakened by a Render environment drift.
 # CONF_HARD_MIN: trades below this confidence % are always rejected.
 RISK_PERCENT      = _float("RISK_PERCENT",      1.0,  lo=0.01, hi=10.0)
 # Account-level stop exposure cap. This includes already-open positions and
@@ -188,20 +227,11 @@ FAST_SCALP_MODE = os.getenv("FAST_SCALP_MODE", "false").strip().lower() in {
 }
 # Normal mode requires two aligned confirmations. Fast mode is opt-in and
 # defaults to one so the Render profile can reproduce the former cadence.
-MIN_CONFIRMATIONS = _int(
-    "MIN_CONFIRMATIONS", 1 if FAST_SCALP_MODE else 2, lo=1, hi=10
-)
-# Price Action is an optional confirmation; enable this only when every trade
-# must also have a same-direction Price Action signal.
-REQUIRE_PRICE_ACTION = os.getenv("REQUIRE_PRICE_ACTION", "false").strip().lower() in {
-    "1", "true", "yes", "on",
-}
-# Require an aligned Smart Money (SMC) vote in addition to any other
-# configured confirmation gates. Used with REQUIRE_PRICE_ACTION when both
-# SMC and Price Action must authorize an entry together.
-REQUIRE_SMC_CONFIRMATION = os.getenv("REQUIRE_SMC_CONFIRMATION", "false").strip().lower() in {
-    "1", "true", "yes", "on",
-}
+MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS", 2, lo=2, hi=10)
+# Price Action is mandatory for every entry in this profile.
+REQUIRE_PRICE_ACTION = _required_true("REQUIRE_PRICE_ACTION")
+# Smart Money (SMC) is mandatory for every entry in this profile.
+REQUIRE_SMC_CONFIRMATION = _required_true("REQUIRE_SMC_CONFIRMATION")
 # Deprecated compatibility flag. SMC is not required to be directional, but
 # an opposing SMC context is always rejected by the global trend guard. The
 # decision engine keeps this flag for callers that still provide the old
@@ -225,9 +255,7 @@ STRUCTURE_MAX_AGE_BARS = _int("STRUCTURE_MAX_AGE_BARS", 24, lo=3, hi=100)
 # Strict mode keeps the newest precision gates available without forcing them
 # on normal operation. Flexible mode still requires a valid live quote and
 # preserves all risk, position-limit, and execution protections.
-STRICT_ENTRY_MODE = os.getenv("STRICT_ENTRY_MODE", "false").strip().lower() in {
-    "1", "true", "yes", "on",
-}
+STRICT_ENTRY_MODE = _required_true("STRICT_ENTRY_MODE")
 # Aggressive mode relaxes signal-quality vetoes while preserving all monetary
 # protections: risk sizing, stop loss, position limits, spread/slippage checks,
 # and the Risk Guardian remain mandatory.
@@ -261,13 +289,11 @@ USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() 
 #                     Supported: M1 M5 M15 M30 H1 H4 D1 (same set as TIMEFRAME).
 # MTF_CANDLE_WINDOW : number of HTF bars to fetch (needs ≥ 210 for EMA-200).
 #                     300 gives a comfortable margin without excessive latency.
-MTF_ENABLED       = os.getenv("MTF_ENABLED",   "true").lower() == "true"
+MTF_ENABLED       = _required_true("MTF_ENABLED")
 # Strict mode can require a directional higher-timeframe bias. Even in
 # flexible mode, a known opposing HTF bias is always blocked.
-MTF_REQUIRE_ALIGNMENT = os.getenv(
-    "MTF_REQUIRE_ALIGNMENT", "true" if STRICT_ENTRY_MODE else "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-MTF_TIMEFRAME     = _timeframe("MTF_TIMEFRAME",  "H1")
+MTF_REQUIRE_ALIGNMENT = _required_true("MTF_REQUIRE_ALIGNMENT")
+MTF_TIMEFRAME     = _one_minute_timeframe("MTF_TIMEFRAME")
 MTF_CANDLE_WINDOW = _int("MTF_CANDLE_WINDOW",    300, lo=50, hi=1000)
 
 # ── Trade Timeframes (Multi-Timeframe entry) ─────────────────────────────────
@@ -283,7 +309,7 @@ MTF_CANDLE_WINDOW = _int("MTF_CANDLE_WINDOW",    300, lo=50, hi=1000)
 # Primary and entry timeframe: "5m" (single active entry timeframe)
 # Higher-timeframe context remains separate under MTF_TIMEFRAME.
 # No 1m entry timeframe is enabled.
-TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "5m")
+TRADE_TIMEFRAMES  = _one_minute_trade_timeframes("TRADE_TIMEFRAMES")
 
 
 
