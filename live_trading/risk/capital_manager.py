@@ -81,7 +81,7 @@ MAX_LOT = 50.0
 # exposure, so a fixed volume can never bypass the account risk cap.
 # Hard safety lock: every new market entry must use exactly 0.02 lots.
 # Keep risk and protection gates active; this only removes dynamic volume sizing.
-FIXED_LOT_SIZE = 0.02
+FIXED_LOT_SIZE = _bounded_env_float("FIXED_LOT_SIZE", 0.0, 0.0, 50.0)
 # A broker's minimum lot can force the realised stop-loss exposure above the
 # configured percentage.  That is not an acceptable reason to place a trade:
 # the fail-closed gate below rejects it instead of silently risking 5–10%.
