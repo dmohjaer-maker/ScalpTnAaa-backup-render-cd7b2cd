@@ -240,6 +240,9 @@ REQUIRE_PRICE_ACTION = _bool_env("REQUIRE_PRICE_ACTION", "false")
 REQUIRE_SMC_CONFIRMATION = _bool_env("REQUIRE_SMC_CONFIRMATION", "false")
 REQUIRE_SMC_OR_PA_TRIGGER = _bool_env("REQUIRE_SMC_OR_PA_TRIGGER", "true")
 BLOCK_RANGE_ENTRIES = _bool_env("BLOCK_RANGE_ENTRIES", "true")
+RANGE_SCALP_MODE = _bool_env("RANGE_SCALP_MODE", "true")
+RANGE_MIN_CONFIRMATIONS = _int("RANGE_MIN_CONFIRMATIONS", 1, lo=1, hi=4)
+RANGE_REQUIRE_PRICE_ACTION = _bool_env("RANGE_REQUIRE_PRICE_ACTION", "true")
 # Deprecated compatibility flag. SMC is not required to be directional, but
 # an opposing SMC context is always rejected by the global trend guard. The
 # decision engine keeps this flag for callers that still provide the old
