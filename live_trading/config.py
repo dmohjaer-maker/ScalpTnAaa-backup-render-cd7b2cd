@@ -180,7 +180,7 @@ RISK_PERCENT      = _float("RISK_PERCENT",      1.0,  lo=0.01, hi=10.0)
 # prevents three broker-minimum lots from quietly stacking excessive risk.
 MAX_TOTAL_RISK_PCT = _float("MAX_TOTAL_RISK_PCT", 3.0, lo=0.1, hi=50.0)
 # MIN_CONFIRMATIONS=2: two aligned confirmations are sufficient.
-MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   2,    lo=1,    hi=10)
+MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   2,    lo=2,    hi=10)
 # Price Action is an optional confirmation; enable this only when every trade
 # must also have a same-direction Price Action signal.
 REQUIRE_PRICE_ACTION = os.getenv("REQUIRE_PRICE_ACTION", "false").strip().lower() in {
