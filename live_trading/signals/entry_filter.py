@@ -2,8 +2,9 @@
 Entry Filter — Minimum confirmation gate across directional engines.
 
 SMC, EMA Trend, Price Action, and Wyckoff each provide one directional vote.
-A trade requires the configured minimum number of aligned engine votes; in
-production that minimum is two. Other safety gates remain independent.
+A trade requires the configured minimum number of aligned engine votes; the
+normal profile uses two while the explicit SMC-only profile uses one. Other
+safety gates remain independent.
 """
 from dataclasses import dataclass
 from typing import Literal
@@ -59,8 +60,8 @@ def apply_entry_filter(
     pa_ok    = pa_signal      == direction
     wyc_ok   = wyckoff_signal == direction
 
-    # Every directional engine contributes one vote. With the production
-    # minimum of two, no single engine can authorize an entry by itself.
+    # Every directional engine contributes one vote. The configured minimum
+    # decides whether the active profile requires one or multiple confirmations.
     count = sum([smc_ok, trend_ok, pa_ok, wyc_ok])
     # When requested, trend alignment remains a separate hard safety rule.
     # When disabled, any two aligned engine votes can authorize the setup.

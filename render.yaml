@@ -155,19 +155,17 @@ services:
         value: "1.20"
       - key: TP_APPROACH_ATR_MULT
         value: "0.15"
-      # STABLE v4.0.4 values -- these are the actual settings the bot has been
-      # running with in production (verified against the live Render service
-      # on 2026-08-10). Earlier revisions of this file had leftover
-      # "testing mode" values (MIN_CONFIRMATIONS=1, CONF_HARD_MIN=0,
-      # DAILY_LOSS_LIMIT_PCT=50.0, MAX_DRAWDOWN_PCT=50.0) that no longer
-      # matched the dashboard-configured production values below -- a fresh
-      # deploy from the old file would NOT have reproduced current behavior.
+      # SMC-only fast-scalp profile. SMC is the single required entry engine;
+      # Price Action remains available for telemetry and fresh-trigger checks,
+      # but it is not a second confirmation requirement.
       - key: MIN_CONFIRMATIONS
-        value: "2"
+        value: "1"
       - key: REQUIRE_PRICE_ACTION
-        value: "true"
+        value: "false"
       - key: REQUIRE_SMC_CONFIRMATION
         value: "true"
+      - key: RANGE_REQUIRE_PRICE_ACTION
+        value: "false"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
         value: "false"
       - key: CONF_HARD_MIN

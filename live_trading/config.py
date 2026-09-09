@@ -215,10 +215,11 @@ TIMEFRAME     = _one_minute_timeframe("TIMEFRAME")
 CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 
 # ── Risk & Trade Rules ───────────────────────────────────────────────────────
-# Locked one-minute production profile. Smart Money and Price Action are
-# fail-closed mandatory gates; disabling either one aborts startup.
-# MIN_CONFIRMATIONS is kept at two or higher so the dual-engine contract cannot
-# be weakened by a Render environment drift.
+# Locked one-minute production profile. Smart Money Concepts (SMC) remains the
+# primary entry engine; other signals may still act as independent safety
+# gates, but the deployment can explicitly run with one required confirmation.
+# MIN_CONFIRMATIONS is bounded at one so a single-engine profile can be
+# configured without weakening the default two-confirmation profile.
 # CONF_HARD_MIN: trades below this confidence % are always rejected.
 RISK_PERCENT      = _float("RISK_PERCENT",      1.0,  lo=0.01, hi=10.0)
 # Account-level stop exposure cap. This includes already-open positions and
@@ -231,12 +232,13 @@ MAX_TOTAL_RISK_PCT = _float("MAX_TOTAL_RISK_PCT", 3.0, lo=0.1, hi=50.0)
 FAST_SCALP_MODE = os.getenv("FAST_SCALP_MODE", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
-# Normal mode requires two aligned confirmations. Fast mode is opt-in and
-# defaults to one so the Render profile can reproduce the former cadence.
-MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS", 2, lo=2, hi=10)
-# Price Action is mandatory for every entry in this profile.
+# Normal mode requires two aligned confirmations. Fast single-engine mode is
+# opt-in through the Render environment and may use one SMC confirmation.
+MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS", 2, lo=1, hi=10)
+# Price Action is optional; the SMC-only deployment disables it as an entry
+# requirement while preserving the closed-candle trigger and risk gates.
 REQUIRE_PRICE_ACTION = _bool_env("REQUIRE_PRICE_ACTION", "false")
-# Smart Money (SMC) is mandatory for every entry in this profile.
+# Smart Money (SMC) is the primary engine when this is enabled.
 REQUIRE_SMC_CONFIRMATION = _bool_env("REQUIRE_SMC_CONFIRMATION", "false")
 REQUIRE_SMC_OR_PA_TRIGGER = _bool_env("REQUIRE_SMC_OR_PA_TRIGGER", "true")
 BLOCK_RANGE_ENTRIES = _bool_env("BLOCK_RANGE_ENTRIES", "true")

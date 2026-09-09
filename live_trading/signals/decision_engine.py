@@ -805,8 +805,8 @@ def run_decision_engine(
 
     # HTF continuation can affect directional handling, but it must not
     # silently change the configured confirmation policy. Normal mode keeps
-    # the two-engine floor; FAST_SCALP_MODE is an explicit compatibility
-    # override for the former rapid-scalp profile.
+    # the two-engine floor; the explicit fast-scalp deployment may configure
+    # one required SMC confirmation.
     confirmation_floor = 1 if FAST_SCALP_MODE else 2
     effective_min_confirmations = (
         RANGE_MIN_CONFIRMATIONS if range_mode
@@ -814,7 +814,8 @@ def run_decision_engine(
     )
 
     # Entry filter — every aligned directional engine contributes one vote.
-    # The configured minimum is therefore a true two-engine requirement.
+    # The configured minimum is one for the explicit SMC-only deployment and
+    # remains two by default.
     ef = apply_entry_filter(
         smc_signal      = smc.smc_signal,
         ema_trend       = trend.trend,
