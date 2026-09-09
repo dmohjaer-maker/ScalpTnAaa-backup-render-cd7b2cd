@@ -76,8 +76,8 @@ services:
       # FIX: TIMEFRAME and CANDLE_WINDOW are now env-configurable (fix #4).
       # Primary execution timeframe for short-term XAUUSD scalps.
       - key: TIMEFRAME
-        value: "1m"
-      # 300 candles gives the 1m scalping indicators a focused context.
+        value: "5m"
+      # 300 candles gives the fast scalp indicators a focused context.
       - key: CANDLE_WINDOW
         value: "300"
       # Option 4: old BOS/CHoCH events cannot authorize live entries.
@@ -109,10 +109,9 @@ services:
         value: "false"
       - key: MTF_REQUIRE_ALIGNMENT
         value: "false"
-      # Keep the higher-timeframe context on the same 1m cadence as the
-      # primary execution engine.
+      # 15m directional context for the fast 5m execution path.
       - key: MTF_TIMEFRAME
-        value: "1m"
+        value: "M15"
       - key: MTF_CANDLE_WINDOW
         value: "300"
       - key: ENTRY_TRIGGER_MAX_AGE_BARS
@@ -204,9 +203,9 @@ services:
         value: "1.0"
       # TRADE_TIMEFRAMES / QUALITY_ADX_MIN are read by the live engine and
       # were set on the live service but missing from this manifest.
-      # All signal scans use the same one-minute cadence.
+      # M1 gives the rapid cadence; M5 provides the higher-quality setup path.
       - key: TRADE_TIMEFRAMES
-        value: "1m"
+        value: "M1,M5"
       - key: QUALITY_ADX_MIN
         value: "12"
       # External market filters: high-impact USD news blackout and DXY

@@ -133,49 +133,10 @@ def _timeframe(name: str, default: str) -> str:
     return val
 
 
-def _one_minute_timeframe(name: str) -> str:
-    """Return the canonical one-minute timeframe or fail closed."""
-    value = os.getenv(name, "1m").strip()
-    if value != "1m":
-        print(
-            f"ERROR: {name} must be exactly '1m' for the locked one-minute profile; "
-            f"received {value!r}. Fix it in the Render dashboard and redeploy.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return "1m"
-
-
 def _bool_env(name: str, default: str) -> bool:
     return os.getenv(name, default).strip().lower() in {
         "1", "true", "yes", "on",
     }
-
-
-def _required_true(name: str) -> bool:
-    """Read a safety-critical switch and reject attempts to disable it."""
-    value = os.getenv(name, "true").strip().lower()
-    if value not in {"1", "true", "yes", "on"}:
-        print(
-            f"ERROR: {name} is mandatory for the locked one-minute profile and "
-            f"cannot be disabled; received {value!r}.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return True
-
-
-def _one_minute_trade_timeframes(name: str) -> list[str]:
-    """Require exactly one canonical entry timeframe: 1m."""
-    value = os.getenv(name, "1m").strip()
-    if value != "1m":
-        print(
-            f"ERROR: {name} must be exactly '1m' for the locked one-minute profile; "
-            f"received {value!r}. Fix it in the Render dashboard and redeploy.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return ["1m"]
 
 
 # ── MT5 bridge URL ────────────────────────────────────────────────────────────
@@ -211,13 +172,13 @@ def _symbols() -> list[str]:
 
 SYMBOL        = os.getenv("SYMBOL", "XAUUSD").strip().upper() or "XAUUSD"
 SYMBOLS       = _symbols()
-TIMEFRAME     = _one_minute_timeframe("TIMEFRAME")
+TIMEFRAME     = _timeframe("TIMEFRAME", "5m")
 CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 
 # ── Risk & Trade Rules ───────────────────────────────────────────────────────
-# Locked one-minute production profile. Smart Money Concepts (SMC) remains the
-# primary entry engine; other signals may still act as independent safety
-# gates, but the deployment can explicitly run with one required confirmation.
+# Fast-scalp production profile. The active entry cadence is selected by
+# TRADE_TIMEFRAMES so the deployment can combine responsive M1 scans with the
+# more stable M5 setup path that historically produced the working signals.
 # MIN_CONFIRMATIONS is bounded at one so a single-engine profile can be
 # configured without weakening the default two-confirmation profile.
 # CONF_HARD_MIN: trades below this confidence % are always rejected.
@@ -266,9 +227,9 @@ QUALITY_ADX_MIN   = _float("QUALITY_ADX_MIN",    15.0, lo=5.0,  hi=40.0)
 # the default 24 closed bars keeps BOS/CHoCH actionable for about two hours.
 STRUCTURE_MAX_AGE_BARS = _int("STRUCTURE_MAX_AGE_BARS", 24, lo=3, hi=100)
 # Strict mode keeps the newest precision gates available without forcing them
-# on normal operation. Flexible mode still requires a valid live quote and
-# preserves all risk, position-limit, and execution protections.
-STRICT_ENTRY_MODE = _required_true("STRICT_ENTRY_MODE")
+# on the flexible fast-scalp deployment. Flexible mode still requires a valid
+# live quote and preserves all risk, position-limit, and execution protections.
+STRICT_ENTRY_MODE = _bool_env("STRICT_ENTRY_MODE", "false")
 # Aggressive mode relaxes signal-quality vetoes while preserving all monetary
 # protections: risk sizing, stop loss, position limits, spread/slippage checks,
 # and the Risk Guardian remain mandatory.
@@ -302,7 +263,7 @@ USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() 
 #                     Supported: M1 M5 M15 M30 H1 H4 D1 (same set as TIMEFRAME).
 # MTF_CANDLE_WINDOW : number of HTF bars to fetch (needs ≥ 210 for EMA-200).
 #                     300 gives a comfortable margin without excessive latency.
-MTF_ENABLED       = _required_true("MTF_ENABLED")
+MTF_ENABLED       = _bool_env("MTF_ENABLED", "true")
 # Strict mode can require a directional higher-timeframe bias. Even in
 # flexible mode, a known opposing HTF bias is always blocked.
 MTF_REQUIRE_ALIGNMENT = _bool_env("MTF_REQUIRE_ALIGNMENT", "false")
@@ -315,14 +276,12 @@ MTF_CANDLE_WINDOW = _int("MTF_CANDLE_WINDOW",    300, lo=50, hi=1000)
 # so M20 and M15 signals take priority over M10 and M5 when bars close
 # simultaneously (e.g. at minute :20 all four TFs close at once).
 #
-# The H1 HTF bias filter (MTF_TIMEFRAME above) is separate — it is always
-# computed on H1 regardless of which trade TFs are active, because H1
-# represents the directional context for the whole session.
+# The HTF bias filter (MTF_TIMEFRAME above) is separate from the entry
+# timeframes. It is only fetched when MTF_ENABLED is true.
 #
-# Primary and entry timeframe: "5m" (single active entry timeframe)
+# Fast profile default: evaluate M5 before M1 when both boundaries close.
 # Higher-timeframe context remains separate under MTF_TIMEFRAME.
-# No 1m entry timeframe is enabled.
-TRADE_TIMEFRAMES  = _one_minute_trade_timeframes("TRADE_TIMEFRAMES")
+TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M1,M5")
 
 
 
