@@ -196,6 +196,12 @@ MIN_CONFIRMATIONS = _int(
 REQUIRE_PRICE_ACTION = os.getenv("REQUIRE_PRICE_ACTION", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
+# Require an aligned Smart Money (SMC) vote in addition to any other
+# configured confirmation gates. Used with REQUIRE_PRICE_ACTION when both
+# SMC and Price Action must authorize an entry together.
+REQUIRE_SMC_CONFIRMATION = os.getenv("REQUIRE_SMC_CONFIRMATION", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 # Deprecated compatibility flag. SMC is not required to be directional, but
 # an opposing SMC context is always rejected by the global trend guard. The
 # decision engine keeps this flag for callers that still provide the old

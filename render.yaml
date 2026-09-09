@@ -76,7 +76,7 @@ services:
       # FIX: TIMEFRAME and CANDLE_WINDOW are now env-configurable (fix #4).
       # Primary execution timeframe for short-term XAUUSD scalps.
       - key: TIMEFRAME
-        value: "5m"
+        value: "1m"
       # 300 candles gives the 5m scalping indicators a focused context.
       - key: CANDLE_WINDOW
         value: "300"
@@ -163,9 +163,11 @@ services:
       # matched the dashboard-configured production values below -- a fresh
       # deploy from the old file would NOT have reproduced current behavior.
       - key: MIN_CONFIRMATIONS
-        value: "1"
+        value: "2"
       - key: REQUIRE_PRICE_ACTION
-        value: "false"
+        value: "true"
+      - key: REQUIRE_SMC_CONFIRMATION
+        value: "true"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
         value: "false"
       - key: CONF_HARD_MIN
@@ -206,7 +208,7 @@ services:
       # M1 gives the former rapid cadence; M5 remains as a slower confirmation
       # opportunity when both boundaries close together.
       - key: TRADE_TIMEFRAMES
-        value: "5m"
+        value: "1m"
       - key: QUALITY_ADX_MIN
         value: "12"
       # External market filters: high-impact USD news blackout and DXY

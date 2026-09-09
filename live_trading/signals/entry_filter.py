@@ -29,6 +29,7 @@ def apply_entry_filter(
     wyckoff_signal: str,
     min_confirmations: int = MIN_CONFIRMATIONS,
     require_price_action: bool = False,
+    require_smc_confirmation: bool = False,
     require_smc_price_action_wyckoff: bool = False,
     require_trend_alignment: bool = True,
     candidate_direction: str | None = None,
@@ -71,6 +72,8 @@ def apply_entry_filter(
     else:
         allowed = count >= min_confirmations and (
             not require_price_action or pa_ok
+        ) and (
+            not require_smc_confirmation or smc_ok
         )
 
     return EntryFilterResult(
