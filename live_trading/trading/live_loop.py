@@ -46,6 +46,7 @@ from live_trading.config import (
     MAX_ENTRY_DRIFT_ATR, MAX_SPREAD_ATR, STRICT_ENTRY_MODE,
     MAX_TOTAL_RISK_PCT,
     ALLOW_COUNTER_TREND_TRADES,
+    FAST_SCALP_MODE,
 )
 from live_trading.logger import get_logger
 from live_trading.signals.gold_engine import calc_atr
@@ -1966,7 +1967,10 @@ class GoldScalperLive:
                 _g = globals()
                 try:
                     if "min_confirmations" in payload:
-                        v = max(2, int(float(payload["min_confirmations"])))
+                        v = max(
+                            1 if FAST_SCALP_MODE else 2,
+                            int(float(payload["min_confirmations"])),
+                        )
                         _live_cfg.MIN_CONFIRMATIONS = v; _g["MIN_CONFIRMATIONS"] = v
                     log.info(f"🔧 Strategy config updated via Telegram: {payload}")
                 except Exception as _upd_err:
