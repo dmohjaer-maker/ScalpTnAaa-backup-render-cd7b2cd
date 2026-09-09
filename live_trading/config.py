@@ -146,6 +146,12 @@ def _one_minute_timeframe(name: str) -> str:
     return "1m"
 
 
+def _bool_env(name: str, default: str) -> bool:
+    return os.getenv(name, default).strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def _required_true(name: str) -> bool:
     """Read a safety-critical switch and reject attempts to disable it."""
     value = os.getenv(name, "true").strip().lower()
@@ -229,9 +235,11 @@ FAST_SCALP_MODE = os.getenv("FAST_SCALP_MODE", "false").strip().lower() in {
 # defaults to one so the Render profile can reproduce the former cadence.
 MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS", 2, lo=2, hi=10)
 # Price Action is mandatory for every entry in this profile.
-REQUIRE_PRICE_ACTION = _required_true("REQUIRE_PRICE_ACTION")
+REQUIRE_PRICE_ACTION = _bool_env("REQUIRE_PRICE_ACTION", "false")
 # Smart Money (SMC) is mandatory for every entry in this profile.
-REQUIRE_SMC_CONFIRMATION = _required_true("REQUIRE_SMC_CONFIRMATION")
+REQUIRE_SMC_CONFIRMATION = _bool_env("REQUIRE_SMC_CONFIRMATION", "false")
+REQUIRE_SMC_OR_PA_TRIGGER = _bool_env("REQUIRE_SMC_OR_PA_TRIGGER", "true")
+BLOCK_RANGE_ENTRIES = _bool_env("BLOCK_RANGE_ENTRIES", "true")
 # Deprecated compatibility flag. SMC is not required to be directional, but
 # an opposing SMC context is always rejected by the global trend guard. The
 # decision engine keeps this flag for callers that still provide the old
@@ -293,7 +301,7 @@ MTF_ENABLED       = _required_true("MTF_ENABLED")
 # Strict mode can require a directional higher-timeframe bias. Even in
 # flexible mode, a known opposing HTF bias is always blocked.
 MTF_REQUIRE_ALIGNMENT = _required_true("MTF_REQUIRE_ALIGNMENT")
-MTF_TIMEFRAME     = _one_minute_timeframe("MTF_TIMEFRAME")
+MTF_TIMEFRAME     = _timeframe("MTF_TIMEFRAME", "5m")
 MTF_CANDLE_WINDOW = _int("MTF_CANDLE_WINDOW",    300, lo=50, hi=1000)
 
 # ── Trade Timeframes (Multi-Timeframe entry) ─────────────────────────────────
