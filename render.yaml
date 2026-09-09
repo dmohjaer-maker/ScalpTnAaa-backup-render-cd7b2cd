@@ -163,7 +163,7 @@ services:
       - key: REQUIRE_PRICE_ACTION
         value: "false"
       - key: REQUIRE_SMC_CONFIRMATION
-        value: "true"
+        value: "false"
       - key: RANGE_REQUIRE_PRICE_ACTION
         value: "false"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
