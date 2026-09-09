@@ -30,6 +30,7 @@ from live_trading.risk.capital_manager import (
 from live_trading.config import (
     CONF_HARD_MIN,
     REQUIRE_SMC_CONFIRMATION,
+    REQUIRE_SMC_OR_PA_TRIGGER,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
     ENTRY_TRIGGER_MAX_AGE_BARS,
     STRICT_ENTRY_MODE,
@@ -699,6 +700,7 @@ def run_decision_engine(
     dxy_signal:        str   = "NEUTRAL",
     require_price_action: bool = False,
     require_smc_confirmation: bool = REQUIRE_SMC_CONFIRMATION,
+    require_smc_or_pa_trigger: bool = REQUIRE_SMC_OR_PA_TRIGGER,
     require_smc_price_action_wyckoff: bool = REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
     entry_price_override: Optional[float] = None,
     spread: float = 0.0,
@@ -773,6 +775,13 @@ def run_decision_engine(
     # volatile markets: two confirmations remain sufficient.
     regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
 
+    if BLOCK_RANGE_ENTRIES and regime.regime == "RANGE":
+        range_reason = "Regime filter: RANGE market — scalp entry blocked"
+        return _make_neutral(
+            smc, wyckoff, pa, trend, [range_reason], [range_reason],
+            dxy_signal=dxy_signal,
+        )
+
     # DXY is an active hard directional veto for dollar-sensitive pairs. The
     # feed fails open to NEUTRAL, so an outage never blocks trading; only a
     # confirmed opposing dollar trend blocks the candidate direction.
@@ -808,6 +817,7 @@ def run_decision_engine(
         min_confirmations = effective_min_confirmations,
         require_price_action = require_price_action,
         require_smc_confirmation = require_smc_confirmation,
+        require_smc_or_pa_trigger = require_smc_or_pa_trigger,
         require_smc_price_action_wyckoff = require_smc_price_action_wyckoff,
         require_trend_alignment=(
             not ALLOW_COUNTER_TREND_TRADES and not htf_continuation
@@ -828,6 +838,9 @@ def run_decision_engine(
                 "(SMC is optional when neutral) — "
                 f"{votes}  [regime={regime.regime}]"
             )
+        elif require_smc_or_pa_trigger and not (ef.smc or ef.price_action):
+            reason = (f"Entry filter: SMC or Price Action trigger required — "
+                      f"{votes}  [regime={regime.regime}]")
         elif require_smc_confirmation and not (ef.smc and ef.price_action):
             reason = (f"Entry filter: Smart Money + Price Action confirmations required — "
                       f"{votes}  [regime={regime.regime}]")
