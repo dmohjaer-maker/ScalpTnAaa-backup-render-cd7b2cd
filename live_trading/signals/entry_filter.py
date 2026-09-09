@@ -30,6 +30,7 @@ def apply_entry_filter(
     min_confirmations: int = MIN_CONFIRMATIONS,
     require_price_action: bool = False,
     require_smc_confirmation: bool = False,
+    require_smc_or_pa_trigger: bool = False,
     require_smc_price_action_wyckoff: bool = False,
     require_trend_alignment: bool = True,
     candidate_direction: str | None = None,
@@ -70,7 +71,14 @@ def apply_entry_filter(
         # Price Action + Wyckoff requirement when callers enable this flag.
         allowed = pa_ok and wyc_ok
     else:
+        no_opposing_trigger = not (
+            (smc_signal in {"BUY", "SELL"} and not smc_ok)
+            or (pa_signal in {"BUY", "SELL"} and not pa_ok)
+        )
+        trigger_ok = smc_ok or pa_ok
         allowed = count >= min_confirmations and (
+            not require_smc_or_pa_trigger or (trigger_ok and no_opposing_trigger)
+        ) and (
             not require_price_action or pa_ok
         ) and (
             not require_smc_confirmation or smc_ok
