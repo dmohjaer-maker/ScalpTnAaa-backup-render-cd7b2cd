@@ -26,9 +26,10 @@ def _bounded_env_float(name: str, default: float, lo: float, hi: float) -> float
 
 
 # Initial SL envelope. These remain Render-configurable using the existing
-# names so deployment settings stay backward compatible. The effective floor
-# is intentionally hard-clamped: an old Render value cannot recreate the
-# tiny stops that this manager is responsible for preventing.
+# names so deployment settings stay backward compatible. Normal mode keeps a
+# wide protection floor; FAST_SCALP_MODE opts into a bounded, shorter envelope
+# suitable for small gold scalp targets without permitting fragile sub-ATR
+# stops.
 ATR_BUFFER_MULT = _bounded_env_float("SL_ATR_BUFFER_MULT", 0.15, 0.10, 0.75)
 _configured_min_sl_atr_mult = _bounded_env_float(
     "SL_MIN_ATR_MULT", 1.80, 0.50, 4.00
@@ -36,10 +37,18 @@ _configured_min_sl_atr_mult = _bounded_env_float(
 _configured_max_sl_atr_mult = _bounded_env_float(
     "SL_MAX_ATR_MULT", 3.50, 1.00, 6.00
 )
-# 1.80 ATR is the non-negotiable protection floor for XAUUSD scalps. Keeping
-# the environment range backward-compatible lets an existing Render service
-# boot while still making its legacy 0.55 value harmless.
-HARD_MIN_SL_ATR_MULT = 1.80
+# The fast profile is still bounded at 0.75 ATR; normal mode retains the
+# previous 1.80 ATR floor. This is deliberately not a freely disable-able
+# safety switch.
+_fast_scalp = os.getenv("FAST_SCALP_MODE", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+HARD_MIN_SL_ATR_MULT = _bounded_env_float(
+    "HARD_MIN_SL_ATR_MULT",
+    0.75 if _fast_scalp else 1.80,
+    0.75,
+    4.00,
+)
 MIN_SL_ATR_MULT = max(_configured_min_sl_atr_mult, HARD_MIN_SL_ATR_MULT)
 MAX_SL_ATR_MULT = max(_configured_max_sl_atr_mult, MIN_SL_ATR_MULT)
 if MIN_SL_ATR_MULT > MAX_SL_ATR_MULT:
@@ -48,10 +57,14 @@ if MIN_SL_ATR_MULT > MAX_SL_ATR_MULT:
 # Optional advanced sizing knobs.  They have safe defaults and do not require
 # any Render environment change.
 SPREAD_BUFFER_MULT = _bounded_env_float("SL_SPREAD_BUFFER_MULT", 1.50, 0.50, 6.00)
-# Use the nearest valid structural target. A 1.2R floor protects
-# execution quality while the 1.8R cap prevents oversized scalp targets.
-# Every new trade must target at least 2R: risk 1 unit to seek 2 units.
-REQUIRED_ENTRY_RR = 2.0
+# Use the nearest valid structural target. Normal mode keeps the previous 2R
+# minimum; the explicit fast profile allows the small-target 1.2R policy.
+REQUIRED_ENTRY_RR = _bounded_env_float(
+    "REQUIRED_ENTRY_RR",
+    1.2 if _fast_scalp else 2.0,
+    1.0,
+    4.0,
+)
 FIXED_TP_RR = _bounded_env_float("TP_RR", 1.2, 0.80, 6.00)
 TP_MIN_RR = _bounded_env_float("TP_MIN_RR", 1.2, 0.80, 4.00)
 TP_MAX_RR = _bounded_env_float("TP_MAX_RR", 1.80, 1.00, 8.00)
