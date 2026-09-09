@@ -28,7 +28,7 @@ export METAAPI_ACCOUNT_ID="your-account-id-here"
 # Optional overrides
 export SYMBOL=XAUUSD
 export RISK_PERCENT=1.0
-export MIN_CONFIRMATIONS=3
+export MIN_CONFIRMATIONS=2
 
 # Risk Guardian — circuit breakers (strongly recommended for live accounts)
 export DAILY_LOSS_LIMIT_PCT=3.0   # halt if day PnL drops below -3% of balance
@@ -118,7 +118,7 @@ candles (300 M5 bars)
 | Take profit | 2R | capitalManager.ts |
 | Initial stop | 1.80R–3.50R of live ATR, structure-aware | capital_manager.py |
 | Trailing protection | activates at 0.90R; ATR/spread-aware high-water ratchet | trailing_stop.py |
-| Min confirmations | 3-of-4 | entryFilter.ts |
+| Min confirmations | 2-of-4 | entryFilter.ts |
 | SMC swing lookback | 5 bars | smcEngine.ts |
 | ATR period | 14 (Wilder) | goldEngine.ts |
 
