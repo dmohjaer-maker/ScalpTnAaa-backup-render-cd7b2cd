@@ -32,6 +32,7 @@ from live_trading.config import (
     REQUIRE_SMC_CONFIRMATION,
     REQUIRE_SMC_OR_PA_TRIGGER,
     BLOCK_RANGE_ENTRIES,
+    RANGE_SCALP_MODE, RANGE_MIN_CONFIRMATIONS, RANGE_REQUIRE_PRICE_ACTION,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
     ENTRY_TRIGGER_MAX_AGE_BARS,
     STRICT_ENTRY_MODE,
@@ -741,10 +742,13 @@ def run_decision_engine(
         smc=smc,
         pa=pa,
     )
+    regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
+    range_mode = RANGE_SCALP_MODE and regime.regime == "RANGE"
     if (
         trend_dir != candidate
         and not ALLOW_COUNTER_TREND_TRADES
         and not htf_continuation
+        and not range_mode
     ):
         trend_reason = (
             f"Trend filter: {candidate} conflicts with EMA trend "
@@ -757,7 +761,7 @@ def run_decision_engine(
     # SMC is a hard directional veto. It remains optional when neutral, but a
     # confirmed opposing structure or composite signal is never allowed to
     # authorize a counter-trend entry.
-    if not ALLOW_COUNTER_TREND_TRADES:
+    if not ALLOW_COUNTER_TREND_TRADES and not range_mode:
         _alignment_ok, _alignment_reason = validate_directional_alignment(
             candidate,
             local_trend=trend.trend,
@@ -774,9 +778,7 @@ def run_decision_engine(
     # Detect regime for telemetry and downstream regime-specific rules. The
     # configured minimum confirmation count is not increased for range or
     # volatile markets: two confirmations remain sufficient.
-    regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
-
-    if BLOCK_RANGE_ENTRIES and regime.regime == "RANGE":
+    if BLOCK_RANGE_ENTRIES and regime.regime == "RANGE" and not range_mode:
         range_reason = "Regime filter: RANGE market — scalp entry blocked"
         return _make_neutral(
             smc, wyckoff, pa, trend, [range_reason], [range_reason],
@@ -806,7 +808,10 @@ def run_decision_engine(
     # the two-engine floor; FAST_SCALP_MODE is an explicit compatibility
     # override for the former rapid-scalp profile.
     confirmation_floor = 1 if FAST_SCALP_MODE else 2
-    effective_min_confirmations = max(confirmation_floor, min_confirmations)
+    effective_min_confirmations = (
+        RANGE_MIN_CONFIRMATIONS if range_mode
+        else max(confirmation_floor, min_confirmations)
+    )
 
     # Entry filter — every aligned directional engine contributes one vote.
     # The configured minimum is therefore a true two-engine requirement.
@@ -816,12 +821,17 @@ def run_decision_engine(
         pa_signal       = pa.pa_signal,
         wyckoff_signal  = wyckoff.wyckoff_signal,
         min_confirmations = effective_min_confirmations,
-        require_price_action = require_price_action,
+        require_price_action = (
+            require_price_action
+            or (range_mode and RANGE_REQUIRE_PRICE_ACTION)
+        ),
         require_smc_confirmation = require_smc_confirmation,
         require_smc_or_pa_trigger = require_smc_or_pa_trigger,
         require_smc_price_action_wyckoff = require_smc_price_action_wyckoff,
         require_trend_alignment=(
-            not ALLOW_COUNTER_TREND_TRADES and not htf_continuation
+            not ALLOW_COUNTER_TREND_TRADES
+            and not htf_continuation
+            and not range_mode
         ),
         candidate_direction = candidate,
     )
