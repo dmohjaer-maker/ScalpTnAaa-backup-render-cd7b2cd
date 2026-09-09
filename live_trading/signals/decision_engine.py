@@ -692,7 +692,7 @@ def run_decision_engine(
     candles:           List[OHLCV],
     account_balance:   float,
     risk_percent:      float = 1.0,
-    min_confirmations: int   = 1,
+    min_confirmations: int   = 2,
     use_atr_high_vol:  bool  = False,
     dxy_signal:        str   = "NEUTRAL",
     require_price_action: bool = False,
@@ -788,16 +788,13 @@ def run_decision_engine(
             dxy_signal=dxy_signal,
         )
 
-    # Strong/moderate HTF continuation setups may use one local confirmation
-    # while the local EMA is neutral.  This fixes the over-filtering caused by
-    # requiring the local EMA and a second vote during an ordinary pullback.
-    # All other setups keep the configured confirmation threshold.
-    effective_min_confirmations = (
-        1 if htf_continuation else min_confirmations
-    )
+    # HTF continuation can affect directional handling, but it must never
+    # bypass the two-engine entry requirement. Clamp the effective threshold
+    # so no caller or runtime override can authorize a one-vote entry.
+    effective_min_confirmations = max(2, min_confirmations)
 
-    # Entry filter — minimum confirmation gate. SMC contributes only when it
-    # agrees; it is not required and cannot veto the non-SMC setup.
+    # Entry filter — every aligned directional engine contributes one vote.
+    # The configured minimum is therefore a true two-engine requirement.
     ef = apply_entry_filter(
         smc_signal      = smc.smc_signal,
         ema_trend       = trend.trend,
