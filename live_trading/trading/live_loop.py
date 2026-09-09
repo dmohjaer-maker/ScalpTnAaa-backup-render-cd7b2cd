@@ -33,7 +33,7 @@ from live_trading.config import (
     MAX_OPEN_TRADES, COMMENT,
     BAR_CHECK_INTERVAL, RECONNECT_DELAY, SYNC_TIMEOUT,
     MIN_CONFIRMATIONS, REQUIRE_PRICE_ACTION, REQUIRE_SMC_CONFIRMATION,
-    REQUIRE_SMC_OR_PA_TRIGGER, BLOCK_RANGE_ENTRIES,
+    REQUIRE_SMC_OR_PA_TRIGGER, BLOCK_RANGE_ENTRIES, RANGE_SCALP_MODE,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF, USE_ATR_HIGH_VOL_FILTER,
     DAILY_LOSS_LIMIT_PCT, MAX_DRAWDOWN_PCT, SLIPPAGE_POINTS,
     STATE_FILE, GUARDIAN_STATE_FILE,
@@ -1405,7 +1405,10 @@ class GoldScalperLive:
 
         # Optional directional veto: all quote, protection, risk, position,
         # news, and guardian checks above remain active regardless of this flag.
-        if not ALLOW_COUNTER_TREND_TRADES:
+        if (
+            not ALLOW_COUNTER_TREND_TRADES
+            and not (RANGE_SCALP_MODE and decision.regime == "RANGE")
+        ):
             _direction_ok, _direction_reason = validate_directional_alignment(
                 decision.direction,
                 local_trend=decision.trend.trend,
