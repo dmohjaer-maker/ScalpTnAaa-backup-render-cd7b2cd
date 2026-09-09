@@ -1,15 +1,14 @@
 """
-Entry Filter — Minimum confirmation gate with advisory SMC context.
+Entry Filter — Minimum confirmation gate across directional engines.
 
-SMC is intentionally a soft confirmation: an aligned SMC signal strengthens a
-setup, but a neutral/missing SMC signal must not veto an otherwise-confirmed
-trade. Trend alignment is a hard safety gate only when the caller requests
-it; flexible mode can use two non-trend confirmations while EMA is neutral.
+SMC, EMA Trend, Price Action, and Wyckoff each provide one directional vote.
+A trade requires the configured minimum number of aligned engine votes; in
+production that minimum is two. Other safety gates remain independent.
 """
 from dataclasses import dataclass
 from typing import Literal
 
-MIN_CONFIRMATIONS = 1
+MIN_CONFIRMATIONS = 2
 
 
 @dataclass
@@ -58,17 +57,16 @@ def apply_entry_filter(
     pa_ok    = pa_signal      == direction
     wyc_ok   = wyckoff_signal == direction
 
-    # Only SMC, EMA Trend, and Price Action may authorize an entry alone.
-    # Wyckoff remains an additional confidence signal, never a standalone gate.
-    count = sum([smc_ok, trend_ok, pa_ok])
-    # When requested, trend alignment remains a hard safety rule. Flexible mode
-    # deliberately leaves this false so two independent non-trend confirmations
-    # can authorize a setup while EMA is neutral.
+    # Every directional engine contributes one vote. With the production
+    # minimum of two, no single engine can authorize an entry by itself.
+    count = sum([smc_ok, trend_ok, pa_ok, wyc_ok])
+    # When requested, trend alignment remains a separate hard safety rule.
+    # When disabled, any two aligned engine votes can authorize the setup.
     if require_trend_alignment and not trend_ok:
         allowed = False
     elif require_smc_price_action_wyckoff:
-        # Backward-compatible option name. SMC is optional when neutral; this
-        # legacy strict mode requires the two non-SMC confirmations.
+        # Backward-compatible option name. Preserve its explicit legacy
+        # Price Action + Wyckoff requirement when callers enable this flag.
         allowed = pa_ok and wyc_ok
     else:
         allowed = count >= min_confirmations and (
