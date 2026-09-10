@@ -80,9 +80,10 @@ async def _get_events() -> List[dict]:
             # cache while preventing a feed outage from causing a network
             # request on every trading bar.
             _cache_expires = now + timedelta(seconds=_CACHE_TTL_S)
-            if fresh:  # only overwrite on success
-                _cache_events  = fresh
-                log.info(f"[news_filter] Calendar refreshed — {len(fresh)} events this week")
+            # An empty successful feed must clear the old cache too; otherwise
+            # a previous event can keep the robot in a stale blackout window.
+            _cache_events = fresh
+            log.info(f"[news_filter] Calendar refreshed — {len(fresh)} events this week")
     return _cache_events
 
 
@@ -102,6 +103,16 @@ def _parse_event_utc(ev: dict) -> Optional[datetime]:
     time_str = (ev.get("time") or "").strip()
     if not date_str:
         return None
+    # ForexFactory currently returns ISO-8601 timestamps in the date field
+    # (for example, 2026-09-10T08:30:00-04:00).  Keep support for the older
+    # date + time fields as a compatibility fallback.
+    if "T" in date_str:
+        try:
+            parsed = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
     fmts = (
         ("%Y-%m-%d %I:%M%p", f"{date_str} {time_str}"),  # "2024-01-12 08:30am"
         ("%Y-%m-%d %H:%M",   f"{date_str} {time_str}"),  # "2024-01-12 08:30"
