@@ -91,13 +91,13 @@ services:
         value: "true"
       # Quality-first execution: enforce spread/drift limits before an order.
       - key: STRICT_ENTRY_MODE
-        value: "true"
+        value: "false"
       # Reject counter-trend setups; the fast profile still evaluates both
       # M1 and M5 but only trades aligned directional conditions.
       - key: AGGRESSIVE_ENTRY_MODE
-        value: "false"
+        value: "true"
       - key: ALLOW_COUNTER_TREND_TRADES
-        value: "false"
+        value: "true"
       # The former rapid profile did not require a second timeframe fetch on
       # every entry. The local M1/M5 signals remain fully active.
       - key: MTF_ENABLED
@@ -110,11 +110,11 @@ services:
       - key: MTF_CANDLE_WINDOW
         value: "300"
       - key: ENTRY_TRIGGER_MAX_AGE_BARS
-        value: "1"
+        value: "2"
       - key: MAX_ENTRY_DRIFT_ATR
-        value: "0.20"
+        value: "0.35"
       - key: MAX_SPREAD_ATR
-        value: "0.20"
+        value: "0.40"
       - key: RISK_PERCENT
         value: "3.0"
       - key: FIXED_LOT_SIZE
@@ -159,15 +159,15 @@ services:
       - key: REQUIRE_SMC_CONFIRMATION
         value: "true"
       - key: RANGE_SCALP_MODE
-        value: "false"
+        value: "true"
       - key: RANGE_MIN_CONFIRMATIONS
         value: "2"
       - key: RANGE_REQUIRE_PRICE_ACTION
-        value: "true"
+        value: "false"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
         value: "false"
       - key: CONF_HARD_MIN
-        value: "40"
+        value: "28"
       - key: DAILY_LOSS_LIMIT_PCT
         value: "5.0"
       - key: MAX_DRAWDOWN_PCT
@@ -205,7 +205,7 @@ services:
       - key: TRADE_TIMEFRAMES
         value: "M1,M5"
       - key: QUALITY_ADX_MIN
-        value: "15"
+        value: "12"
       # External market filters: high-impact USD news blackout and DXY
       # correlation data are evaluated on every bar (with module-level cache).
       - key: NEWS_BLOCK_BEFORE_MIN
