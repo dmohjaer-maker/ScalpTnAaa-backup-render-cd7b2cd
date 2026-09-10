@@ -97,8 +97,9 @@ services:
       # Require higher-timeframe context before a lower-timeframe breakout.
       - key: MTF_ENABLED
         value: "true"
+      # A neutral M15 bias may pass; an explicit opposing M15 bias still blocks.
       - key: MTF_REQUIRE_ALIGNMENT
-        value: "true"
+        value: "false"
       # 15m directional context for the fast 5m execution path.
       - key: MTF_TIMEFRAME
         value: "M15"
@@ -107,9 +108,9 @@ services:
       - key: ENTRY_TRIGGER_MAX_AGE_BARS
         value: "2"
       - key: MAX_ENTRY_DRIFT_ATR
-        value: "0.20"
+        value: "0.35"
       - key: MAX_SPREAD_ATR
-        value: "0.20"
+        value: "0.35"
       - key: RISK_PERCENT
         value: "1.0"
       - key: FIXED_LOT_SIZE
@@ -135,20 +136,21 @@ services:
         value: "1.50"
       - key: SL_SPREAD_BUFFER_MULT
         value: "1.50"
+      # Balanced breakout targets: accept valid structure from 1.2R upward.
       - key: TP_RR
-        value: "2.00"
+        value: "1.50"
       - key: TP_MIN_RR
-        value: "2.00"
+        value: "1.20"
       - key: TP_MAX_RR
         value: "2.00"
       - key: REQUIRED_ENTRY_RR
-        value: "2.00"
+        value: "1.20"
       - key: TP_APPROACH_ATR_MULT
         value: "0.15"
-      # A breakout must include Price Action confirmation plus one aligned
-      # independent engine; range scalps are disabled.
+      # A valid confirmed breakout is sufficient; Price Action remains mandatory
+      # and trend/SMC/MTF safety vetoes remain active. Range scalps stay disabled.
       - key: MIN_CONFIRMATIONS
-        value: "2"
+        value: "1"
       - key: REQUIRE_PRICE_ACTION
         value: "true"
       - key: REQUIRE_SMC_CONFIRMATION
@@ -198,7 +200,7 @@ services:
       - key: TRADE_TIMEFRAMES
         value: "M5"
       - key: QUALITY_ADX_MIN
-        value: "18"
+        value: "14"
       # External market filters: high-impact USD news blackout and DXY
       # correlation data are evaluated on every bar (with module-level cache).
       - key: NEWS_BLOCK_BEFORE_MIN
