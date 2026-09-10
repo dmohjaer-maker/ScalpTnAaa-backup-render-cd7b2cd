@@ -65,9 +65,15 @@ REQUIRED_ENTRY_RR = _bounded_env_float(
     1.0,
     4.0,
 )
-FIXED_TP_RR = _bounded_env_float("TP_RR", 1.2, 0.80, 6.00)
-TP_MIN_RR = _bounded_env_float("TP_MIN_RR", 1.2, 0.80, 4.00)
-TP_MAX_RR = _bounded_env_float("TP_MAX_RR", 1.80, 1.00, 8.00)
+FIXED_TP_RR = _bounded_env_float(
+    "TP_RR", 1.2 if _fast_scalp else 2.0, 0.80, 6.00
+)
+TP_MIN_RR = _bounded_env_float(
+    "TP_MIN_RR", 1.2 if _fast_scalp else 2.0, 0.80, 4.00
+)
+TP_MAX_RR = _bounded_env_float(
+    "TP_MAX_RR", 1.80 if _fast_scalp else 2.0, 1.00, 8.00
+)
 TP_APPROACH_ATR_MULT = _bounded_env_float("TP_APPROACH_ATR_MULT", 0.15, 0.00, 1.00)
 if TP_MIN_RR > TP_MAX_RR:
     raise ValueError("TP_MIN_RR cannot exceed TP_MAX_RR")
