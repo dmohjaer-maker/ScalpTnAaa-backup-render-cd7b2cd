@@ -84,26 +84,21 @@ services:
       # On 5m, 24 bars keeps BOS/CHoCH actionable for roughly two hours.
       - key: STRUCTURE_MAX_AGE_BARS
         value: "24"
-      # Explicit compatibility profile for the former rapid XAUUSD scalp
-      # cadence. It lowers only the signal-density floor; all monetary and
-      # execution protections remain active in code.
+      # Professional breakout profile: require fresh, confirmed structure
+      # and never bypass follow-through, quality, or directional safety gates.
       - key: FAST_SCALP_MODE
-        value: "true"
-      # Quality-first execution: enforce spread/drift limits before an order.
+        value: "false"
       - key: STRICT_ENTRY_MODE
-        value: "false"
-      # Reject counter-trend setups; the fast profile still evaluates both
-      # M1 and M5 but only trades aligned directional conditions.
+        value: "true"
       - key: AGGRESSIVE_ENTRY_MODE
-        value: "true"
+        value: "false"
       - key: ALLOW_COUNTER_TREND_TRADES
-        value: "true"
-      # The former rapid profile did not require a second timeframe fetch on
-      # every entry. The local M1/M5 signals remain fully active.
+        value: "false"
+      # Require higher-timeframe context before a lower-timeframe breakout.
       - key: MTF_ENABLED
-        value: "false"
+        value: "true"
       - key: MTF_REQUIRE_ALIGNMENT
-        value: "false"
+        value: "true"
       # 15m directional context for the fast 5m execution path.
       - key: MTF_TIMEFRAME
         value: "M15"
@@ -112,23 +107,23 @@ services:
       - key: ENTRY_TRIGGER_MAX_AGE_BARS
         value: "2"
       - key: MAX_ENTRY_DRIFT_ATR
-        value: "0.35"
+        value: "0.20"
       - key: MAX_SPREAD_ATR
-        value: "0.40"
+        value: "0.20"
       - key: RISK_PERCENT
-        value: "3.0"
+        value: "1.0"
       - key: FIXED_LOT_SIZE
         value: "0.01"
       # Fail closed when the broker's 0.01 minimum lot would exceed the
       # configured single-trade risk budget.
       - key: MAX_SINGLE_TRADE_RISK_MULTIPLIER
         value: "1.00"
-      # Existing stop exposure plus a new trade may not exceed 3% of balance.
+      # Total open exposure is capped at 1% of balance.
       - key: MAX_TOTAL_RISK_PCT
-        value: "3.0"
-      # Up to five concurrent XAUUSD scalps are allowed; risk caps still apply.
+        value: "1.0"
+      # One position per symbol prevents stacking during a single breakout.
       - key: MAX_OPEN_TRADES
-        value: "5"
+        value: "1"
       # Bounded XAUUSD M5 initial-stop calibration: enough room for normal
       # candle noise, while preventing a distant historical swing from
       # creating an untradeable stop.
@@ -150,16 +145,16 @@ services:
         value: "1.20"
       - key: TP_APPROACH_ATR_MULT
         value: "0.15"
-      # Quality-first entry profile. A setup needs aligned SMC and Price Action
-      # confirmation; range-market scalps are disabled to avoid noise entries.
+      # A breakout must include Price Action confirmation plus one aligned
+      # independent engine; range scalps are disabled.
       - key: MIN_CONFIRMATIONS
         value: "2"
       - key: REQUIRE_PRICE_ACTION
-        value: "false"
+        value: "true"
       - key: REQUIRE_SMC_CONFIRMATION
         value: "false"
       - key: RANGE_SCALP_MODE
-        value: "true"
+        value: "false"
       - key: RANGE_MIN_CONFIRMATIONS
         value: "2"
       - key: RANGE_REQUIRE_PRICE_ACTION
@@ -169,9 +164,9 @@ services:
       - key: CONF_HARD_MIN
         value: "28"
       - key: DAILY_LOSS_LIMIT_PCT
-        value: "5.0"
+        value: "2.0"
       - key: MAX_DRAWDOWN_PCT
-        value: "12.0"
+        value: "6.0"
       - key: SLIPPAGE_POINTS
         value: "30"
       # Adaptive high-water trailing protection. These values are explicit in
@@ -199,13 +194,11 @@ services:
         value: "0.10"
       - key: TRAIL_CHECK_INTERVAL
         value: "1.0"
-      # TRADE_TIMEFRAMES / QUALITY_ADX_MIN are read by the live engine and
-      # were set on the live service but missing from this manifest.
-      # M1 gives the rapid cadence; M5 provides the higher-quality setup path.
+      # M5 is the execution timeframe; M15 supplies higher-timeframe context.
       - key: TRADE_TIMEFRAMES
-        value: "M1,M5"
+        value: "M5"
       - key: QUALITY_ADX_MIN
-        value: "12"
+        value: "18"
       # External market filters: high-impact USD news blackout and DXY
       # correlation data are evaluated on every bar (with module-level cache).
       - key: NEWS_BLOCK_BEFORE_MIN
