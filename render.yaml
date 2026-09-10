@@ -155,9 +155,9 @@ services:
       - key: MIN_CONFIRMATIONS
         value: "2"
       - key: REQUIRE_PRICE_ACTION
-        value: "true"
+        value: "false"
       - key: REQUIRE_SMC_CONFIRMATION
-        value: "true"
+        value: "false"
       - key: RANGE_SCALP_MODE
         value: "true"
       - key: RANGE_MIN_CONFIRMATIONS
