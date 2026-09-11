@@ -24,6 +24,7 @@ from live_trading.config import (
     CONF_HARD_MIN,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
     FAST_SCALP_MODE,
+    ALLOW_SMC_OR_PA_TRIGGER,
 )
 
 # Marginal confidence R:R floor: trades with confidence between CONF_HARD_MIN
@@ -109,9 +110,24 @@ def run_decision_engine(
     pa      = analyze_price_action(candles)
     trend   = analyze_trend(candles)
 
-    candidate = _candidate_direction(smc)
-    if candidate == "NEUTRAL":
-        return _make_neutral(smc, wyckoff, pa, trend, ["No SMC signal"])
+    smc_candidate = _candidate_direction(smc)
+    pa_candidate = pa.pa_signal
+    if ALLOW_SMC_OR_PA_TRIGGER:
+        if smc_candidate == "NEUTRAL" and pa_candidate != "NEUTRAL":
+            candidate = pa_candidate
+        elif smc_candidate != "NEUTRAL" and pa_candidate in {"NEUTRAL", smc_candidate}:
+            candidate = smc_candidate
+        elif smc_candidate != "NEUTRAL" and pa_candidate != "NEUTRAL":
+            conflict = (
+                f"SMC and Price Action conflict — SMC={smc_candidate} PA={pa_candidate}"
+            )
+            return _make_neutral(smc, wyckoff, pa, trend, [conflict])
+        else:
+            return _make_neutral(smc, wyckoff, pa, trend, ["No SMC or Price Action signal"])
+    else:
+        candidate = smc_candidate
+        if candidate == "NEUTRAL":
+            return _make_neutral(smc, wyckoff, pa, trend, ["No SMC signal"])
 
     # Soft EMA gate — counter-trend trades are allowed but need 3 confirmations
     trend_dir = ("BUY" if trend.trend == "BULLISH" else
@@ -140,15 +156,16 @@ def run_decision_engine(
     else:
         effective_min_confirmations = max(confirmation_floor, min_confirmations)
 
-    # Entry filter — minimum N-of-4 vote gate (SMC always required)
+    # Entry filter — minimum N-of-4 vote gate with optional SMC-or-PA trigger
     ef = apply_entry_filter(
-        smc_signal      = candidate,
+        smc_signal      = smc_candidate,
         ema_trend       = trend.trend,
         pa_signal       = pa.pa_signal,
         wyckoff_signal  = wyckoff.wyckoff_signal,
         min_confirmations = effective_min_confirmations,
         require_price_action = require_price_action,
         require_smc_price_action_wyckoff = require_smc_price_action_wyckoff,
+        allow_smc_or_price_action = ALLOW_SMC_OR_PA_TRIGGER,
     )
     if not ef.allowed:
         votes = (f"SMC={'✓' if ef.smc else '✗'}  "
@@ -163,6 +180,9 @@ def run_decision_engine(
                 "Entry filter: Option 1 requires SMC + Price Action + Wyckoff — "
                 f"{votes}  [regime={regime.regime}]"
             )
+        elif ALLOW_SMC_OR_PA_TRIGGER and not (ef.smc or ef.price_action):
+            reason = (f"Entry filter: SMC or Price Action trigger required — "
+                      f"{votes}  [regime={regime.regime}]")
         elif require_price_action and not ef.price_action:
             reason = (f"Entry filter: Price Action confirmation required — "
                       f"{votes}  [regime={regime.regime}]")

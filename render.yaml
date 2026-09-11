@@ -92,6 +92,8 @@ services:
       - key: MIN_CONFIRMATIONS
         value: "1"
       - key: REQUIRE_PRICE_ACTION
+        value: "false"
+      - key: ALLOW_SMC_OR_PA_TRIGGER
         value: "true"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
         value: "false"

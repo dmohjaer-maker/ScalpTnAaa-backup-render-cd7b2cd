@@ -181,6 +181,11 @@ RISK_PERCENT      = _float("RISK_PERCENT",      1.0,  lo=0.01, hi=10.0)
 FAST_SCALP_MODE = os.getenv("FAST_SCALP_MODE", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
+# Permit either a valid SMC trigger or a valid Price Action trigger.
+# Direction conflicts are rejected by the decision engine.
+ALLOW_SMC_OR_PA_TRIGGER = os.getenv("ALLOW_SMC_OR_PA_TRIGGER", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 # MIN_CONFIRMATIONS=2: SMC (always) + any 1 of (Trend / PA / Wyckoff).
 # Wyckoff fires rarely on 5m; PA patterns don't appear every candle.
 # Requiring 3 caused multi-day silences. 2 keeps quality while allowing flow.

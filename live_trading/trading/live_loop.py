@@ -33,6 +33,7 @@ from live_trading.config import (
     MAX_OPEN_TRADES, COMMENT,
     BAR_CHECK_INTERVAL, RECONNECT_DELAY, SYNC_TIMEOUT,
     FAST_SCALP_MODE,
+    ALLOW_SMC_OR_PA_TRIGGER,
     MIN_CONFIRMATIONS, REQUIRE_PRICE_ACTION,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF, USE_ATR_HIGH_VOL_FILTER,
     DAILY_LOSS_LIMIT_PCT, MAX_DRAWDOWN_PCT, SLIPPAGE_POINTS,
@@ -175,6 +176,7 @@ class GoldScalperLive:
         log.info(f"  Risk: {RISK_PERCENT}%  |  Max positions: {MAX_OPEN_TRADES}")
         log.info(f"  Min confirmations: {MIN_CONFIRMATIONS}")
         log.info(f"  Fast Scalp Mode: {'ON' if FAST_SCALP_MODE else 'OFF'}")
+        log.info(f"  Entry trigger policy: {'SMC OR Price Action' if ALLOW_SMC_OR_PA_TRIGGER else 'SMC'}")
         log.info(f"  Daily loss limit: {DAILY_LOSS_LIMIT_PCT}%  |  "
                  f"Max drawdown: {MAX_DRAWDOWN_PCT}%  |  "
                  f"Slippage: ≤{SLIPPAGE_POINTS}pts")

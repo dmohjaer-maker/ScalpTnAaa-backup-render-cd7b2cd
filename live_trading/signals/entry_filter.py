@@ -27,6 +27,7 @@ def apply_entry_filter(
     min_confirmations: int = MIN_CONFIRMATIONS,
     require_price_action: bool = False,
     require_smc_price_action_wyckoff: bool = False,
+    allow_smc_or_price_action: bool = False,
 ) -> EntryFilterResult:
 
     blocked = EntryFilterResult(
@@ -34,14 +35,18 @@ def apply_entry_filter(
         smc=False, trend=False, price_action=False, wyckoff=False,
     )
 
-    if smc_signal == "NEUTRAL":
+    # In SMC-or-PA mode either engine may provide the trigger direction.
+    # A disagreement is handled by the decision engine before this gate.
+    if smc_signal == "NEUTRAL" and not (
+        allow_smc_or_price_action and pa_signal != "NEUTRAL"
+    ):
         return blocked
 
-    direction = smc_signal
+    direction = smc_signal if smc_signal != "NEUTRAL" else pa_signal
     trend_vote = ("BUY" if ema_trend == "BULLISH" else
                   "SELL" if ema_trend == "BEARISH" else "NEUTRAL")
 
-    smc_ok   = True
+    smc_ok   = smc_signal     == direction
     trend_ok = trend_vote     == direction
     pa_ok    = pa_signal      == direction
     wyc_ok   = wyckoff_signal == direction
@@ -50,6 +55,8 @@ def apply_entry_filter(
     if require_smc_price_action_wyckoff:
         # Exact option 1: EMA is deliberately not part of the required gate.
         allowed = smc_ok and pa_ok and wyc_ok
+    elif allow_smc_or_price_action:
+        allowed = count >= min_confirmations and (smc_ok or pa_ok)
     else:
         allowed = count >= min_confirmations and (
             not require_price_action or pa_ok
