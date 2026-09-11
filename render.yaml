@@ -50,6 +50,12 @@ services:
         value: "https://mt5.mtapi.io"
       - key: MTAPI_KEEPALIVE_URL
         value: "https://mt5.mtapi.io"
+      - key: MTAPI_CONNECT_TO_NEAREST
+        value: "true"
+      - key: MTAPI_CONNECT_TIMEOUT_SECONDS
+        value: "120"
+      - key: MTAPI_CLUSTER_MEMBER_TIMEOUT_SECONDS
+        value: "30"
       - key: MT5_HOST
         value: "AMarkets-Demo"
       - key: MT5_PORT

@@ -71,6 +71,23 @@ def _float(name: str, default: float, lo: float | None = None, hi: float | None 
     return val
 
 
+def _bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    print(
+        f"WARNING: {name}={raw!r} is not a recognized boolean; "
+        f"using default {default}.",
+        file=sys.stderr,
+    )
+    return default
+
+
 # ── Valid timeframe labels ────────────────────────────────────────────────────
 _VALID_TIMEFRAMES = {
     "1m", "5m", "10m", "15m", "20m", "30m", "1h", "4h", "1d",
@@ -135,6 +152,12 @@ def _timeframe(name: str, default: str) -> str:
 
 # ── MT5 bridge URL ────────────────────────────────────────────────────────────
 MTAPI_URL     = os.getenv("MTAPI_URL",     "")
+
+# Connection tuning for the hosted MTAPI endpoint. A single trading bot should
+# prefer the nearest broker cluster member instead of trying members randomly.
+MTAPI_CONNECT_TIMEOUT_SECONDS = _int("MTAPI_CONNECT_TIMEOUT_SECONDS", 120, lo=30, hi=300)
+MTAPI_CLUSTER_MEMBER_TIMEOUT_SECONDS = _int("MTAPI_CLUSTER_MEMBER_TIMEOUT_SECONDS", 30, lo=5, hi=120)
+MTAPI_CONNECT_TO_NEAREST = _bool("MTAPI_CONNECT_TO_NEAREST", True)
 
 # ── MT5 Broker Credentials ───────────────────────────────────────────────────
 MT5_HOST      = os.getenv("MT5_HOST",     "AMarkets-Demo")
@@ -218,7 +241,7 @@ COMMENT = "GSPv4"
 # ── Loop Timing ──────────────────────────────────────────────────────────────
 BAR_CHECK_INTERVAL = 15       # seconds between candle-close checks
 RECONNECT_DELAY    = 30       # seconds before reconnect attempt
-SYNC_TIMEOUT       = 120      # seconds to wait for initial connect
+SYNC_TIMEOUT       = 150      # seconds to wait for initial connect
 
 # ── File Paths (for Telegram panel) ─────────────────────────────────────────
 STATE_FILE          = os.getenv("STATE_FILE",           "robot_state.json")

@@ -32,6 +32,9 @@ import aiohttp
 from live_trading.config import (
     MTAPI_URL, MT5_HOST, MT5_PORT,
     MT5_USER, MT5_PASSWORD,
+    MTAPI_CONNECT_TIMEOUT_SECONDS,
+    MTAPI_CLUSTER_MEMBER_TIMEOUT_SECONDS,
+    MTAPI_CONNECT_TO_NEAREST,
     SYNC_TIMEOUT,
 )
 from live_trading.signals.gold_engine import OHLCV
@@ -137,7 +140,9 @@ async def connect(*args, **kwargs) -> bool:
                 "user":     user,
                 "password": password,
                 "server":   host,
-                "connectTimeoutSeconds": 60,
+                "connectTimeoutSeconds": MTAPI_CONNECT_TIMEOUT_SECONDS,
+                "connectTimeoutClusterMemberSeconds": MTAPI_CLUSTER_MEMBER_TIMEOUT_SECONDS,
+                "connectToNearestByPing": MTAPI_CONNECT_TO_NEAREST,
             },
             timeout=aiohttp.ClientTimeout(total=SYNC_TIMEOUT),
         ) as resp:
@@ -456,18 +461,18 @@ async def start_mt5_session_keepalive(
             try:
                 sess = _get_session()
                 async with sess.get(
-                    f"{_base_url}/ConnectionStatus",
+                    f"{_base_url}/CheckConnect",
                     params={"id": _conn_id},
-                    timeout=aiohttp.ClientTimeout(total=10),
+                    timeout=aiohttp.ClientTimeout(total=15),
                 ) as resp:
-                    data = await resp.json(content_type=None)
-                    is_alive = isinstance(data, dict) and data.get("isConnected")
+                    check_result = (await resp.text()).strip().strip('"').upper()
+                    is_alive = resp.status == 200 and check_result == "OK"
                     if is_alive:
                         log.debug("[mt5_keepalive] ✅ Broker session alive")
                     else:
                         # Log only — watchdog will detect and reconnect within its interval
                         log.warning(
-                            "[mt5_keepalive] Broker ConnectionStatus=false — "
+                            "[mt5_keepalive] CheckConnect did not confirm the broker session — "
                             "watchdog will reconnect (no action taken here)"
                         )
             except Exception as exc:
