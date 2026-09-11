@@ -1976,7 +1976,7 @@ class GoldScalperLive:
                 try:
                     if "min_confirmations" in payload:
                         v = max(
-                            1 if FAST_SCALP_MODE else 2,
+                            1,
                             int(float(payload["min_confirmations"])),
                         )
                         _live_cfg.MIN_CONFIRMATIONS = v; _g["MIN_CONFIRMATIONS"] = v
