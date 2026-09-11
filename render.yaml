@@ -159,6 +159,8 @@ services:
         value: "1.0"
       - key: MTF_CANDLE_WINDOW
         value: "300"
+      - key: MTF_TIMEFRAME
+        value: "M15"
       - key: MTF_ENABLED
         value: "true"
       - key: MTF_REQUIRE_ALIGNMENT
