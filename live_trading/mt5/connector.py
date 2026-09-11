@@ -23,6 +23,7 @@ mt5rest endpoints used:
 """
 
 import asyncio
+import os
 import time as _time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -114,10 +115,11 @@ async def connect(*args, **kwargs) -> bool:
     """
     global _connected, _base_url, _conn_id, _last_connect_time
 
-    base     = MTAPI_URL.rstrip("/") if MTAPI_URL else ""
-    host     = MT5_HOST
-    user     = MT5_USER.strip() if MT5_USER else ""
-    password = MT5_PASSWORD.strip() if MT5_PASSWORD else ""
+    base        = MTAPI_URL.rstrip("/") if MTAPI_URL else ""
+    host        = MT5_HOST
+    direct_host = os.getenv("MT5_DIRECT_HOST", "").strip()
+    user        = MT5_USER.strip() if MT5_USER else ""
+    password    = MT5_PASSWORD.strip() if MT5_PASSWORD else ""
 
     if not base:
         log.error(
@@ -134,16 +136,36 @@ async def connect(*args, **kwargs) -> bool:
 
     try:
         log.info(f"Connecting to MT5 via mt5rest at {base} ...")
-        async with sess.get(
-            f"{base}/ConnectEx",
-            params={
-                "user":     user,
+        # ConnectEx relies on MTAPI's broker-name discovery service.  That
+        # service is unreliable from Render for this broker (it resets the
+        # connection after login).  When MT5_DIRECT_HOST is configured, use
+        # the documented direct /Connect endpoint with the broker IP instead.
+        connect_path = "/Connect" if direct_host else "/ConnectEx"
+        connect_params = (
+            {
+                "user": user,
                 "password": password,
-                "server":   host,
+                "host": direct_host,
+                "port": MT5_PORT,
+                "connectTimeoutSeconds": MTAPI_CONNECT_TIMEOUT_SECONDS,
+            }
+            if direct_host
+            else {
+                "user": user,
+                "password": password,
+                "server": host,
                 "connectTimeoutSeconds": MTAPI_CONNECT_TIMEOUT_SECONDS,
                 "connectTimeoutClusterMemberSeconds": MTAPI_CLUSTER_MEMBER_TIMEOUT_SECONDS,
                 "connectToNearestByPing": "true" if MTAPI_CONNECT_TO_NEAREST else "false",
-            },
+            }
+        )
+        log.info(
+            f"Connecting to MT5 via {connect_path} at {base} "
+            + (f"(direct broker host {direct_host}:{MT5_PORT}) …" if direct_host else f"(broker server {host}) …")
+        )
+        async with sess.get(
+            f"{base}{connect_path}",
+            params=connect_params,
             timeout=aiohttp.ClientTimeout(total=SYNC_TIMEOUT),
         ) as resp:
             raw = await resp.text()
