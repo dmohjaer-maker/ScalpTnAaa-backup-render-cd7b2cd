@@ -55,7 +55,7 @@ COPY --from=socat-source /lib/x86_64-linux-gnu/libwrap.so.0         /lib/x86_64-
 # Overriding ENTRYPOINT without setting CMD leaves $@ empty — the container
 # crashes immediately on exec "".  We restore the original startup command
 # via CMD so it is passed as positional args to our wrapper script.
-COPY render-entrypoint.sh /render-entrypoint.sh
+COPY mtapi-bridge/render-entrypoint.sh /render-entrypoint.sh
 RUN chmod +x /render-entrypoint.sh
 
 ENTRYPOINT ["/render-entrypoint.sh"]
