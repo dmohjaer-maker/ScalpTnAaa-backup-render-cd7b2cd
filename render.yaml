@@ -14,7 +14,7 @@ services:
       - mtapi-bridge/**
     envVars:
       - key: RENDER_EXTERNAL_URL
-        value: "https://mt5.mtapi.io"
+        value: "https://goldscalper-mtapi-clzt.onrender.com"
       - key: MT5_HOST
         value: "AMarkets-Demo"
       - key: MT5_PORT
@@ -32,7 +32,7 @@ services:
   - type: redis
     name: goldscalper-redis
     plan: free
-    region: oregon
+    region: frankfurt
     ipAllowList: []   # private — Render internal routing only; no public access
 
   # ─── Trading robot ─────────────────────────────────────────────────────────
@@ -129,6 +129,100 @@ services:
       # FIX #1: ROBOT_COMMAND_TOKEN enables HTTP command fallback from panel.
       - key: ROBOT_COMMAND_TOKEN
         sync: false
+      # Additional live strategy and trailing-stop controls kept in sync with
+      # the active Render service.
+      - key: AGGRESSIVE_ENTRY_MODE
+        value: "false"
+      - key: ALLOW_COUNTER_TREND_TRADES
+        value: "false"
+      - key: BAR_CHECK_INTERVAL
+        value: "2"
+      - key: BLOCK_RANGE_ENTRIES
+        value: "true"
+      - key: DXY_CACHE_TTL_S
+        value: "60"
+      - key: ENTRY_TRIGGER_MAX_AGE_BARS
+        value: "2"
+      - key: FAST_SCALP_MODE
+        value: "false"
+      - key: FIXED_LOT_SIZE
+        value: "0.01"
+      - key: MAX_ENTRY_DRIFT_ATR
+        value: "0.35"
+      - key: MAX_OPEN_TRADES
+        value: "1"
+      - key: MAX_SINGLE_TRADE_RISK_MULTIPLIER
+        value: "1.00"
+      - key: MAX_SPREAD_ATR
+        value: "0.35"
+      - key: MAX_TOTAL_RISK_PCT
+        value: "1.0"
+      - key: MTF_CANDLE_WINDOW
+        value: "300"
+      - key: MTF_ENABLED
+        value: "true"
+      - key: MTF_REQUIRE_ALIGNMENT
+        value: "false"
+      - key: NEWS_BLOCK_AFTER_MIN
+        value: "30"
+      - key: NEWS_BLOCK_BEFORE_MIN
+        value: "15"
+      - key: RANGE_MIN_CONFIRMATIONS
+        value: "2"
+      - key: RANGE_REQUIRE_PRICE_ACTION
+        value: "false"
+      - key: RANGE_SCALP_MODE
+        value: "false"
+      - key: RECONNECT_DELAY
+        value: "15"
+      - key: REQUIRED_ENTRY_RR
+        value: "1.20"
+      - key: REQUIRE_SMC_CONFIRMATION
+        value: "false"
+      - key: REQUIRE_SMC_OR_PA_TRIGGER
+        value: "true"
+      - key: SL_ATR_BUFFER_MULT
+        value: "0.10"
+      - key: SL_MAX_ATR_MULT
+        value: "1.50"
+      - key: SL_MIN_ATR_MULT
+        value: "0.75"
+      - key: SL_SPREAD_BUFFER_MULT
+        value: "1.50"
+      - key: STRICT_ENTRY_MODE
+        value: "true"
+      - key: SYMBOLS
+        value: "XAUUSD"
+      - key: TP_APPROACH_ATR_MULT
+        value: "0.15"
+      - key: TP_MAX_RR
+        value: "2.00"
+      - key: TP_MIN_RR
+        value: "1.20"
+      - key: TP_RR
+        value: "1.50"
+      - key: TRAIL_ACTIVATION_R
+        value: "0.50"
+      - key: TRAIL_ATR_GAP_MULT
+        value: "1.00"
+      - key: TRAIL_CHECK_INTERVAL
+        value: "1.0"
+      - key: TRAIL_ENABLED
+        value: "true"
+      - key: TRAIL_LOCK_BUFFER_R
+        value: "0.10"
+      - key: TRAIL_LOCK_SLOPE
+        value: "0.75"
+      - key: TRAIL_MAX_GAP_R
+        value: "0.60"
+      - key: TRAIL_MAX_LOCK_R
+        value: "2.00"
+      - key: TRAIL_MIN_STEP_PRICE
+        value: "0.10"
+      - key: TRAIL_SPREAD_GAP_MULT
+        value: "2.50"
+      - key: TRAIL_STEP_R
+        value: "0.75"
 
   # ─── Telegram control panel ────────────────────────────────────────────────
   - type: web
