@@ -803,14 +803,13 @@ def run_decision_engine(
             dxy_signal=dxy_signal,
         )
 
-    # HTF continuation can affect directional handling, but it must not
-    # silently change the configured confirmation policy. Normal mode keeps
-    # the two-engine floor; the explicit fast-scalp deployment may configure
-    # one required SMC confirmation.
-    confirmation_floor = 1 if FAST_SCALP_MODE else 2
+    # Respect the configured confirmation policy in both modes. The default
+    # remains two confirmations, while a deliberate MIN_CONFIRMATIONS=1
+    # deployment can use one Price Action-confirmed engine without enabling
+    # aggressive entries or bypassing the independent safety vetoes.
     effective_min_confirmations = (
         RANGE_MIN_CONFIRMATIONS if range_mode
-        else max(confirmation_floor, min_confirmations)
+        else max(1, min_confirmations)
     )
 
     # Entry filter — every aligned directional engine contributes one vote.
