@@ -60,6 +60,9 @@ services:
         value: "AMarkets-Demo"
       - key: MT5_PORT
         value: "443"
+      # Direct MT5 server endpoint; avoids broker-name discovery resets on Render.
+      - key: MT5_DIRECT_HOST
+        value: "34.247.94.79"
       - key: MT5_USER
         sync: false
       - key: MT5_PASSWORD
