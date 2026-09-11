@@ -142,7 +142,7 @@ async def connect(*args, **kwargs) -> bool:
                 "server":   host,
                 "connectTimeoutSeconds": MTAPI_CONNECT_TIMEOUT_SECONDS,
                 "connectTimeoutClusterMemberSeconds": MTAPI_CLUSTER_MEMBER_TIMEOUT_SECONDS,
-                "connectToNearestByPing": MTAPI_CONNECT_TO_NEAREST,
+                "connectToNearestByPing": "true" if MTAPI_CONNECT_TO_NEAREST else "false",
             },
             timeout=aiohttp.ClientTimeout(total=SYNC_TIMEOUT),
         ) as resp:
