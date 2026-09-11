@@ -9,8 +9,6 @@ import re
 from telegram import Update
 from telegram.ext import (
     Application,
-    ApplicationHandlerStop,
-    TypeHandler,
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
@@ -69,10 +67,6 @@ class Router:
     def register(self, app: Application) -> None:
         """Register all handlers with the Telegram Application."""
 
-        # Owner-only admission gate. Group -1 runs before every command,
-        # conversation, message, and callback handler.
-        app.add_handler(TypeHandler(Update, self._auth_gate), group=-1)
-
         # /start command
         app.add_handler(CommandHandler("start", self._cmd_start))
         app.add_handler(CommandHandler("menu", self._cmd_start))
@@ -126,14 +120,6 @@ class Router:
         logger.info("All handlers registered successfully")
 
     # ─── Commands ────────────────────────────────────────────────────────────
-
-    async def _auth_gate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Stop every non-owner update before it can reach a panel handler."""
-        if not update.effective_user:
-            raise ApplicationHandlerStop
-        allowed, _ = await self._auth.is_authorized(update)
-        if not allowed:
-            raise ApplicationHandlerStop
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._rate_check(update):
@@ -217,8 +203,6 @@ class Router:
                     await self._show_settings(update, context)
                 elif dest == "system":
                     await self._system.show_system(update, context)
-                elif dest == "robot":
-                    await self._dashboard.show_robot_control(update, context)
                 elif dest == "news":
                     await update.callback_query.edit_message_text(
                         "📰 <b>NEWS</b>\n\nNews feed is not yet available.",
@@ -232,8 +216,6 @@ class Router:
                 action = parts[1] if len(parts) > 1 else "refresh"
                 if action == "refresh":
                     await self._dashboard.show_dashboard(update, context)
-                elif action == "test_connection":
-                    await self._dashboard.test_connection(update, context)
 
             elif section == "robot":
                 action = parts[1] if len(parts) > 1 else ""
@@ -276,12 +258,6 @@ class Router:
                     await self._trading.show_position_detail(update, context, int(param))
                 elif action == "pending":
                     await self._trading.show_pending(update, context)
-                elif action == "recent10":
-                    await self._trading.show_trade_history(
-                        update, context, 10, fresh=True
-                    )
-                elif action == "scan":
-                    await self._trading.show_latest_scan(update, context)
                 elif action == "history":
                     limit = int(param) if param else 20
                     await self._trading.show_trade_history(update, context, limit)

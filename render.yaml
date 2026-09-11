@@ -1,8 +1,5 @@
 services:
-  # ─── Legacy self-hosted mt5rest bridge ─────────────────────────────────────
-  # The robot and panel use the official hosted MTAPI endpoint below. Keep this
-  # service available only for compatibility/rollback; its public image is a
-  # time-limited trial and must not be used as the production connection path.
+  # ─── mt5rest Docker bridge ─────────────────────────────────────────────────
   - type: web
     name: goldscalper-mtapi
     runtime: docker
@@ -16,6 +13,8 @@ services:
     paths:
       - mtapi-bridge/**
     envVars:
+      - key: RENDER_EXTERNAL_URL
+        value: "https://goldscalper-mtapi.onrender.com"
       - key: MT5_HOST
         value: "AMarkets-Demo"
       - key: MT5_PORT
@@ -45,10 +44,10 @@ services:
     buildCommand: pip install -r live_trading/requirements.txt
     startCommand: python live_trading/server.py
     envVars:
+      - key: RENDER_EXTERNAL_URL
+        value: "https://goldscalper-v4-robot.onrender.com"
       - key: MTAPI_URL
-        value: "https://mt5.mtapi.io"
-      - key: MTAPI_KEEPALIVE_URL
-        value: "https://mt5.mtapi.io"
+        value: "https://goldscalper-mtapi.onrender.com"
       - key: MT5_HOST
         value: "AMarkets-Demo"
       - key: MT5_PORT
@@ -62,154 +61,43 @@ services:
       # the real reason the robot never opened a trade.
       - key: SYMBOL
         value: XAUUSD
-      # Keep production focused on gold; EURUSD is intentionally disabled.
-      - key: SYMBOLS
-        value: "XAUUSD"
-      # Poll transport/bar boundaries more frequently without changing the
-      # completed-candle signal semantics.
-      # 5m execution transport poll: signal decisions still happen once per
-      # completed candle, while quote/protection tasks remain independent.
-      - key: BAR_CHECK_INTERVAL
-        value: "2"
-      - key: RECONNECT_DELAY
-        value: "15"
       # FIX: TIMEFRAME and CANDLE_WINDOW are now env-configurable (fix #4).
-      # Primary execution timeframe for short-term XAUUSD scalps.
       - key: TIMEFRAME
         value: "5m"
-      # 300 candles gives the fast scalp indicators a focused context.
       - key: CANDLE_WINDOW
         value: "300"
       # Option 4: old BOS/CHoCH events cannot authorize live entries.
-      # On 5m, 24 bars keeps BOS/CHoCH actionable for roughly two hours.
       - key: STRUCTURE_MAX_AGE_BARS
         value: "24"
-      # Professional breakout profile: require fresh, confirmed structure
-      # and never bypass follow-through, quality, or directional safety gates.
-      - key: FAST_SCALP_MODE
-        value: "false"
-      - key: STRICT_ENTRY_MODE
-        value: "true"
-      - key: AGGRESSIVE_ENTRY_MODE
-        value: "false"
-      - key: ALLOW_COUNTER_TREND_TRADES
-        value: "false"
-      # Require higher-timeframe context before a lower-timeframe breakout.
-      - key: MTF_ENABLED
-        value: "true"
-      # A neutral M15 bias may pass; an explicit opposing M15 bias still blocks.
-      - key: MTF_REQUIRE_ALIGNMENT
-        value: "false"
-      # 15m directional context for the fast 5m execution path.
-      - key: MTF_TIMEFRAME
-        value: "M15"
-      - key: MTF_CANDLE_WINDOW
-        value: "300"
-      - key: ENTRY_TRIGGER_MAX_AGE_BARS
-        value: "2"
-      - key: MAX_ENTRY_DRIFT_ATR
-        value: "0.35"
-      - key: MAX_SPREAD_ATR
-        value: "0.35"
       - key: RISK_PERCENT
         value: "1.0"
-      - key: FIXED_LOT_SIZE
-        value: "0.01"
-      # Fail closed when the broker's 0.01 minimum lot would exceed the
-      # configured single-trade risk budget.
-      - key: MAX_SINGLE_TRADE_RISK_MULTIPLIER
-        value: "1.00"
-      # Total open exposure is capped at 1% of balance.
-      - key: MAX_TOTAL_RISK_PCT
-        value: "1.0"
-      # One position per symbol prevents stacking during a single breakout.
-      - key: MAX_OPEN_TRADES
-        value: "1"
-      # Bounded XAUUSD M5 initial-stop calibration: enough room for normal
-      # candle noise, while preventing a distant historical swing from
-      # creating an untradeable stop.
-      - key: SL_ATR_BUFFER_MULT
-        value: "0.10"
-      - key: SL_MIN_ATR_MULT
-        value: "0.75"
-      - key: SL_MAX_ATR_MULT
-        value: "1.50"
-      - key: SL_SPREAD_BUFFER_MULT
-        value: "1.50"
-      # Balanced breakout targets: accept valid structure from 1.2R upward.
-      - key: TP_RR
-        value: "1.50"
-      - key: TP_MIN_RR
-        value: "1.20"
-      - key: TP_MAX_RR
-        value: "2.00"
-      - key: REQUIRED_ENTRY_RR
-        value: "1.20"
-      - key: TP_APPROACH_ATR_MULT
-        value: "0.15"
-      # A valid confirmed breakout is sufficient; Price Action remains mandatory
-      # and trend/SMC/MTF safety vetoes remain active. Range scalps stay disabled.
+      # STABLE v4.0.4 values -- these are the actual settings the bot has been
+      # running with in production (verified against the live Render service
+      # on 2026-08-10). Earlier revisions of this file had leftover
+      # "testing mode" values (MIN_CONFIRMATIONS=1, CONF_HARD_MIN=0,
+      # DAILY_LOSS_LIMIT_PCT=50.0, MAX_DRAWDOWN_PCT=50.0) that no longer
+      # matched the dashboard-configured production values below -- a fresh
+      # deploy from the old file would NOT have reproduced current behavior.
       - key: MIN_CONFIRMATIONS
-        value: "1"
+        value: "2"
       - key: REQUIRE_PRICE_ACTION
         value: "true"
-      - key: REQUIRE_SMC_CONFIRMATION
-        value: "false"
-      - key: RANGE_SCALP_MODE
-        value: "false"
-      - key: RANGE_MIN_CONFIRMATIONS
-        value: "2"
-      - key: RANGE_REQUIRE_PRICE_ACTION
-        value: "false"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
-        value: "false"
+        value: "true"
       - key: CONF_HARD_MIN
-        value: "28"
+        value: "32"
       - key: DAILY_LOSS_LIMIT_PCT
-        value: "2.0"
+        value: "4.0"
       - key: MAX_DRAWDOWN_PCT
-        value: "6.0"
+        value: "12.0"
       - key: SLIPPAGE_POINTS
         value: "30"
-      # Adaptive high-water trailing protection. These values are explicit in
-      # the deployment manifest so a fresh Render sync preserves the same
-      # behavior as the robot code.
-      - key: TRAIL_ENABLED
-        value: "true"
-      - key: TRAIL_ACTIVATION_R
-        value: "0.50"
-      - key: TRAIL_STEP_R
-        value: "0.75"
-      - key: TRAIL_LOCK_BUFFER_R
-        value: "0.10"
-      - key: TRAIL_LOCK_SLOPE
-        value: "0.75"
-      - key: TRAIL_MAX_LOCK_R
-        value: "2.00"
-      - key: TRAIL_ATR_GAP_MULT
-        value: "1.00"
-      - key: TRAIL_SPREAD_GAP_MULT
-        value: "2.50"
-      - key: TRAIL_MAX_GAP_R
-        value: "0.60"
-      - key: TRAIL_MIN_STEP_PRICE
-        value: "0.10"
-      - key: TRAIL_CHECK_INTERVAL
-        value: "1.0"
-      # M5 is the execution timeframe; M15 supplies higher-timeframe context.
+      # TRADE_TIMEFRAMES / QUALITY_ADX_MIN are read by the live engine and
+      # were set on the live service but missing from this manifest.
       - key: TRADE_TIMEFRAMES
-        value: "M5"
+        value: "M20,M15,M10,5m"
       - key: QUALITY_ADX_MIN
-        value: "14"
-      # External market filters: high-impact USD news blackout and DXY
-      # correlation data are evaluated on every bar (with module-level cache).
-      - key: NEWS_BLOCK_BEFORE_MIN
-        value: "15"
-      - key: NEWS_BLOCK_AFTER_MIN
-        value: "30"
-      # Refresh the external dollar filter often enough for 5m scalps.
-      - key: DXY_CACHE_TTL_S
-        value: "60"
+        value: "12"
       - key: PYTHON_VERSION
         value: "3.11.0"
       - key: STATE_FILE
@@ -240,6 +128,8 @@ services:
     buildCommand: pip install -r telegram_panel/requirements.txt
     startCommand: python telegram_panel/server.py
     envVars:
+      - key: RENDER_EXTERNAL_URL
+        value: "https://goldscalper-v4-panel.onrender.com"
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_OWNER_ID
@@ -260,10 +150,6 @@ services:
         value: "AMarkets-Demo"
       - key: MT5_ACCOUNT_TYPE
         value: "demo"
-      - key: MTAPI_URL
-        value: "https://mt5.mtapi.io"
-      - key: MTAPI_KEEPALIVE_URL
-        value: "https://mt5.mtapi.io"
       - key: LOG_LEVEL
         value: "INFO"
       - key: ROBOT_INTERFACE_MODE
@@ -272,10 +158,7 @@ services:
         value: "/tmp/robot_state.json"
       # FIX #1: ROBOT_BASE_URL and ROBOT_COMMAND_TOKEN enable HTTP fallback.
       - key: ROBOT_BASE_URL
-        fromService:
-          type: web
-          name: goldscalper-v4-robot
-          envVarKey: RENDER_EXTERNAL_URL
+        value: "https://goldscalper-v4-robot.onrender.com"
       - key: ROBOT_COMMAND_TOKEN
         sync: false
       - key: REDIS_URL

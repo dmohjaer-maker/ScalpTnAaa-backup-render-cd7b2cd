@@ -46,17 +46,17 @@ class RegimeResult:
 # via the CONF_MARGINAL_RR path in decision_engine.
 REGIME_RULES = {
     #                                           min_conf  min_rr  long   short  sl_mult  label
-    "STRONG_TREND_BULL": RegimeEntryRules(40,  1.2,  True,  False, 1.0,  "Strong Bull Trend"),
-    "STRONG_TREND_BEAR": RegimeEntryRules(40,  1.2,  False, True,  1.0,  "Strong Bear Trend"),
-    "WEAK_TREND_BULL":   RegimeEntryRules(45,  1.2,  True,  False, 0.9,  "Weak Bull Trend"),
-    "WEAK_TREND_BEAR":   RegimeEntryRules(45,  1.2,  False, True,  0.9,  "Weak Bear Trend"),
-    "PULLBACK_BULL":     RegimeEntryRules(50,  1.2,  True,  False, 0.95, "Bull Pullback"),
-    "PULLBACK_BEAR":     RegimeEntryRules(50,  1.2,  False, True,  0.95, "Bear Pullback"),
-    "RANGE":             RegimeEntryRules(60,  1.2,  True,  True,  0.8,  "Range / Choppy"),
-    "ACCUMULATION":      RegimeEntryRules(50,  1.2,  True,  False, 1.0,  "Wyckoff Accumulation"),
-    "DISTRIBUTION":      RegimeEntryRules(50,  1.2,  False, True,  1.0,  "Wyckoff Distribution"),
-    "HIGH_VOLATILITY":   RegimeEntryRules(65,  1.2,  True,  True,  1.3,  "High Volatility"),
-    "LOW_VOLATILITY":    RegimeEntryRules(40,  1.2,  True,  True,  0.7,  "Low Volatility / Squeeze"),
+    "STRONG_TREND_BULL": RegimeEntryRules(40,  1.5,  True,  False, 1.0,  "Strong Bull Trend"),
+    "STRONG_TREND_BEAR": RegimeEntryRules(40,  1.5,  False, True,  1.0,  "Strong Bear Trend"),
+    "WEAK_TREND_BULL":   RegimeEntryRules(45,  1.5,  True,  False, 0.9,  "Weak Bull Trend"),
+    "WEAK_TREND_BEAR":   RegimeEntryRules(45,  1.5,  False, True,  0.9,  "Weak Bear Trend"),
+    "PULLBACK_BULL":     RegimeEntryRules(50,  1.8,  True,  False, 0.95, "Bull Pullback"),
+    "PULLBACK_BEAR":     RegimeEntryRules(50,  1.8,  False, True,  0.95, "Bear Pullback"),
+    "RANGE":             RegimeEntryRules(60,  2.0,  True,  True,  0.8,  "Range / Choppy"),
+    "ACCUMULATION":      RegimeEntryRules(50,  1.8,  True,  False, 1.0,  "Wyckoff Accumulation"),
+    "DISTRIBUTION":      RegimeEntryRules(50,  1.8,  False, True,  1.0,  "Wyckoff Distribution"),
+    "HIGH_VOLATILITY":   RegimeEntryRules(65,  2.0,  True,  True,  1.3,  "High Volatility"),
+    "LOW_VOLATILITY":    RegimeEntryRules(40,  1.5,  True,  True,  0.7,  "Low Volatility / Squeeze"),
 }
 
 
@@ -109,31 +109,14 @@ def calc_adx(candles: List[OHLCV], period: int = 14) -> float:
 
 
 def _detect_pullback(candles: List[OHLCV], trend: TrendResult):
-    # A one-candle move against the EMA trend is not enough to relabel the
-    # market as a pullback.  The old detector compared only candle -1 with
-    # candle -6, so a single wick or news candle could flip the regime.
-    if len(candles) < 12:
+    if len(candles) < 10:
         return None
-    window = candles[-6:]
-    changes = [
-        window[i].close - window[i - 1].close
-        for i in range(1, len(window))
-    ]
-    net_move = window[-1].close - window[0].close
-    reference = max(abs(window[0].close), 1e-9)
-    net_pct = abs(net_move) / reference
-
-    # Require a majority of counter-trend closes and a meaningful net move.
-    # This is intentionally below the full trend threshold: it detects a
-    # retracement, not a confirmed reversal.
-    if trend.trend == "BULLISH":
-        counter_moves = sum(change < 0 for change in changes)
-        if counter_moves >= 3 and net_move < 0 and net_pct >= 0.0005:
-            return "BULL"
-    if trend.trend == "BEARISH":
-        counter_moves = sum(change > 0 for change in changes)
-        if counter_moves >= 3 and net_move > 0 and net_pct >= 0.0005:
-            return "BEAR"
+    now  = candles[-1].close
+    prev = candles[-6].close
+    st_bull = now > prev * 1.0003
+    st_bear = now < prev * 0.9997
+    if trend.trend == "BULLISH" and st_bear: return "BULL"
+    if trend.trend == "BEARISH" and st_bull: return "BEAR"
     return None
 
 
@@ -176,27 +159,11 @@ def detect_market_regime(
             return make("WEAK_TREND_BULL", f"ADX {adx} — developing bull trend")
         return make("WEAK_TREND_BEAR", f"ADX {adx} — developing bear trend")
 
-    # A Wyckoff phase is context, not a directional veto by itself.  The
-    # Wyckoff engine deliberately keeps ``wyckoff_signal`` neutral until both
-    # the directional event (Spring/Upthrust) and directional volume are
-    # confirmed.  Using ``phase`` alone here was making an unresolved range
-    # block a valid trend setup (for example: "Distribution does not allow
-    # LONG") even though Wyckoff had not produced a SELL vote.
-    if (
-        wyckoff.phase == "ACCUMULATION"
-        and wyckoff.wyckoff_signal == "BUY"
-    ):
+    if wyckoff.phase == "ACCUMULATION":
         return make("ACCUMULATION", "Wyckoff Accumulation" +
                     (" + Spring" if wyckoff.spring else ""))
-    if (
-        wyckoff.phase == "DISTRIBUTION"
-        and wyckoff.wyckoff_signal == "SELL"
-    ):
+    if wyckoff.phase == "DISTRIBUTION":
         return make("DISTRIBUTION", "Wyckoff Distribution" +
                     (" + Upthrust" if wyckoff.upthrust else ""))
 
-    return make(
-        "RANGE",
-        f"ADX {adx} < 20 — ranging / choppy "
-        "(Wyckoff phase unconfirmed)",
-    )
+    return make("RANGE", f"ADX {adx} < 20 — ranging / choppy")

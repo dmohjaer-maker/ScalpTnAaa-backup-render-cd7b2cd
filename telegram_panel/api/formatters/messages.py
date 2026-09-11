@@ -4,8 +4,6 @@ Produces beautiful, consistent messages for every panel screen.
 """
 
 from datetime import datetime, timezone
-from html import escape
-import re
 from typing import Optional, Any
 from ...config.constants import RobotStatus, ConnectionStatus, ICONS
 from ...models.account import Account
@@ -366,111 +364,41 @@ class MessageFormatter:
 
     @staticmethod
     def trade_opened(pos: Position) -> str:
-        """Render a rich, branch-structured Telegram trade card.
+        text = (
+            f"📈 <b>TRADE OPENED</b>\n"
+            f"<code>{_DIVIDER}</code>\n"
+            f"{pos.direction_icon} {pos.direction.value} · {pos.symbol}\n"
+            f"📦 Volume: {pos.volume}L @ {pos.open_price:.5f}\n"
+            f"🛑 SL: {pos.stop_loss or '—'}  🎯 TP: {pos.take_profit or '—'}\n"
+            f"🎫 Ticket: #{pos.ticket}"
+        )
+        strategy = pos.strategy
+        if strategy:
+            grade = strategy.get("grade", "—")
+            confidence = strategy.get("confidence")
+            regime_label = strategy.get("regime_label", "—")
+            confirmations = strategy.get("confirmations") or []
+            count = strategy.get("confirmation_count", len(confirmations))
+            total = strategy.get("confirmation_total", 4)
+            signals = strategy.get("signals") or []
 
-        Strategy data is optional because older positions or a temporarily
-        unavailable Redis instance may not have the explanation attached.
-        """
-        def _safe(value):
-            return escape(str(value)) if value not in (None, "") else "—"
+            grade_icons = {"PRIME": "🥇", "HIGH": "🥈", "MARGINAL": "🥉"}
+            grade_icon = grade_icons.get(grade, "🔹")
 
-        def _num(value, digits: int = 2):
-            if value in (None, ""):
-                return "—"
-            try:
-                return f"{float(value):.{digits}f}"
-            except (TypeError, ValueError):
-                return _safe(value)
+            lines = [
+                f"\n<code>{_DIVIDER}</code>",
+                f"🧠 <b>Strategy</b>",
+                f"{grade_icon} Grade: <b>{grade}</b>"
+                + (f"  ·  Confidence: <b>{confidence:.1f}%</b>" if confidence is not None else ""),
+                f"📊 Regime: {regime_label}",
+                f"✅ Confirmations ({count}/{total}): " + (", ".join(confirmations) if confirmations else "—"),
+            ]
+            if signals:
+                lines.append("🔎 Signals:")
+                lines.extend(f"  • {s}" for s in signals)
+            text += "\n" + "\n".join(lines)
+        return text
 
-        def _pct(value):
-            return "—" if value in (None, "") else f"{_num(value, 1)}%"
-
-        def _yes_no(value):
-            return "✅ Yes" if value else "—"
-
-        direction = _safe(getattr(getattr(pos, "direction", None), "value", getattr(pos, "direction", "—")))
-        symbol = _safe(getattr(pos, "symbol", "—"))
-        strategy = pos.strategy or {}
-        market = strategy.get("market") or {}
-        risk = strategy.get("risk") or {}
-        engines = strategy.get("engines") or {}
-        smc = engines.get("smc") or {}
-        pa = engines.get("price_action") or {}
-        wyckoff = engines.get("wyckoff") or {}
-        score_breakdown = strategy.get("score_breakdown") or {}
-        confirmations = strategy.get("confirmations") or []
-        method = strategy.get("version") or "Multi-Engine Confluence"
-        grade = strategy.get("grade", "—")
-        grade_icon = {"PRIME": "🥇", "HIGH": "🥈", "MARGINAL": "🥉"}.get(grade, "🔹")
-        confidence = strategy.get("confidence")
-        score_total = strategy.get("score_total", confidence)
-        timeframe = strategy.get("timeframe") or "—"
-        side_icon = getattr(pos, "direction_icon", "🟢" if direction == "BUY" else "🔴")
-
-        def _score(label, key):
-            item = score_breakdown.get(key) or {}
-            score = item.get("score") if isinstance(item, dict) else None
-            maximum = item.get("max") if isinstance(item, dict) else None
-            if score is None or maximum in (None, 0):
-                return f"{label}: {_num(score, 1)}"
-            share = float(score) / float(maximum) * 100.0
-            return f"{label}: {_num(score, 1)}/{_num(maximum, 0)} ({share:.0f}%)"
-
-        def _join(values):
-            return ", ".join(_safe(value) for value in values) if values else "—"
-
-        lines = [
-            "<code>╭────────────────────────────────╮</code>",
-            f"│ 🚀 <b>TRADE OPENED</b>  ·  {side_icon} <b>{direction}</b>",
-            f"│ ├─ 💎 <b>Symbol:</b> {symbol}  ·  <b>TF:</b> {_safe(timeframe)}",
-            f"│ ├─ 📦 <b>Volume:</b> {_num(pos.volume, 2)} lots  ·  <b>Entry:</b> {_num(pos.open_price, 5)}",
-            f"│ ├─ 🛑 <b>Stop Loss:</b> {_num(pos.stop_loss, 5)}",
-            f"│ ├─ 🎯 <b>Take Profit:</b> {_num(pos.take_profit, 5)}",
-            f"│ └─ 🎫 <b>Ticket:</b> #{_safe(pos.ticket)}",
-            "<code>├────────────────────────────────┤</code>",
-            "│ 🧠 <b>STRATEGY & CONFLUENCE</b>",
-            f"│ ├─ 🧬 <b>Method:</b> {_safe(method)}",
-            f"│ ├─ {grade_icon} <b>Grade:</b> {_safe(grade)}  ·  <b>Confidence:</b> {_pct(confidence)}",
-            f"│ ├─ 📊 <b>Total score:</b> {_pct(score_total)}  ·  <b>Confirmations:</b> {len(confirmations)}/{strategy.get('confirmation_total', 4)}",
-            f"│ └─ ✅ <b>Confirmed by:</b> {_join(confirmations)}",
-            "<code>├────────────────────────────────┤</code>",
-            "│ 🌍 <b>MARKET STATE</b>",
-            f"│ ├─ 🧭 <b>Regime:</b> {_safe(market.get('regime_label') or market.get('regime'))}",
-            f"│ ├─ 📈 <b>Trend:</b> {_safe(market.get('trend'))} · {_safe(market.get('trend_strength'))}",
-            f"│ ├─ ⚡ <b>ADX:</b> {_num(market.get('adx'), 1)}  ·  <b>Session:</b> {_safe(market.get('session'))}",
-            f"│ ├─ 💵 <b>DXY:</b> {_safe(market.get('dxy'))}",
-            f"│ └─ 📐 <b>EMA 50/100/200:</b> {_num(market.get('ema50'), 2)} / {_num(market.get('ema100'), 2)} / {_num(market.get('ema200'), 2)}",
-            "<code>├────────────────────────────────┤</code>",
-            "│ 🔬 <b>SCORING BREAKDOWN</b>",
-            f"│ ├─ {_score('SMC', 'smc')}  ·  {_score('Trend', 'trend')}",
-            f"│ ├─ {_score('Price Action', 'price_action')}  ·  {_score('Wyckoff', 'wyckoff')}",
-            f"│ ├─ {_score('Liquidity', 'liquidity')}  ·  {_score('Volatility', 'volatility')}",
-            f"│ └─ {_score('Divergence', 'divergence')}  ·  {_score('DXY', 'dxy')}",
-            "<code>├────────────────────────────────┤</code>",
-            "│ 🧩 <b>SETUP EVIDENCE</b>",
-            f"│ ├─ 🏗️ <b>SMC:</b> {_safe(smc.get('vote'))} · BOS {_safe(smc.get('bos_count', 0))} · CHoCH {_safe(smc.get('choch_count', 0))} · Sweeps {_safe(smc.get('sweep_count', 0))}",
-            f"│ ├─ 🕯️ <b>Price Action:</b> {_safe(pa.get('vote'))} · {_join(pa.get('patterns') or [])}",
-            f"│ └─ 📚 <b>Wyckoff:</b> {_safe(wyckoff.get('phase'))} · {_safe(wyckoff.get('vote'))} · Spring {_yes_no(wyckoff.get('spring'))} · Volume {_yes_no(wyckoff.get('volume_confirmed'))}",
-            "<code>├────────────────────────────────┤</code>",
-            "│ 🛡️ <b>RISK & PROTECTION</b>",
-            f"│ ├─ 💰 <b>Risk:</b> {_num(risk.get('risk_amount'), 2)} USD  ·  {_pct(risk.get('risk_percent'))} of balance",
-            f"│ ├─ ⚖️ <b>R:R:</b> {_num(risk.get('rr'), 2)}  ·  <b>SL distance:</b> {_num(risk.get('sl_distance'), 2)} USD",
-            f"│ └─ 🔁 <b>Break-even:</b> {_num(risk.get('break_even_at'), 5)}  ·  <b>Trailing:</b> {_num(risk.get('trailing_stop_distance'), 2)}",
-        ]
-
-        signals = strategy.get("signals") or []
-        if signals:
-            lines.extend([
-                "<code>├────────────────────────────────┤</code>",
-                "│ 📝 <b>DECISION NOTES</b>",
-            ])
-            for signal in signals[:6]:
-                lines.append(f"│ ├─ {_safe(signal)}")
-
-        lines.append("<code>╰────────────────────────────────╯</code>")
-        text = "\n".join(lines)
-        # Telegram hard-limits messages to 4096 characters.
-        return text if len(text) <= 3900 else text[:3880] + "\n…"
     @staticmethod
     def trade_closed(trade: TradeRecord) -> str:
         pnl_icon = "💰" if trade.net_profit >= 0 else "🔻"
@@ -508,21 +436,17 @@ class MessageFormatter:
     # ─── Trade History ──────────────────────────────────────────────────────
 
     @staticmethod
-    def trade_history(trades: list, *, live: bool = False) -> str:
+    def trade_history(trades: list) -> str:
         """Format recent closed trades for Telegram display."""
         _D = "─" * 32
         if not trades:
             return (
-                f"{'📡' if live else '📋'} <b>{'LIVE 10 RECENT TRADES' if live else 'TRADE HISTORY'}</b>\n"
+                "📋 <b>TRADE HISTORY</b>\n"
                 f"<code>{_D}</code>\n\n"
                 "No completed trades found.\n\n"
                 "<i>Trades appear here once the robot closes a position.</i>"
             )
-        title = "LIVE 10 RECENT TRADES" if live else "TRADE HISTORY"
-        lines = [
-            f"{'📡' if live else '📋'} <b>{title}</b> (last {len(trades)})",
-            f"<code>{_D}</code>",
-        ]
+        lines = [f"📋 <b>TRADE HISTORY</b> (last {len(trades)})", f"<code>{_D}</code>"]
         total_pnl = 0.0
         wins = 0
         for t in reversed(trades):
@@ -558,204 +482,6 @@ class MessageFormatter:
             f"📊 Total: <b>{total_pnl:+.2f}</b>  |  "
             f"Win-rate: <b>{winrate}%</b> ({wins}/{n})"
         )
-        return "\n".join(lines)
-
-    @staticmethod
-    def latest_scan(snapshot: dict[str, Any]) -> str:
-        """Format the latest live market scan in English."""
-        if not snapshot or not snapshot.get("connection_status"):
-            return (
-                "📡 <b>LATEST MARKET SCAN</b>\n"
-                f"<code>{_DIVIDER}</code>\n\n"
-                "⚠️ Live market scan data is not currently available."
-            )
-
-        # A connected MT5 account is not the same thing as a completed market
-        # scan.  The robot can be connected and waiting for the next completed
-        # candle, while the HTTP/Redis snapshot only contains account data.
-        # Never turn that incomplete state into a positive trading signal.
-        scan_fields = (
-            "candle_time",
-            "timestamp",
-            "price",
-            "trend",
-            "regime",
-            "smc_signal",
-            "adx",
-            "atr",
-        )
-        missing_scan_fields = [
-            field for field in scan_fields
-            if snapshot.get(field) is None or snapshot.get(field) == ""
-        ]
-        if missing_scan_fields:
-            received = snapshot.get("timestamp") or snapshot.get("_fetched_at") or "—"
-            connection = escape(str(snapshot.get("connection_status", "unknown")))
-            robot_status = snapshot.get("status") or snapshot.get("robot_status")
-            telemetry = snapshot.get("scan_telemetry") or {}
-            scan_symbol = snapshot.get("symbol") or telemetry.get("symbol")
-            scan_timeframe = snapshot.get("timeframe") or telemetry.get("timeframe")
-            scan_count = telemetry.get("candle_count", snapshot.get("candle_count"))
-            diagnostic_line = ""
-            if scan_symbol:
-                diagnostic_line = (
-                    f"\n📍 Symbol: <b>{escape(str(scan_symbol))}</b>"
-                    + (
-                        f"  |  TF: <b>{escape(str(scan_timeframe))}</b>"
-                        if scan_timeframe else ""
-                    )
-                )
-            if telemetry.get("status") == "INSUFFICIENT_CANDLES":
-                diagnostic_line += (
-                    f"\n📚 Candle warm-up: <b>{escape(str(scan_count or 0))}/50</b>"
-                )
-            status_line = (
-                f"\n🤖 Robot status: <b>{escape(str(robot_status))}</b>"
-                if robot_status
-                else ""
-            )
-            return (
-                "📡 <b>LATEST MARKET SCAN</b>\n"
-                f"<code>{_DIVIDER}</code>\n\n"
-                "⚠️ <b>No fresh market scan is available.</b>\n"
-                f"🛰️ Received: <code>{escape(str(received))}</code>\n"
-                f"🟢 Connection: <b>{connection}</b>"
-                f"{diagnostic_line}"
-                f"{status_line}\n\n"
-                "ℹ️ Signal confirmation is disabled until a complete "
-                "candle snapshot is received."
-            )
-
-        def value(key: str, fallback: str = "—") -> str:
-            raw = snapshot.get(key)
-            return fallback if raw is None or raw == "" else escape(str(raw))
-
-        def number(key: str, digits: int = 5) -> str:
-            raw = snapshot.get(key)
-            try:
-                return f"{float(raw):.{digits}f}"
-            except (TypeError, ValueError):
-                return "—"
-
-        def translate_term(raw: Any, terms: dict[str, str]) -> str:
-            if raw is None or raw == "":
-                return "—"
-            return escape(terms.get(str(raw).upper(), str(raw)))
-
-        def translate_reason(raw: Any) -> str:
-            """Translate known decision-engine reasons without hiding detail."""
-            reason = str(raw or "").strip()
-            if not reason:
-                return ""
-            replacements = [
-                (r"No SMC direction signal", "No directional SMC signal"),
-                (r"No SMC signal", "No SMC signal"),
-                (r"SMC composite is NEUTRAL while structure candidate is (\w+)",
-                 r"SMC composite is neutral; structure candidate \1 was not confirmed"),
-                (r"SMC direction conflict: structure candidate (\w+) vs composite (\w+)",
-                 r"SMC direction conflict: structure candidate \1 vs composite \2"),
-                (r'REgime', "Market regime"),
-                (r'Regime "([^"]+)" does not allow LONG',
-                 r'Market regime "\1" does not allow LONG'),
-                (r'Regime "([^"]+)" does not allow SHORT',
-                 r'Market regime "\1" does not allow SHORT'),
-                (r"Confidence ([\d.]+)% < ([\d.]+)%",
-                 r"Signal confidence \1% is below the minimum \2%"),
-                (r"Insufficient candle data \(< 30\)",
-                 "Insufficient candle data for analysis"),
-                (r"MTF unavailable", "Higher-timeframe data is unavailable"),
-                (r"MTF neutral", "Higher-timeframe direction is neutral"),
-                (r"entry blocked", "Entry blocked"),
-                (r"No signal", "No valid signal found"),
-            ]
-            for pattern, replacement in replacements:
-                reason = re.sub(pattern, replacement, reason, flags=re.IGNORECASE)
-            return escape(reason)
-
-        trend_terms = {
-            "BULLISH": "Bullish",
-            "BEARISH": "Bearish",
-            "NEUTRAL": "Neutral",
-        }
-        regime_terms = {
-            "RANGE": "Range",
-            "TRENDING": "Trending",
-            "VOLATILE": "Volatile",
-            "NEUTRAL": "Neutral",
-        }
-        signal_terms = {
-            "BUY": "BUY",
-            "SELL": "SELL",
-            "NEUTRAL": "Neutral",
-        }
-        connection_terms = {
-            "CONNECTED": "Connected",
-            "DISCONNECTED": "Disconnected",
-        }
-        news = snapshot.get("news_filter") or {}
-        dxy = snapshot.get("dxy_filter") or {}
-        news_blocked = bool(news.get("blocked", False))
-        news_label = "Blocked" if news_blocked else "Allowed"
-        news_icon = "🔴" if news_blocked else "🟢"
-        dxy_signal = translate_term(
-            dxy.get("signal"),
-            {"BEARISH_DXY": "Bearish DXY", "BULLISH_DXY": "Bullish DXY", "NEUTRAL": "Neutral"},
-        )
-        positions = snapshot.get("open_positions") or []
-        trades = snapshot.get("recent_trades") or []
-        decision = snapshot.get("last_decision") or {}
-        blocked_reasons = decision.get("blocked_reasons") or []
-        reasoning = decision.get("reasoning") or []
-        if isinstance(blocked_reasons, str):
-            blocked_reasons = [blocked_reasons]
-        if isinstance(reasoning, str):
-            reasoning = [reasoning]
-        if not snapshot.get("last_decision"):
-            rejection_lines = [
-                "No signal decision was recorded for this scan."
-            ]
-        elif blocked_reasons:
-            rejection_lines = [translate_reason(item) for item in blocked_reasons if item]
-        elif str(snapshot.get("smc_signal", "")).upper() == "NEUTRAL":
-            rejection_lines = [
-                "SMC signal is neutral; no confirmed entry structure."
-            ]
-        elif decision.get("allowed") is False:
-            rejection_lines = ["Entry conditions are not fully met."]
-        else:
-            rejection_lines = ["Valid signal; entry conditions confirmed."]
-        if not rejection_lines:
-            rejection_lines = ["No rejection reason was recorded in the current snapshot."]
-
-        lines = [
-            "📡 <b>LATEST MARKET SCAN</b>",
-            f"<code>{_DIVIDER}</code>",
-            f"📍 Symbol: <b>{value('symbol', '—')}</b>"
-            + (f"  |  TF: <b>{value('timeframe')}</b>" if snapshot.get("timeframe") else ""),
-            f"🕒 Candle: <code>{value('candle_time')}</code>",
-            f"🛰️ Received: <code>{value('timestamp', value('_fetched_at'))}</code>",
-            f"💵 Price: <b>{number('price')}</b>",
-            "",
-            f"📈 Trend: <b>{translate_term(snapshot.get('trend'), trend_terms)}</b>",
-            f"📊 Market regime: <b>{translate_term(snapshot.get('regime'), regime_terms)}</b>",
-            f"🎯 SMC signal: <b>{translate_term(snapshot.get('smc_signal'), signal_terms)}</b>",
-            f"📐 ADX: <b>{number('adx', 2)}</b>  |  ATR: <b>{number('atr', 5)}</b>",
-            "",
-            f"{news_icon} News filter: <b>{news_label}</b>",
-        ]
-        if news.get("reason"):
-            lines.append(f"   └ {translate_reason(news['reason'])}")
-        lines.extend([
-            f"💲 DXY status: <b>{dxy_signal}</b>",
-            f"🟢 Connection: <b>{translate_term(snapshot.get('connection_status'), connection_terms)}</b>",
-            f"💼 Open positions: <b>{len(positions)}</b>",
-            f"📋 Closed trades: <b>{len(trades)}</b>",
-            "",
-            "🚫 <b>Signal rejection reason:</b>",
-        ])
-        lines.extend(f"• {reason}" for reason in rejection_lines[:3])
-        if reasoning and not blocked_reasons:
-            lines.append(f"💡 Analysis: {translate_reason(reasoning[0])}")
         return "\n".join(lines)
 
     # ─── Helpers ─────────────────────────────────────────────────────────────

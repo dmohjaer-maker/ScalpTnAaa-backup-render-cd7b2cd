@@ -1,467 +1,138 @@
 """
 Capital Manager — Smart SL/TP/LotSize for XAUUSD.
-
-This module is intentionally limited to trade-parameter sizing.  Signal
-selection, entry filters, and execution are left untouched.
+Ported from capitalManager.ts
 """
-import os
 from dataclasses import dataclass
-from math import floor, isfinite
 from typing import Optional
 
-DEFAULT_RISK_PCT = 1.0
-
-
-def _bounded_env_float(name: str, default: float, lo: float, hi: float) -> float:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        value = float(raw)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a number, got {raw!r}") from exc
-    if not lo <= value <= hi:
-        raise ValueError(f"{name} must be between {lo} and {hi}, got {value}")
-    return value
-
-
-# Initial SL envelope. These remain Render-configurable using the existing
-# names so deployment settings stay backward compatible. Normal mode keeps a
-# wide protection floor; FAST_SCALP_MODE opts into a bounded, shorter envelope
-# suitable for small gold scalp targets without permitting fragile sub-ATR
-# stops.
-ATR_BUFFER_MULT = _bounded_env_float("SL_ATR_BUFFER_MULT", 0.15, 0.10, 0.75)
-_configured_min_sl_atr_mult = _bounded_env_float(
-    "SL_MIN_ATR_MULT", 1.80, 0.50, 4.00
-)
-_configured_max_sl_atr_mult = _bounded_env_float(
-    "SL_MAX_ATR_MULT", 3.50, 1.00, 6.00
-)
-# The fast profile is still bounded at 0.75 ATR; normal mode retains the
-# previous 1.80 ATR floor. This is deliberately not a freely disable-able
-# safety switch.
-_fast_scalp = os.getenv("FAST_SCALP_MODE", "false").strip().lower() in {
-    "1", "true", "yes", "on",
-}
-HARD_MIN_SL_ATR_MULT = _bounded_env_float(
-    "HARD_MIN_SL_ATR_MULT",
-    0.75 if _fast_scalp else 1.80,
-    0.75,
-    4.00,
-)
-MIN_SL_ATR_MULT = max(_configured_min_sl_atr_mult, HARD_MIN_SL_ATR_MULT)
-MAX_SL_ATR_MULT = max(_configured_max_sl_atr_mult, MIN_SL_ATR_MULT)
-if MIN_SL_ATR_MULT > MAX_SL_ATR_MULT:
-    raise ValueError("SL_MIN_ATR_MULT cannot exceed SL_MAX_ATR_MULT")
-
-# Optional advanced sizing knobs.  They have safe defaults and do not require
-# any Render environment change.
-SPREAD_BUFFER_MULT = _bounded_env_float("SL_SPREAD_BUFFER_MULT", 1.50, 0.50, 6.00)
-# Use the nearest valid structural target. Normal mode keeps the previous 2R
-# minimum; the explicit fast profile allows the small-target 1.2R policy.
-REQUIRED_ENTRY_RR = _bounded_env_float(
-    "REQUIRED_ENTRY_RR",
-    1.2 if _fast_scalp else 2.0,
-    1.0,
-    4.0,
-)
-FIXED_TP_RR = _bounded_env_float(
-    "TP_RR", 1.2 if _fast_scalp else 2.0, 0.80, 6.00
-)
-TP_MIN_RR = _bounded_env_float(
-    "TP_MIN_RR", 1.2 if _fast_scalp else 2.0, 0.80, 4.00
-)
-TP_MAX_RR = _bounded_env_float(
-    "TP_MAX_RR", 1.80 if _fast_scalp else 2.0, 1.00, 8.00
-)
-TP_APPROACH_ATR_MULT = _bounded_env_float("TP_APPROACH_ATR_MULT", 0.15, 0.00, 1.00)
-if TP_MIN_RR > TP_MAX_RR:
-    raise ValueError("TP_MIN_RR cannot exceed TP_MAX_RR")
-
+DEFAULT_RISK_PCT    = 1.0
+ATR_BUFFER_MULT     = 0.25
+MIN_SL_ATR_MULT     = 0.50
+MAX_SL_ATR_MULT     = 3.00
+FIXED_TP_RR         = 2.00
 LOT_DOLLAR_PER_UNIT = 100
-FOREX_DOLLAR_PER_UNIT = 100_000
-MIN_LOT = 0.01
-MAX_LOT = 50.0
-# When non-zero, use this exact broker volume instead of percentage-based
-# sizing.  The downstream risk gates still validate the realised stop-loss
-# exposure, so a fixed volume can never bypass the account risk cap.
-# Hard safety lock: every new market entry must use exactly 0.02 lots.
-# Keep risk and protection gates active; this only removes dynamic volume sizing.
-FIXED_LOT_SIZE = _bounded_env_float("FIXED_LOT_SIZE", 0.0, 0.0, 50.0)
-# A broker's minimum lot can force the realised stop-loss exposure above the
-# configured percentage.  That is not an acceptable reason to place a trade:
-# the fail-closed gate below rejects it instead of silently risking 5–10%.
-MAX_SINGLE_TRADE_RISK_MULTIPLIER = _bounded_env_float(
-    "MAX_SINGLE_TRADE_RISK_MULTIPLIER", 1.00, 1.00, 3.00
-)
-
-# EURUSD uses a standard 100,000-unit FX contract. Keep the existing XAUUSD
-# sizing constants untouched so adding EUR cannot change gold risk.
-FOREX_MIN_SL_ATR_MULT = _bounded_env_float(
-    "FOREX_MIN_SL_ATR_MULT", 1.20, 0.75, 4.00
-)
-FOREX_MAX_SL_ATR_MULT = _bounded_env_float(
-    "FOREX_MAX_SL_ATR_MULT", 2.50, 1.00, 6.00
-)
-
-
-def _is_eurusd(symbol: str) -> bool:
-    return symbol.upper().replace(".", "").startswith("EURUSD")
-
-
-def _price_unit_value(symbol: str) -> float:
-    return FOREX_DOLLAR_PER_UNIT if _is_eurusd(symbol) else LOT_DOLLAR_PER_UNIT
-
-
-def _sl_atr_bounds(symbol: str) -> tuple[float, float]:
-    if _is_eurusd(symbol):
-        return FOREX_MIN_SL_ATR_MULT, max(FOREX_MAX_SL_ATR_MULT, FOREX_MIN_SL_ATR_MULT)
-    return MIN_SL_ATR_MULT, MAX_SL_ATR_MULT
+MIN_LOT             = 0.01
+MAX_LOT             = 50.0
 
 
 @dataclass
 class CapitalInput:
-    direction: str
-    entry_price: float
-    atr: float
-    account_balance: float
-    risk_percent: float = DEFAULT_RISK_PCT
-    order_block_top: Optional[float] = None
-    order_block_bottom: Optional[float] = None
-    swing_high: Optional[float] = None
-    swing_low: Optional[float] = None
-    resistance_level: Optional[float] = None
-    support_level: Optional[float] = None
-    # Optional live context. Existing callers need not provide these.
-    atr_mean: Optional[float] = None
-    spread: float = 0.0
-    # Latest confirmed local pivots; preferred over distant BOS levels for scalps.
-    micro_swing_high: Optional[float] = None
-    micro_swing_low: Optional[float] = None
-    # Broker symbol controls contract sizing and symbol-specific SL calibration.
-    symbol: str = "XAUUSD"
+    direction:           str    # BUY | SELL
+    entry_price:         float
+    atr:                 float
+    account_balance:     float
+    risk_percent:        float = DEFAULT_RISK_PCT
+    order_block_top:     Optional[float] = None
+    order_block_bottom:  Optional[float] = None
+    swing_high:          Optional[float] = None
+    swing_low:           Optional[float] = None
+    resistance_level:    Optional[float] = None
+    support_level:       Optional[float] = None
 
 
 @dataclass
 class CapitalOutput:
-    entry_price: float
-    stop_loss: float
-    take_profit: float
-    risk_reward_ratio: float
+    entry_price:            float
+    stop_loss:              float
+    take_profit:            float
+    risk_reward_ratio:      float
     trailing_stop_distance: float
     trailing_activation_at: float
-    break_even_at: float
-    break_even_sl: float
-    lot_size: float
-    risk_amount: float
-    sl_distance_usd: float
-    sl_distance_pips: float
+    break_even_at:          float
+    break_even_sl:          float
+    lot_size:               float
+    risk_amount:            float
+    sl_distance_usd:        float
+    sl_distance_pips:       float
 
 
-def validate_trade_risk(
-    output: CapitalOutput,
-    account_balance: float,
-    target_risk_percent: float,
-) -> tuple[bool, str]:
-    """Fail closed when broker lot granularity exceeds the risk budget.
-
-    Sizing normally rounds down, but ``MIN_LOT`` can still round a very small
-    calculated position up to the broker minimum.  In that case the returned
-    ``risk_amount`` is the *real* stop-loss exposure, not the requested
-    amount.  Never send an order when that exposure materially exceeds the
-    configured budget.
-    """
-    if (
-        not isfinite(account_balance)
-        or account_balance <= 0
-        or not isfinite(target_risk_percent)
-        or target_risk_percent <= 0
-        or not isfinite(output.risk_amount)
-        or output.risk_amount < 0
-    ):
-        return False, "Risk budget is invalid — entry blocked"
-
-    budget = account_balance * target_risk_percent / 100.0
-    max_allowed = budget * MAX_SINGLE_TRADE_RISK_MULTIPLIER
-    if output.risk_amount > max_allowed + max(0.01, budget * 0.005):
-        actual_percent = output.risk_amount / account_balance * 100.0
-        return (
-            False,
-            f"Minimum broker lot would risk {actual_percent:.2f}% "
-            f"({output.risk_amount:.2f}) vs target {target_risk_percent:.2f}% "
-            f"({budget:.2f}) — entry blocked",
-        )
-    return True, ""
+def _clamp(val: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, val))
 
 
-def estimate_position_risk(position: dict) -> Optional[float]:
-    """Estimate stop-loss exposure for a normalised open-position row.
-
-    ``None`` is deliberately returned when a position has no usable SL.  An
-    unprotected position must not be treated as zero risk by the aggregate
-    exposure gate.
-    """
-    try:
-        symbol = str(position.get("symbol") or "XAUUSD")
-        volume = float(position.get("volume", 0.0))
-        open_price = float(position.get("open_price", 0.0))
-        stop_loss = float(position.get("sl", 0.0))
-    except (AttributeError, TypeError, ValueError):
-        return None
-    if (
-        not isfinite(volume)
-        or not isfinite(open_price)
-        or not isfinite(stop_loss)
-        or volume <= 0
-        or open_price <= 0
-        or stop_loss <= 0
-    ):
-        return None
-    distance = abs(open_price - stop_loss)
-    if distance <= 0:
-        return None
-    return volume * distance * _price_unit_value(symbol)
-
-
-def validate_total_open_risk(
-    positions: list[dict],
-    new_trade_risk: float,
-    account_balance: float,
-    max_total_risk_percent: float,
-) -> tuple[bool, str]:
-    """Keep existing stop exposure plus the new order under one account cap."""
-    if (
-        not isfinite(account_balance)
-        or account_balance <= 0
-        or not isfinite(new_trade_risk)
-        or new_trade_risk < 0
-        or not isfinite(max_total_risk_percent)
-        or max_total_risk_percent <= 0
-    ):
-        return False, "Total risk budget is invalid — entry blocked"
-
-    total_existing = 0.0
-    for position in positions:
-        position_risk = estimate_position_risk(position)
-        if position_risk is None:
-            ticket = position.get("id", position.get("ticket", "?"))
-            return (
-                False,
-                f"Open position {ticket} has no valid protective SL — "
-                "entry blocked until it is protected",
-            )
-        total_existing += position_risk
-
-    max_total = account_balance * max_total_risk_percent / 100.0
-    total_after_entry = total_existing + new_trade_risk
-    if total_after_entry > max_total + max(0.01, max_total * 0.005):
-        total_percent = total_after_entry / account_balance * 100.0
-        return (
-            False,
-            f"Aggregate stop risk would be {total_percent:.2f}% "
-            f"({total_after_entry:.2f}) vs account cap "
-            f"{max_total_risk_percent:.2f}% ({max_total:.2f}) — entry blocked",
-        )
-    return True, ""
-
-
-def _clamp(value: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, value))
-
-
-def _r2(value: float) -> float:
-    return round(value, 2)
-
-
-def _r4(value: float) -> float:
-    return round(value, 4)
-
-
-def _price_digits(symbol: str) -> int:
-    return 5 if _is_eurusd(symbol) else 2
-
-
-def _price_round(value: float, symbol: str) -> float:
-    return round(value, _price_digits(symbol))
-
-
-def _dynamic_buffer(atr: float, atr_mean: Optional[float], spread: float) -> tuple[float, float]:
-    """Return a volatility- and spread-aware cushion beyond structure."""
-    mean = atr_mean if atr_mean is not None and isfinite(atr_mean) else atr
-    volatility_ratio = _clamp(atr / mean, 0.50, 2.50) if mean > 0 else 1.0
-    if volatility_ratio >= 1.0:
-        volatility_factor = _clamp(0.90 + 0.55 * (volatility_ratio - 1.0), 0.90, 1.75)
-    else:
-        volatility_factor = _clamp(0.90 + 0.20 * (volatility_ratio - 1.0), 0.70, 0.90)
-    atr_buffer = atr * ATR_BUFFER_MULT * volatility_factor
-    safe_spread = spread if isfinite(spread) and spread > 0 else 0.0
-    spread_buffer = safe_spread * SPREAD_BUFFER_MULT
-    minimum_component = max(atr * 0.12, safe_spread * 2.0)
-    return max(atr_buffer, spread_buffer, minimum_component), volatility_ratio
-
-
-def _select_sl_level(direction: str, entry: float, inp: CapitalInput) -> Optional[float]:
-    if direction == "BUY":
-        candidates = [
-            value for value in (
-                inp.micro_swing_low, inp.order_block_bottom, inp.swing_low,
-                inp.support_level,
-            ) if value is not None and isfinite(value) and value < entry
-        ]
-        return max(candidates) if candidates else None
-    candidates = [
-        value for value in (
-            inp.micro_swing_high, inp.order_block_top, inp.swing_high,
-            inp.resistance_level,
-        ) if value is not None and isfinite(value) and value > entry
-    ]
-    return min(candidates) if candidates else None
-
-
-def _select_tp_level(direction: str, entry: float, inp: CapitalInput) -> Optional[float]:
-    if direction == "BUY":
-        candidates = [
-            value for value in (
-                inp.micro_swing_high, inp.order_block_top, inp.swing_high,
-                inp.resistance_level,
-            ) if value is not None and isfinite(value) and value > entry
-        ]
-        return min(candidates) if candidates else None
-    candidates = [
-        value for value in (
-            inp.micro_swing_low, inp.order_block_bottom, inp.swing_low,
-            inp.support_level,
-        ) if value is not None and isfinite(value) and value < entry
-    ]
-    return max(candidates) if candidates else None
+def _r2(n: float) -> float: return round(n, 2)
+def _r4(n: float) -> float: return round(n, 4)
 
 
 def _calc_smart_sl(direction: str, entry: float, atr: float, inp: CapitalInput) -> float:
-    # A failed/zero ATR must never collapse SL onto the entry price.
-    safe_atr = atr if isfinite(atr) and atr > 0 else max(entry * 0.001, 0.01)
-    buffer, volatility_ratio = _dynamic_buffer(safe_atr, inp.atr_mean, inp.spread)
-    safe_spread = inp.spread if isfinite(inp.spread) and inp.spread > 0 else 0.0
+    buffer = atr * ATR_BUFFER_MULT
+    min_sl = atr * MIN_SL_ATR_MULT
+    max_sl = atr * MAX_SL_ATR_MULT
+    raw_sl = None
 
-    # In elevated volatility, give the stop progressively more breathing room.
-    # XAUUSD keeps the existing hard floor; EURUSD uses its own conservative
-    # FX calibration so the gold-specific envelope is never reused blindly.
-    min_sl_atr, max_sl_atr = _sl_atr_bounds(inp.symbol)
-    adaptive_min_multiplier = _clamp(
-        min_sl_atr + max(volatility_ratio - 1.0, 0.0) * 0.35,
-        min_sl_atr,
-        max_sl_atr,
-    )
-    minimum_distance = max(
-        safe_atr * adaptive_min_multiplier,
-        safe_spread * SPREAD_BUFFER_MULT * 1.5,
-    )
-    maximum_distance = max(
-        minimum_distance,
-        safe_atr * _clamp(
-            max_sl_atr + max(volatility_ratio - 1.0, 0.0) * 0.50,
-            adaptive_min_multiplier,
-            max_sl_atr,
-        ),
-    )
-
-    level = _select_sl_level(direction, entry, inp)
-    structure_distance = abs(entry - level) if level is not None else 0.0
-
-    # Do not pull a stop inside a distant structural invalidation level. If it
-    # is beyond the current volatility envelope, use a volatility fallback.
-    if level is None or structure_distance > maximum_distance:
-        # No usable nearby structure: use the upper end of the volatility
-        # envelope rather than falling back to a fragile minimum stop.
-        distance = maximum_distance
+    if direction == "BUY":
+        cands = []
+        if inp.order_block_bottom is not None and inp.order_block_bottom < entry:
+            cands.append(inp.order_block_bottom)
+        if inp.swing_low is not None and inp.swing_low < entry:
+            cands.append(inp.swing_low)
+        if inp.support_level is not None and inp.support_level < entry:
+            cands.append(inp.support_level)
+        if cands:
+            level  = max(cands)
+            raw_sl = entry - (entry - level + buffer)
     else:
-        distance = _clamp(
-            max(structure_distance + buffer, minimum_distance),
-            minimum_distance,
-            maximum_distance,
-        )
+        cands = []
+        if inp.order_block_top is not None and inp.order_block_top > entry:
+            cands.append(inp.order_block_top)
+        if inp.swing_high is not None and inp.swing_high > entry:
+            cands.append(inp.swing_high)
+        if inp.resistance_level is not None and inp.resistance_level > entry:
+            cands.append(inp.resistance_level)
+        if cands:
+            level  = min(cands)
+            raw_sl = entry + (level - entry + buffer)
 
-    return _price_round(
-        entry - distance if direction == "BUY" else entry + distance,
-        inp.symbol,
-    )
-
-
-def _calc_structural_tp(
-    direction: str, entry: float, sl_distance: float, atr: float, inp: CapitalInput,
-) -> tuple[Optional[float], float]:
-    if sl_distance <= 0:
-        return None, 0.0
-    level = _select_tp_level(direction, entry, inp)
-    if level is None:
-        return None, 0.0
-    raw_distance = abs(level - entry)
-    approach = max(
-        max(atr, 0.0) * TP_APPROACH_ATR_MULT,
-        max(inp.spread, 0.0),
-    )
-    target_distance = raw_distance - approach
-    rr = target_distance / sl_distance if sl_distance > 0 else 0.0
-    if target_distance <= 0 or rr < TP_MIN_RR or rr > TP_MAX_RR:
-        return None, 0.0
-    target = entry + target_distance if direction == "BUY" else entry - target_distance
-    return _price_round(target, inp.symbol), target_distance
+    fallback  = atr * 1.5
+    sl_dist   = abs(entry - raw_sl) if raw_sl is not None else fallback
+    clamped   = _clamp(sl_dist, min_sl, max_sl)
+    return _r2(entry - clamped if direction == "BUY" else entry + clamped)
 
 
-def _calc_lot_size(
-    sl_dist_usd: float, balance: float, risk_pct: float, symbol: str
-) -> tuple[float, float]:
-    if not isfinite(sl_dist_usd) or sl_dist_usd <= 0 or balance <= 0 or risk_pct <= 0:
+def _calc_lot_size(sl_dist_usd: float, balance: float, risk_pct: float):
+    if sl_dist_usd <= 0:
         return MIN_LOT, 0.0
-    if FIXED_LOT_SIZE > 0:
-        lot_size = _r4(FIXED_LOT_SIZE)
-        actual_risk = _r2(lot_size * sl_dist_usd * _price_unit_value(symbol))
-        return lot_size, actual_risk
-    risk_amount = balance * risk_pct / 100.0
-    raw_lot = risk_amount / (sl_dist_usd * _price_unit_value(symbol))
-    # Round down before the executor's broker-step normalisation so the
-    # requested risk is never increased by ordinary rounding.
-    lot_size = floor(_clamp(raw_lot, MIN_LOT, MAX_LOT) * 10_000) / 10_000
-    lot_size = max(MIN_LOT, min(MAX_LOT, lot_size))
-    actual_risk = _r2(lot_size * sl_dist_usd * _price_unit_value(symbol))
-    return _r4(lot_size), actual_risk
+    risk_amount = balance * risk_pct / 100
+    raw_lot     = risk_amount / (sl_dist_usd * LOT_DOLLAR_PER_UNIT)
+    lot_size    = _r4(_clamp(raw_lot, MIN_LOT, MAX_LOT))
+    actual_risk = _r2(lot_size * sl_dist_usd * LOT_DOLLAR_PER_UNIT)
+    return lot_size, actual_risk
 
 
 def calc_trade_parameters(inp: CapitalInput) -> CapitalOutput:
-    entry = inp.entry_price
-    direction = inp.direction
-    atr = inp.atr if isfinite(inp.atr) and inp.atr > 0 else max(entry * 0.001, 0.01)
+    entry      = inp.entry_price
+    direction  = inp.direction
+    atr        = inp.atr
+    risk_pct   = inp.risk_percent
 
-    sl = _calc_smart_sl(direction, entry, atr, inp)
-    sl_dist = _price_round(abs(entry - sl), inp.symbol)
-    sl_pips = _r2(sl_dist * (10_000 if _is_eurusd(inp.symbol) else 100))
+    sl         = _calc_smart_sl(direction, entry, atr, inp)
+    sl_dist    = _r2(abs(entry - sl))
+    sl_pips    = _r2(sl_dist * 100)
 
-    tp, tp_dist = _calc_structural_tp(direction, entry, sl_dist, atr, inp)
-    if tp is None:
-        tp_dist = sl_dist * FIXED_TP_RR
-        tp = _price_round(
-            entry + tp_dist if direction == "BUY" else entry - tp_dist,
-            inp.symbol,
-        )
-    rr = _r2(tp_dist / sl_dist) if sl_dist > 0 else 0.0
+    tp_dist    = sl_dist * FIXED_TP_RR
+    tp         = _r2(entry + tp_dist if direction == "BUY" else entry - tp_dist)
+    rr         = _r2(tp_dist / sl_dist) if sl_dist > 0 else 0.0
 
-    lot, risk = _calc_lot_size(
-        sl_dist, inp.account_balance, inp.risk_percent, inp.symbol
-    )
-    be_dist = sl_dist
-    be_at = _price_round(
-        entry + be_dist if direction == "BUY" else entry - be_dist,
-        inp.symbol,
-    )
+    lot, risk  = _calc_lot_size(sl_dist, inp.account_balance, risk_pct)
+
+    # Break-even trigger: price must move 1× SL distance in our favour before
+    # we can safely move the stop to entry.  Trailing stop activates at the
+    # same level.  These are informational fields — the live loop does not yet
+    # implement automatic BE/trailing moves; they're displayed on the panel.
+    be_dist    = sl_dist * 1.0
+    be_at      = _r2(entry + be_dist if direction == "BUY" else entry - be_dist)
+    trail_act  = be_at
+    trail_dist = _r2(sl_dist * 0.5)   # trail distance = half of original SL
 
     return CapitalOutput(
-        entry_price=_price_round(entry, inp.symbol),
+        entry_price=_r2(entry),
         stop_loss=sl,
         take_profit=tp,
         risk_reward_ratio=rr,
-        trailing_stop_distance=_price_round(sl_dist * 0.5, inp.symbol),
-        trailing_activation_at=_price_round(be_at, inp.symbol),
-        break_even_at=_price_round(be_at, inp.symbol),
-        break_even_sl=_price_round(entry, inp.symbol),
+        trailing_stop_distance=trail_dist,
+        trailing_activation_at=trail_act,
+        break_even_at=be_at,
+        break_even_sl=entry,
         lot_size=lot,
         risk_amount=risk,
         sl_distance_usd=sl_dist,

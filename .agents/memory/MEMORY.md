@@ -1,1 +1,0 @@
-- [Render configuration sync](render-configuration-sync.md) — Render service environment values can drift from render.yaml; synchronize non-secret runtime flags explicitly before deploying.

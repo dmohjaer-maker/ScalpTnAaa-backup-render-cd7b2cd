@@ -8,7 +8,7 @@ Usage:
 
 Required environment variables:
     MTAPI_URL      – URL of your mt5rest Docker service on Render
-                     (e.g. https://mt5.mtapi.io)
+                     (e.g. https://goldscalper-mtapi.onrender.com)
     MT5_HOST       – broker server name (e.g. AMarkets-Demo)
     MT5_USER       – MT5 account login number
     MT5_PASSWORD   – MT5 account password
@@ -16,7 +16,7 @@ Required environment variables:
 Optional:
     SYMBOL               – default: XAUUSDb  (AMarkets uses the 'b' suffix; adjust for your broker)
     RISK_PERCENT         – default: 1.0
-    MIN_CONFIRMATIONS    – default: 2
+    MIN_CONFIRMATIONS    – default: 3
     DAILY_LOSS_LIMIT_PCT – default: 3.0
     MAX_DRAWDOWN_PCT     – default: 8.0
     SLIPPAGE_POINTS      – default: 30

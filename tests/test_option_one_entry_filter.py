@@ -1,13 +1,13 @@
-"""Entry-gate regression tests.
+"""Exact option 1 entry-gate tests.
 
-SMC is advisory rather than a mandatory gate. Trend alignment remains a hard
-safety rule, while the legacy strict option requires Price Action + Wyckoff.
+Option 1 requires same-direction SMC + Price Action + Wyckoff.
+EMA is intentionally not a required vote for this option.
 """
 
 from live_trading.signals.entry_filter import apply_entry_filter
 
 
-def test_option_one_blocks_when_trend_is_neutral():
+def test_option_one_allows_without_ema_when_three_required_engines_agree():
     result = apply_entry_filter(
         smc_signal="BUY",
         ema_trend="NEUTRAL",
@@ -17,87 +17,9 @@ def test_option_one_blocks_when_trend_is_neutral():
         require_smc_price_action_wyckoff=True,
     )
 
-    assert result.allowed is False
-    assert result.direction == "NEUTRAL"
+    assert result.allowed is True
+    assert result.direction == "BUY"
     assert result.confirmation_count == 3
-
-
-def test_flexible_mode_allows_two_aligned_confirmations_with_neutral_trend():
-    result = apply_entry_filter(
-        smc_signal="BUY",
-        ema_trend="NEUTRAL",
-        pa_signal="BUY",
-        wyckoff_signal="NEUTRAL",
-        min_confirmations=2,
-        require_trend_alignment=False,
-        candidate_direction="BUY",
-    )
-
-    assert result.allowed is True
-    assert result.direction == "BUY"
-    assert result.confirmation_count == 2
-    assert result.trend is False
-
-
-def test_flexible_mode_still_blocks_one_confirmation_with_neutral_trend():
-    result = apply_entry_filter(
-        smc_signal="BUY",
-        ema_trend="NEUTRAL",
-        pa_signal="NEUTRAL",
-        wyckoff_signal="NEUTRAL",
-        min_confirmations=2,
-        require_trend_alignment=False,
-        candidate_direction="BUY",
-    )
-
-    assert result.allowed is False
-    assert result.direction == "NEUTRAL"
-    assert result.confirmation_count == 1
-
-
-def test_option_one_allows_when_all_engines_and_trend_align():
-    result = apply_entry_filter(
-        smc_signal="BUY",
-        ema_trend="BULLISH",
-        pa_signal="BUY",
-        wyckoff_signal="BUY",
-        min_confirmations=2,
-        require_smc_price_action_wyckoff=True,
-    )
-
-    assert result.allowed is True
-    assert result.direction == "BUY"
-    assert result.confirmation_count == 4
-
-
-def test_legacy_strict_option_allows_without_smc_when_other_confirmations_align():
-    result = apply_entry_filter(
-        smc_signal="NEUTRAL",
-        ema_trend="BULLISH",
-        pa_signal="BUY",
-        wyckoff_signal="BUY",
-        min_confirmations=2,
-        require_smc_price_action_wyckoff=True,
-        candidate_direction="BUY",
-    )
-
-    assert result.allowed is True
-    assert result.direction == "BUY"
-    assert result.smc is False
-
-
-def test_option_one_blocks_when_trend_is_opposite():
-    result = apply_entry_filter(
-        smc_signal="BUY",
-        ema_trend="BEARISH",
-        pa_signal="BUY",
-        wyckoff_signal="BUY",
-        min_confirmations=2,
-        require_smc_price_action_wyckoff=True,
-    )
-
-    assert result.allowed is False
-    assert result.direction == "NEUTRAL"
 
 
 def test_option_one_blocks_when_wyckoff_disagrees():

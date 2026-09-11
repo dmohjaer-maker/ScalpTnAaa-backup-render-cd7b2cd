@@ -5,7 +5,6 @@ Ported from wyckoffEngine.ts — confirmation only, never triggers alone.
 from dataclasses import dataclass
 from typing import List, Literal, Optional
 from live_trading.signals.gold_engine import OHLCV
-from live_trading.symbols import is_eurusd, wyckoff_baseline
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -29,29 +28,15 @@ CFG_M5 = WyckoffConfig(
     recent_bars=6,
 )
 
-# Runtime-calibrated config (set by calibrate_wyckoff()), isolated by symbol.
-_calibrated_by_symbol: dict[str, WyckoffConfig] = {}
+# Runtime-calibrated config (set by calibrate_wyckoff())
+_calibrated_m5: Optional[WyckoffConfig] = None
 
 
-def _base_config(symbol: str) -> WyckoffConfig:
-    values = wyckoff_baseline(symbol)
-    return WyckoffConfig(
-        range_bars=20,
-        trend_bars=12,
-        spring_margin=float(values["spring_margin"]),
-        upthrust_margin=float(values["upthrust_margin"]),
-        min_range_touches=2,
-        max_range_pct=0.010,
-        min_range_pct=0.001,
-        recent_bars=6,
-    )
-
-
-def calibrate_wyckoff(candles: List[OHLCV], symbol: str = "XAUUSD") -> WyckoffConfig:
+def calibrate_wyckoff(candles: List[OHLCV]) -> WyckoffConfig:
     """Derive WyckoffConfig from real OHLCV data (mirrors calibrateM5Config)."""
     n = len(candles)
     if n < 200:
-        return _base_config(symbol)
+        return CFG_M5
 
     # Median 14-bar ATR (sampled every 30 bars)
     atrs = []
@@ -79,7 +64,7 @@ def calibrate_wyckoff(candles: List[OHLCV], symbol: str = "XAUUSD") -> WyckoffCo
     range_pcts.sort()
 
     p85 = range_pcts[int(len(range_pcts) * 0.85)] if range_pcts else 0.010
-    margin = round(median_atr * 0.80, 5 if is_eurusd(symbol) else 2)
+    margin = round(median_atr * 0.80, 2)
 
     return WyckoffConfig(
         range_bars=20, trend_bars=12,
@@ -90,12 +75,13 @@ def calibrate_wyckoff(candles: List[OHLCV], symbol: str = "XAUUSD") -> WyckoffCo
     )
 
 
-def set_calibrated_config(cfg: WyckoffConfig, symbol: str = "XAUUSD") -> None:
-    _calibrated_by_symbol[symbol.upper()] = cfg
+def set_calibrated_config(cfg: WyckoffConfig) -> None:
+    global _calibrated_m5
+    _calibrated_m5 = cfg
 
 
-def _get_cfg(symbol: str = "XAUUSD") -> WyckoffConfig:
-    return _calibrated_by_symbol.get(symbol.upper(), _base_config(symbol))
+def _get_cfg() -> WyckoffConfig:
+    return _calibrated_m5 if _calibrated_m5 else CFG_M5
 
 
 # ── Output ────────────────────────────────────────────────────────────────────
@@ -229,8 +215,8 @@ _NEUTRAL = WyckoffResult(
 )
 
 
-def analyze_wyckoff(candles: List[OHLCV], symbol: str = "XAUUSD") -> WyckoffResult:
-    cfg = _get_cfg(symbol)
+def analyze_wyckoff(candles: List[OHLCV]) -> WyckoffResult:
+    cfg = _get_cfg()
 
     if len(candles) < cfg.range_bars + cfg.trend_bars:
         return _NEUTRAL
@@ -253,20 +239,15 @@ def analyze_wyckoff(candles: List[OHLCV], symbol: str = "XAUUSD") -> WyckoffResu
                              volume_confirmed=vol_conf,
                              wyckoff_signal="NEUTRAL", wyckoff_score=0.0)
 
-    # A phase describes context, not an entry trigger. Require both the
-    # directional event (Spring/Upthrust) and directional volume confirmation
-    # before Wyckoff can cast a BUY/SELL vote. This prevents a phase-only
-    # classification from authorizing an entry in a still-unresolved range.
-    confirmed_event = spring if phase == "ACCUMULATION" else upthrust
-    if not confirmed_event or not vol_conf:
-        return WyckoffResult(
-            phase=phase, spring=spring, upthrust=upthrust,  # type: ignore
-            volume_confirmed=vol_conf,
-            wyckoff_signal="NEUTRAL", wyckoff_score=0.0,
-        )
-
-    score_raw = 1.0
-    signal = "BUY" if phase == "ACCUMULATION" else "SELL"
+    score_raw = 0.30
+    if phase == "ACCUMULATION":
+        signal = "BUY"
+        if spring:   score_raw += 0.40
+        if vol_conf: score_raw += 0.30
+    else:
+        signal = "SELL"
+        if upthrust: score_raw += 0.40
+        if vol_conf: score_raw += 0.30
 
     return WyckoffResult(
         phase=phase, spring=spring, upthrust=upthrust,  # type: ignore

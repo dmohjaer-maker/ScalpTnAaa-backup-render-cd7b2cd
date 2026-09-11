@@ -70,10 +70,14 @@ class TradeService:
     async def close_losing(self) -> dict[str, object]:
         return await self._mt5.send_trade_command("CLOSE_LOSING", {})
 
-    async def get_recent_trades(self, limit: int = 20, *, fresh: bool = False) -> list:
-        """Return recent trades, optionally bypassing the panel snapshot cache."""
-        return await self._mt5.get_recent_trades(limit, fresh=fresh)
+    async def get_recent_trades(self, limit: int = 20) -> list:
+        """
+        Return the most recent closed trades from the robot snapshot.
 
-    async def get_latest_scan(self) -> dict:
-        """Return the latest market scan from the live robot snapshot."""
-        return await self._mt5.get_latest_scan()
+        ROOT-CAUSE FIX: TradeService had no get_recent_trades() method, so
+        the Telegram panel had no way to fetch completed trade history from
+        the MT5 snapshot (which IS populated by the live robot).
+        """
+        from ..models.trade import Trade
+        trades = await self._mt5.get_recent_trades(limit)
+        return trades

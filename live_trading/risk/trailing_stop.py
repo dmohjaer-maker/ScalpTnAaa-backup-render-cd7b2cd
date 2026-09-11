@@ -45,24 +45,18 @@ mt5.executor.modify_position() and is responsible for tracking the
 position's original entry/SL baseline so it survives restarts.
 """
 from dataclasses import dataclass
-from math import isfinite
+from math import floor
 from typing import Optional
-from live_trading.symbols import execution_step, is_eurusd, price_round
 
 
 @dataclass
 class TrailingConfig:
     enabled:         bool  = True
-    activation_r:    float = 0.90  # protect after a meaningful, not tiny, move
-    step_r:          float = 0.50  # retained for compatibility and telemetry
-    lock_buffer_r:   float = 0.10  # initial real profit locked after activation
-    lock_slope:      float = 0.60  # progressively lock more as profit expands
-    max_lock_r:      float = 2.00  # never lock beyond this through the curve
-    atr_gap_mult:    float = 1.10  # volatility room behind the high/low
-    spread_gap_mult: float = 2.50  # execution-side spread protection
-    max_gap_r:       float = 0.90  # do not let trailing become excessively slow
-    min_step_price:  float = 0.10  # avoid reacting to tiny quote noise
-    min_gap_price:   float = 0.05  # absolute floor for symbols with tiny ATR
+    activation_r:    float = 1.0   # R-multiple that first engages trailing
+    step_r:          float = 0.5   # R-multiple per staircase step
+    lock_buffer_r:   float = 0.1   # extra R locked in at every step
+    atr_gap_mult:    float = 0.5   # never place SL closer than this × ATR to price
+    min_step_price:  float = 0.05  # minimum price-unit improvement to bother modifying
 
 
 def _r2(n: float) -> float:
@@ -76,119 +70,43 @@ def compute_staircase_sl(
     current_price: float,           # current bid (for BUY) / ask (for SELL)
     atr:           float,           # current ATR in price units (0 disables the floor)
     cfg:           TrailingConfig,
-    favorable_extreme: Optional[float] = None,
-    spread:         float = 0.0,    # current ask-bid spread in price units
-    symbol:         str = "XAUUSD",
-    current_sl:     Optional[float] = None,
 ) -> Optional[float]:
-    """Return an adaptive candidate SL price, or None if not yet triggered.
+    """Return the staircase's candidate SL price, or None if not yet triggered.
 
     The caller must still compare the result against the position's live SL
     and only apply it when it is an improvement of at least
     ``cfg.min_step_price`` — this function does not know the current SL, so
     it cannot enforce "never move backwards" on its own.
-
-    ``favorable_extreme`` is the high-water mark for BUY positions or the
-    low-water mark for SELL positions. It is supplied by the live loop and
-    persisted through successful trail events, so a brief price retracement
-    cannot make the stop loosen.
     """
     if not cfg.enabled or risk_distance <= 0 or cfg.step_r <= 0:
         return None
-    if not all(
-        isfinite(float(value))
-        for value in (entry, risk_distance, current_price)
-    ):
-        return None
 
-    direction = direction.upper()
-    if direction not in {"BUY", "SELL"}:
-        return None
-    is_buy = direction == "BUY"
+    is_buy = direction.upper() == "BUY"
     profit_distance = (current_price - entry) if is_buy else (entry - current_price)
-    extreme = favorable_extreme if favorable_extreme is not None else current_price
-    if not isfinite(float(extreme)):
-        extreme = current_price
-    extreme_profit_distance = (
-        (extreme - entry) if is_buy else (entry - extreme)
-    )
-    if profit_distance <= 0 and extreme_profit_distance <= 0:
+    if profit_distance <= 0:
         return None  # trade is flat or underwater — nothing to protect yet
 
-    # Never trust a malformed/stale mark that is on the wrong side of entry.
-    if is_buy:
-        extreme = max(entry, extreme)
-    else:
-        extreme = min(entry, extreme)
-
-    # Use the better of the current quote and the stored extreme. This keeps
-    # the pure function safe when a caller has not restored a high-water mark
-    # yet, while still never allowing the stop to loosen.
-    current_profit_distance = (
-        (current_price - entry) if is_buy else (entry - current_price)
-    )
-    extreme_profit_distance = (
-        (extreme - entry) if is_buy else (entry - extreme)
-    )
-    r_multiple = max(0.0, current_profit_distance, extreme_profit_distance) / risk_distance
+    r_multiple = profit_distance / risk_distance
     if r_multiple < cfg.activation_r:
         return None
 
-    # Keep a meaningful amount of profit at activation and increase the
-    # protected amount as the trade proves itself. This is less binary than a
-    # single break-even jump: it protects early profit without choking a
-    # healthy move.
-    locked_r = min(
-        max(cfg.lock_buffer_r, cfg.lock_buffer_r +
-            max(0.0, r_multiple - cfg.activation_r) * cfg.lock_slope),
-        max(cfg.lock_buffer_r, cfg.max_lock_r),
-    )
-    lock_floor = locked_r * risk_distance
-    configured_min_gap = (
-        min(cfg.min_gap_price, execution_step(symbol))
-        if is_eurusd(symbol)
-        else cfg.min_gap_price
-    )
-    adaptive_gap = max(
-        configured_min_gap,
-        execution_step(symbol),
-        risk_distance * cfg.lock_buffer_r,
-        (atr * cfg.atr_gap_mult) if atr and atr > 0 else 0.0,
-        (spread * cfg.spread_gap_mult) if spread and spread > 0 else 0.0,
-    )
-    # A stale or unusually large ATR must not make trailing pointless once the
-    # trade is in profit. This cap is applied after the volatility floor, so
-    # the stop still has room for normal noise.
-    adaptive_gap = min(adaptive_gap, risk_distance * max(cfg.max_gap_r, 0.0))
-    if is_buy:
-        # Never submit a BUY SL above the live bid after a sharp retracement.
-        raw_candidate = max(entry + lock_floor, extreme - adaptive_gap)
-        live_ceiling = current_price - adaptive_gap
-        if raw_candidate > live_ceiling:
-            # Catch up from the old SL when a broker modification was missed
-            # during a favorable peak. should_apply still rejects any lower
-            # candidate when the broker already has a tighter SL.
-            if current_sl is None:
-                return None
-            candidate = live_ceiling
-        else:
-            candidate = raw_candidate
-        if candidate <= 0:
-            return None
-    else:
-        # Never submit a SELL SL below the live ask after a sharp retracement.
-        raw_candidate = min(entry - lock_floor, extreme + adaptive_gap)
-        live_floor = current_price + adaptive_gap
-        if raw_candidate < live_floor:
-            if current_sl is None:
-                return None
-            candidate = live_floor
-        else:
-            candidate = raw_candidate
-        if candidate <= 0:
-            return None
+    steps    = floor((r_multiple - cfg.activation_r) / cfg.step_r)
+    locked_r = steps * cfg.step_r + cfg.lock_buffer_r
+    locked_dist = locked_r * risk_distance
 
-    return price_round(candidate, symbol)
+    candidate = entry + locked_dist if is_buy else entry - locked_dist
+
+    # Live-ATR safety floor: never let the staircase place the stop closer
+    # to the current price than atr_gap_mult × ATR, so a step that happens
+    # to land right under live price doesn't get shaken out by normal noise.
+    if atr and atr > 0:
+        gap = atr * cfg.atr_gap_mult
+        if is_buy:
+            candidate = min(candidate, current_price - gap)
+        else:
+            candidate = max(candidate, current_price + gap)
+
+    return _r2(candidate)
 
 
 def r_multiple_of(direction: str, entry: float, risk_distance: float, current_price: float) -> float:
@@ -208,10 +126,6 @@ def should_apply(direction: str, current_sl: float, candidate_sl: Optional[float
     """
     if candidate_sl is None:
         return False
-    # Decimal price steps such as 0.05 are not represented exactly by binary
-    # floats; tolerate only the tiny representation error, never a meaningful
-    # price difference.
-    threshold = max(0.0, min_step_price - 1e-9)
     if direction.upper() == "BUY":
-        return (candidate_sl - current_sl) >= threshold
-    return (current_sl - candidate_sl) >= threshold
+        return (candidate_sl - current_sl) >= min_step_price
+    return (current_sl - candidate_sl) >= min_step_price

@@ -16,8 +16,6 @@ import aiohttp
 
 from live_trading.logger import get_logger
 from live_trading.mt5.connector import _get_session, get_connection, get_conn_id
-from live_trading.symbols import price_round
-from live_trading.risk.capital_manager import FIXED_LOT_SIZE
 
 log = get_logger()
 
@@ -62,14 +60,7 @@ async def place_market_order(
     if not base or not conn_id:
         return TradeResult(False, None, "Not connected to mt5rest bridge")
 
-    # Final safety boundary: no caller can place a new entry above the fixed lot.
-    # Closing an existing position remains untouched and can use its real volume.
-    lot       = _normalise_lot(FIXED_LOT_SIZE)
-    if lot_size != FIXED_LOT_SIZE:
-        log.warning(
-            f"Entry lot override: requested={lot_size!r}; "
-            f"sending fixed={FIXED_LOT_SIZE:.2f} lots"
-        )
+    lot       = _normalise_lot(lot_size)
     operation = 0 if direction.upper() == "BUY" else 1   # 0=BUY  1=SELL
 
     log.debug(f"Placing {direction} {lot} lots {symbol}  SL={sl}  TP={tp}")
@@ -80,8 +71,8 @@ async def place_market_order(
         "operation":  operation,
         "volume":     lot,
         "slippage":   deviation,
-        "stoploss":   price_round(sl, symbol),
-        "takeprofit": price_round(tp, symbol),
+        "stoploss":   round(sl, 2),
+        "takeprofit": round(tp, 2),
         "comment":    comment[:32],
     }
 
@@ -159,7 +150,7 @@ async def close_position(position_id: str, deviation: int = 30, **kwargs) -> Tra
 # ── Modify position ───────────────────────────────────────────────────────────
 
 async def modify_position(
-    position_id: str, sl: float, tp: float, symbol: str = "XAUUSD"
+    position_id: str, sl: float, tp: float
 ) -> TradeResult:
     base    = get_connection()
     conn_id = get_conn_id()
@@ -173,8 +164,8 @@ async def modify_position(
             params={
                 "id":         conn_id,
                 "ticket":     int(position_id),
-                "stoploss":   price_round(sl, symbol),
-                "takeprofit": price_round(tp, symbol),
+                "stoploss":   round(sl, 2),
+                "takeprofit": round(tp, 2),
             },
             timeout=aiohttp.ClientTimeout(total=60),
         ) as resp:

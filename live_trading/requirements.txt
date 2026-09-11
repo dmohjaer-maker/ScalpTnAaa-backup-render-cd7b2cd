@@ -11,7 +11,3 @@ aiohttp==3.9.5
 
 # ── Redis – cross-service IPC between robot and Telegram panel ───────────────
 redis==5.2.1
-# ── AI signal scoring (shadow-mode foundation) ─────────────────────────────
-scikit-learn==1.5.2
-pandas==2.2.3
-joblib==1.4.2

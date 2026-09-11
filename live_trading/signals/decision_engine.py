@@ -6,9 +6,6 @@ from dataclasses import dataclass, field
 from typing import List, Literal, Optional
 from live_trading.signals.gold_engine import OHLCV
 from live_trading.signals.smc_engine import (
-    SmcBos,
-    SmcChoch,
-    SmcLiquiditySweep,
     SmcResult,
     analyze_smc_structure,
     detect_order_block_fake_breakout,
@@ -22,520 +19,16 @@ from live_trading.signals.confidence_engine import ConfidenceResult, ConfidenceC
 from live_trading.signals.quality_filter import QualityFilterResult, apply_quality_filter, get_session_quality
 from live_trading.signals.entry_filter import apply_entry_filter, EntryFilterResult
 from live_trading.signals.divergence_engine import analyze_divergence, DivergenceResult
-from live_trading.trading.entry_guards import validate_directional_alignment
-from live_trading.risk.capital_manager import (
-    CapitalInput, CapitalOutput, REQUIRED_ENTRY_RR, calc_trade_parameters,
-    validate_trade_risk,
-)
+from live_trading.risk.capital_manager import CapitalInput, CapitalOutput, calc_trade_parameters
 from live_trading.config import (
     CONF_HARD_MIN,
-    REQUIRE_SMC_CONFIRMATION,
-    REQUIRE_SMC_OR_PA_TRIGGER,
-    BLOCK_RANGE_ENTRIES,
-    RANGE_SCALP_MODE, RANGE_MIN_CONFIRMATIONS, RANGE_REQUIRE_PRICE_ACTION,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
-    ENTRY_TRIGGER_MAX_AGE_BARS,
-    STRICT_ENTRY_MODE,
-    ALLOW_COUNTER_TREND_TRADES,
-    AGGRESSIVE_ENTRY_MODE,
-    FAST_SCALP_MODE,
 )
 
 # Marginal confidence R:R floor: trades with confidence between CONF_HARD_MIN
 # and the regime minimum must still achieve this R:R to be allowed.
 # 1.3 = profitable in expectancy even at 45% win rate (1.3 × 0.45 > 0.55).
 CONF_MARGINAL_RR = 1.3
-
-
-def _recent_micro_levels(candles: List[OHLCV], lookback: int = 12) -> tuple[Optional[float], Optional[float]]:
-    """Return the latest confirmed short-term swing high/low.
-
-    Two candles on each side confirm a pivot. The fallback uses only the last
-    six completed candles, so a stale historical swing cannot widen a scalp.
-    """
-    if len(candles) < 5:
-        return None, None
-    last = len(candles) - 1
-    start = max(2, last - lookback)
-    end = last - 2
-    highs: List[float] = []
-    lows: List[float] = []
-    for i in range(start, end + 1):
-        window = candles[i - 2:i + 3]
-        if candles[i].high >= max(c.high for c in window):
-            highs.append(candles[i].high)
-        if candles[i].low <= min(c.low for c in window):
-            lows.append(candles[i].low)
-    if not highs:
-        highs = [c.high for c in candles[max(0, last - 6):last]]
-    if not lows:
-        lows = [c.low for c in candles[max(0, last - 6):last]]
-    return (highs[-1] if highs else None, lows[-1] if lows else None)
-
-
-def _has_fresh_entry_trigger(
-    smc: SmcResult,
-    pa_signal: str,
-    candidate: str,
-    current_bar_index: int,
-    max_age_bars: int,
-) -> bool:
-    """Return True only when the closed-candle setup has a fresh trigger."""
-    latest_structure = get_latest_structure_event(smc)
-    structure_trigger = (
-        latest_structure is not None
-        and latest_structure.type == candidate
-        and 0 <= current_bar_index - latest_structure.bar_index <= max_age_bars
-    )
-    sweep_type = "BULLISH" if candidate == "BUY" else "BEARISH"
-    sweep_trigger = any(
-        sweep.type == sweep_type and sweep.bar_index == current_bar_index
-        for sweep in smc.liquidity_sweeps
-    )
-    return structure_trigger or sweep_trigger or pa_signal == candidate
-
-
-def _liquidity_sweep_reason(
-    candles: List[OHLCV],
-    smc: SmcResult,
-    candidate: str,
-    confirmation_max_age: int = 3,
-) -> Optional[str]:
-    """Return a block reason when a fresh liquidity sweep lacks confirmation.
-
-    A sweep is a liquidity event, not a complete entry signal.  Require the
-    next closed candle to keep its close beyond the swept level with a
-    directional body.  A sweep older than a small bounded window is ignored so
-    it cannot veto an unrelated later setup.
-    """
-    if candidate not in {"BUY", "SELL"} or not candles:
-        return None
-
-    expected_type = "BULLISH" if candidate == "BUY" else "BEARISH"
-    aligned_sweeps = [
-        sweep for sweep in smc.liquidity_sweeps
-        if sweep.type == expected_type
-    ]
-    if not aligned_sweeps:
-        return None
-
-    latest = max(aligned_sweeps, key=lambda sweep: sweep.bar_index)
-    current_index = len(candles) - 1
-    bars_after = current_index - latest.bar_index
-    if bars_after < 0 or bars_after > confirmation_max_age:
-        return None
-    if bars_after == 0:
-        return (
-            f"Liquidity sweep pending confirmation: {candidate} sweep needs "
-            "one subsequent closed candle"
-        )
-
-    confirmation_index = latest.bar_index + 1
-    if confirmation_index >= len(candles):
-        return "Liquidity sweep guard: missing confirmation candle"
-
-    confirmation = candles[confirmation_index]
-    confirmation_range = confirmation.high - confirmation.low
-    body_ratio = (
-        abs(confirmation.close - confirmation.open) / confirmation_range
-        if confirmation_range > 0 else 0.0
-    )
-    directional_body = (
-        confirmation.close > confirmation.open
-        if candidate == "BUY"
-        else confirmation.close < confirmation.open
-    )
-    held_level = (
-        confirmation.close > latest.swept_level
-        if candidate == "BUY"
-        else confirmation.close < latest.swept_level
-    )
-    if not directional_body or not held_level or body_ratio < 0.30:
-        return (
-            f"False liquidity sweep detected: {candidate} sweep lacked "
-            "directional follow-through"
-        )
-
-    crossed_back = any(
-        (c.close <= latest.swept_level if candidate == "BUY"
-         else c.close >= latest.swept_level)
-        for c in candles[confirmation_index:]
-    )
-    if crossed_back:
-        return (
-            f"False liquidity sweep detected: price closed back across the "
-            f"{candidate} swept level"
-        )
-    return None
-
-
-def _bos_follow_through_reason(
-    candles: List[OHLCV],
-    smc: SmcResult,
-    candidate: str,
-    confirmation_max_age: int = 3,
-) -> Optional[str]:
-    """Return a block reason while the latest BOS is unresolved.
-
-    BOS confirmation is a small state machine reconstructed from closed
-    candles:
-
-    * the breakout candle waits for a subsequent close;
-    * the next few candles may confirm by continuation or by a clean retest;
-    * a decisive close back through the level invalidates the BOS;
-    * if neither happens inside the window, the BOS expires rather than being
-      reused as a late entry.
-
-    The previous implementation treated the very first imperfect confirmation
-    candle as a False BOS.  That rejected valid breakout/retest sequences
-    before the retest had a chance to complete.
-    """
-    if candidate not in {"BUY", "SELL"} or not candles:
-        return None
-
-    latest = get_latest_structure_event(smc)
-    if not isinstance(latest, SmcBos) or latest.type != candidate:
-        return None
-
-    current_index = len(candles) - 1
-    bars_after = current_index - latest.bar_index
-    if bars_after < 0:
-        return None
-    if bars_after == 0:
-        return (
-            f"BOS pending confirmation: {candidate} breakout needs "
-            "one subsequent closed candle"
-        )
-
-    def _atr_at(index: int, period: int = 14) -> float:
-        start = max(1, index - period + 1)
-        trs = [
-            max(candles[i].high - candles[i].low,
-                abs(candles[i].high - candles[i - 1].close),
-                abs(candles[i].low - candles[i - 1].close))
-            for i in range(start, index + 1)
-        ]
-        return sum(trs) / len(trs) if trs else 0.0
-
-    confirmation_start = latest.bar_index + 1
-    confirmation_end = min(
-        current_index,
-        latest.bar_index + confirmation_max_age,
-    )
-    if confirmation_start > confirmation_end:
-        return "BOS guard: missing confirmation candle"
-
-    # A small tolerance prevents a spread-sized wick around the level from
-    # being classified as a failed breakout.  The invalidation distance is
-    # still deliberately modest, so a real close back inside the old range
-    # remains a hard False BOS.
-    tolerance = max(_atr_at(confirmation_end) * 0.15, 1e-9)
-    accepted_at: Optional[int] = None
-    invalidated_at: Optional[int] = None
-
-    for index in range(confirmation_start, confirmation_end + 1):
-        candle = candles[index]
-        candle_range = candle.high - candle.low
-        body_ratio = (
-            abs(candle.close - candle.open) / candle_range
-            if candle_range > 0 else 0.0
-        )
-        directional_body = (
-            candle.close > candle.open
-            if candidate == "BUY"
-            else candle.close < candle.open
-        )
-        continuation = (
-            candle.close > latest.price + tolerance
-            if candidate == "BUY"
-            else candle.close < latest.price - tolerance
-        )
-        touched_level = (
-            candle.low <= latest.price + tolerance
-            if candidate == "BUY"
-            else candle.high >= latest.price - tolerance
-        )
-        held_level = (
-            candle.close > latest.price
-            if candidate == "BUY"
-            else candle.close < latest.price
-        )
-        accepted = (
-            directional_body
-            and body_ratio >= 0.25
-            and (
-                continuation
-                or (touched_level and held_level)
-            )
-        )
-        if accepted:
-            accepted_at = index
-            break
-
-        decisive_reclaim = (
-            candle.close < latest.price - tolerance
-            if candidate == "BUY"
-            else candle.close > latest.price + tolerance
-        )
-        opposite_body = (
-            candle.close < candle.open
-            if candidate == "BUY"
-            else candle.close > candle.open
-        )
-        if decisive_reclaim and opposite_body and body_ratio >= 0.25:
-            invalidated_at = index
-            break
-
-    if invalidated_at is not None:
-        return (
-            f"False BOS detected: {candidate} breakout closed decisively "
-            "back through the level"
-        )
-
-    if accepted_at is not None:
-        crossed_back = any(
-            (c.close <= latest.price if candidate == "BUY"
-             else c.close >= latest.price)
-            for c in candles[accepted_at + 1:]
-        )
-        if crossed_back:
-            return (
-                f"False BOS detected: price closed back across the "
-                f"{candidate} breakout level"
-            )
-        return None
-
-    if bars_after < confirmation_max_age:
-        return (
-            f"BOS awaiting acceptance: {candidate} needs continuation "
-            "or a successful retest"
-        )
-    return (
-        f"BOS expired: {candidate} breakout had no accepted continuation "
-        f"within {confirmation_max_age} closed bars"
-    )
-
-
-def _breakout_follow_through_reason(
-    candles: List[OHLCV],
-    pa: PriceActionResult,
-    candidate: str,
-    retest_bars: int = 4,
-) -> Optional[str]:
-    """Require a retest or two closes for a Price Action breakout.
-
-    ``valid_*_breakout`` is intentionally a signal, not proof that a level
-    has been accepted.  A breakout is actionable only after either two
-    consecutive closes beyond its level or a later candle that retests the
-    level and closes away from it with a directional body.
-    """
-    if candidate == "BUY":
-        is_breakout = pa.valid_bull_breakout
-        level = pa.bull_breakout_level
-    elif candidate == "SELL":
-        is_breakout = pa.valid_bear_breakout
-        level = pa.bear_breakout_level
-    else:
-        return None
-
-    if not is_breakout or level is None or len(candles) < 2:
-        return None
-
-    current = candles[-1]
-    previous = candles[-2]
-    if (
-        (candidate == "BUY" and previous.close > level and current.close > level)
-        or
-        (candidate == "SELL" and previous.close < level and current.close < level)
-    ):
-        return None
-
-    current_index = len(candles) - 1
-    start = max(0, current_index - retest_bars - 1)
-    breakout_bar: Optional[int] = None
-    for i in range(start, current_index):
-        if (
-            candidate == "BUY"
-            and candles[i].close <= level
-            and candles[i + 1].close > level
-        ):
-            breakout_bar = i + 1
-        elif (
-            candidate == "SELL"
-            and candles[i].close >= level
-            and candles[i + 1].close < level
-        ):
-            breakout_bar = i + 1
-
-    if breakout_bar is not None:
-        for candle in candles[breakout_bar + 1:]:
-            candle_range = candle.high - candle.low
-            body_ratio = (
-                abs(candle.close - candle.open) / candle_range
-                if candle_range > 0 else 0.0
-            )
-            directional_body = (
-                candle.close > candle.open
-                if candidate == "BUY"
-                else candle.close < candle.open
-            )
-            touched_level = (
-                candle.low <= level if candidate == "BUY"
-                else candle.high >= level
-            )
-            held_level = (
-                candle.close > level if candidate == "BUY"
-                else candle.close < level
-            )
-            if touched_level and held_level and directional_body and body_ratio >= 0.30:
-                return None
-
-    return (
-        f"Breakout pending confirmation: {candidate} needs a successful "
-        "retest or two consecutive closes beyond the level"
-    )
-
-
-def _bos_failure_allows_independent_setup(
-    reason: str,
-    candidate: str,
-    entry_filter: EntryFilterResult,
-    trend_dir: str,
-    htf_direction: str,
-    htf_strength: str,
-) -> bool:
-    """Decide whether a failed BOS should only invalidate the BOS vote.
-
-    A BOS failure must not authorize a trade by itself.  It should, however,
-    be possible for an independent setup to survive it:
-
-    * an expired BOS can fall back to an aligned EMA + strong/moderate HTF
-      continuation;
-    * a decisive false BOS needs stricter independent evidence: EMA and Price
-      Action must agree.
-
-    This prevents a stale structural event from vetoing every continuation
-    setup while keeping a bare false breakout blocked.
-    """
-    if candidate not in {"BUY", "SELL"}:
-        return False
-    aligned_htf = (
-        htf_direction == candidate
-        and htf_strength in {"STRONG", "MODERATE"}
-    )
-    aligned_trend = entry_filter.trend and trend_dir == candidate
-    aligned_pa = entry_filter.price_action
-
-    if reason.startswith("BOS expired"):
-        return (aligned_trend and aligned_htf) or (
-            aligned_trend and aligned_pa
-        )
-    if reason.startswith(("False BOS", "False reversal")):
-        return aligned_trend and (aligned_pa or aligned_htf)
-    return False
-
-
-def _weak_volume_breakout_reason(
-    candles: List[OHLCV],
-    smc: SmcResult,
-    pa: PriceActionResult,
-    candidate: str,
-    is_weak_volume: bool,
-) -> Optional[str]:
-    """Block only breakout setups when current volume is exceptionally weak."""
-    if not is_weak_volume or candidate not in {"BUY", "SELL"}:
-        return None
-
-    pa_breakout = (
-        candidate == "BUY" and pa.valid_bull_breakout
-    ) or (
-        candidate == "SELL" and pa.valid_bear_breakout
-    )
-
-    latest_structure = get_latest_structure_event(smc)
-    current_index = len(candles) - 1
-    bos_breakout = (
-        isinstance(latest_structure, SmcBos)
-        and latest_structure.type == candidate
-        and 0 <= current_index - latest_structure.bar_index <= 3
-    )
-
-    if not pa_breakout and not bos_breakout:
-        return None
-
-    return (
-        f"Very weak volume on {candidate} breakout — current volume is "
-        "below 35% of the 20-bar average; entry blocked"
-    )
-
-
-def _false_reversal_reason(
-    candles: List[OHLCV],
-    smc: SmcResult,
-    candidate: str,
-) -> Optional[str]:
-    """Return a block reason when a CHoCH fails its first follow-through.
-
-    A CHoCH is a reversal *candidate*, not proof that the new direction will
-    hold.  Require one subsequent closed candle to stay beyond the broken
-    structure level, with a directional body.  If price closes back across
-    that level during the first few bars, classify the move as a false
-    reversal and keep it out of the order executor.
-    """
-    latest = get_latest_structure_event(smc)
-    if not isinstance(latest, SmcChoch) or latest.type != candidate:
-        return None
-
-    current_index = len(candles) - 1
-    bars_after = current_index - latest.bar_index
-    if bars_after < 0:
-        return "False reversal guard: invalid CHoCH bar index"
-    if bars_after == 0:
-        return (
-            f"Reversal pending confirmation: {candidate} CHoCH needs "
-            "one subsequent closed candle"
-        )
-
-    confirmation = candles[latest.bar_index + 1] \
-        if latest.bar_index + 1 < len(candles) else None
-    if confirmation is None:
-        return "False reversal guard: missing confirmation candle"
-
-    confirmation_range = confirmation.high - confirmation.low
-    confirmation_body_ratio = (
-        abs(confirmation.close - confirmation.open) / confirmation_range
-        if confirmation_range > 0 else 0.0
-    )
-    directional_body = (
-        confirmation.close > confirmation.open
-        if candidate == "BUY"
-        else confirmation.close < confirmation.open
-    )
-    held_level = (
-        confirmation.close > latest.price
-        if candidate == "BUY"
-        else confirmation.close < latest.price
-    )
-    if not directional_body or not held_level or confirmation_body_ratio < 0.30:
-        return (
-            f"False reversal detected: {candidate} CHoCH lacked "
-            "directional follow-through"
-        )
-
-    # A reclaim of the broken level shortly after the CHoCH invalidates the
-    # reversal even if the first confirmation candle looked acceptable.
-    recent_after = candles[latest.bar_index + 1:]
-    crossed_back = any(
-        (c.close <= latest.price if candidate == "BUY"
-         else c.close >= latest.price)
-        for c in recent_after
-    )
-    if crossed_back:
-        return (
-            f"False reversal detected: price closed back across the "
-            f"{candidate} CHoCH level"
-        )
-    return None
 
 
 @dataclass
@@ -566,40 +59,9 @@ class DecisionResult:
     dxy_signal:      str                         = "NEUTRAL"
 
 
-def _candidate_direction(
-    smc: SmcResult,
-    pa: Optional[PriceActionResult] = None,
-    trend: Optional[TrendResult] = None,
-    wyckoff: Optional[WyckoffResult] = None,
-) -> str:
-    """Choose direction from non-SMC context first, with SMC as a fallback.
-
-    SMC is used as a fallback for candidate selection. Neutral SMC does not
-    suppress a setup supported by the local EMA trend and other confirmations,
-    while the directional alignment guard below vetoes conflicting SMC context.
-    """
-    if trend is not None:
-        if trend.trend == "BULLISH":
-            return "BUY"
-        if trend.trend == "BEARISH":
-            return "SELL"
-
-    non_smc_votes = [
-        signal for signal in (
-            pa.pa_signal if pa is not None else "NEUTRAL",
-            wyckoff.wyckoff_signal if wyckoff is not None else "NEUTRAL",
-        )
-        if signal in {"BUY", "SELL"}
-    ]
-    if non_smc_votes:
-        if non_smc_votes.count("BUY") > non_smc_votes.count("SELL"):
-            return "BUY"
-        if non_smc_votes.count("SELL") > non_smc_votes.count("BUY"):
-            return "SELL"
-
-    # Use the newest event across both lists only as a last-resort fallback.
-    # Prioritising the last CHoCH unconditionally can resurrect an old
-    # reversal against a newer BOS.
+def _candidate_direction(smc: SmcResult) -> str:
+    # Use the newest event across both lists. Prioritising the last CHoCH
+    # unconditionally can resurrect an old reversal against a newer BOS.
     latest_structure = get_latest_structure_event(smc)
     if latest_structure is not None:
         return latest_structure.type
@@ -608,69 +70,7 @@ def _candidate_direction(
     return "NEUTRAL"
 
 
-def _allows_htf_continuation(
-    candidate: str,
-    trend_dir: str,
-    htf_direction: str,
-    htf_strength: str,
-    smc: SmcResult,
-    pa: PriceActionResult,
-) -> bool:
-    """Allow a higher-timeframe continuation through a neutral local EMA.
-
-    A neutral local EMA is common during a pullback.  Treating it as a hard
-    counter-trend veto was forcing the live engine to ignore a strong H1
-    direction even when the local SMC/price-action setup agreed with it.
-    This exception is intentionally narrow:
-
-    * the local EMA must be neutral (never override an opposing local trend);
-    * the H1 bias must be BUY/SELL and at least MODERATE;
-    * the candidate must match that bias; and
-    * SMC or Price Action must provide the local directional confirmation.
-
-    Wyckoff phase alone is not enough to authorize this path.
-    """
-    if trend_dir != "NEUTRAL":
-        return False
-    if htf_direction not in {"BUY", "SELL"}:
-        return False
-    if htf_strength not in {"STRONG", "MODERATE"}:
-        return False
-    if candidate != htf_direction:
-        return False
-    return (
-        smc.smc_signal == candidate
-        or pa.pa_signal == candidate
-    )
-
-
-def _smc_direction_conflict_reason(smc: SmcResult, candidate: str) -> Optional[str]:
-    """Return a fail-closed reason when the candidate is not SMC-confirmed.
-
-    The candidate direction is used for freshness/event handling, while
-    ``smc.smc_signal`` is the composite SMC verdict. They must agree before
-    the entry filter can count SMC as a vote; otherwise a stale or weak BOS/
-    CHoCH could be promoted into a trade even when the composite is NEUTRAL.
-    """
-    if candidate not in {"BUY", "SELL"}:
-        return None
-    if smc.smc_signal == candidate:
-        return None
-    if smc.smc_signal == "NEUTRAL":
-        return (
-            f"SMC composite is NEUTRAL while structure candidate is {candidate} "
-            "— entry blocked"
-        )
-    return (
-        f"SMC direction conflict: structure candidate {candidate} vs "
-        f"composite {smc.smc_signal} — entry blocked"
-    )
-
-
-def _make_neutral(
-    smc, wyckoff, pa, trend, blocked_reasons, reasoning=None,
-    dxy_signal: str = "NEUTRAL",
-) -> DecisionResult:
+def _make_neutral(smc, wyckoff, pa, trend, blocked_reasons, reasoning=None) -> DecisionResult:
     from live_trading.signals.market_regime import REGIME_RULES
     rules = REGIME_RULES["RANGE"]
     return DecisionResult(
@@ -689,7 +89,6 @@ def _make_neutral(
         reasoning=reasoning or [],
         trade_params=None,
         smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
-        dxy_signal=dxy_signal,
     )
 
 
@@ -697,143 +96,56 @@ def run_decision_engine(
     candles:           List[OHLCV],
     account_balance:   float,
     risk_percent:      float = 1.0,
-    min_confirmations: int   = 2,
+    min_confirmations: int   = 1,
     use_atr_high_vol:  bool  = False,
     dxy_signal:        str   = "NEUTRAL",
     require_price_action: bool = False,
-    require_smc_confirmation: bool = REQUIRE_SMC_CONFIRMATION,
-    require_smc_or_pa_trigger: bool = REQUIRE_SMC_OR_PA_TRIGGER,
     require_smc_price_action_wyckoff: bool = REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
-    entry_price_override: Optional[float] = None,
-    spread: float = 0.0,
-    symbol: str = "XAUUSD",
-    htf_direction: str = "NEUTRAL",
-    htf_strength: str = "WEAK",
 ) -> DecisionResult:
 
-    # Every engine receives the active instrument.  XAUUSD and EURUSD share
-    # the decision pipeline, but never share absolute price thresholds or
-    # calibrated state.
-    smc     = analyze_smc_structure(candles, symbol=symbol)
-    wyckoff = analyze_wyckoff(candles, symbol=symbol)
-    pa      = analyze_price_action(candles, symbol=symbol)
+    smc     = analyze_smc_structure(candles)
+    wyckoff = analyze_wyckoff(candles)
+    pa      = analyze_price_action(candles)
     trend   = analyze_trend(candles)
 
-    candidate = _candidate_direction(smc, pa, trend, wyckoff)
+    candidate = _candidate_direction(smc)
     if candidate == "NEUTRAL":
-        return _make_neutral(
-            smc, wyckoff, pa, trend,
-            ["No directional Trend, Price Action, or Wyckoff signal"],
-        )
+        return _make_neutral(smc, wyckoff, pa, trend, ["No SMC signal"])
 
-    # A directional EMA trend is still preferred, but a NEUTRAL local trend
-    # is handled by the confirmation gate below.  In flexible mode
-    # (ALLOW_COUNTER_TREND_TRADES=true), two independent aligned confirmations
-    # may authorize an entry while the local EMA is neutral.  This keeps the
-    # filter from blocking valid higher-timeframe/SMC setups during a pullback
-    # without allowing a one-vote setup through.
+    # Soft EMA gate — counter-trend trades are allowed but need 3 confirmations
     trend_dir = ("BUY" if trend.trend == "BULLISH" else
                  "SELL" if trend.trend == "BEARISH" else "NEUTRAL")
-    htf_continuation = _allows_htf_continuation(
-        candidate=candidate,
-        trend_dir=trend_dir,
-        htf_direction=htf_direction,
-        htf_strength=htf_strength,
-        smc=smc,
-        pa=pa,
-    )
+    _counter_trend = (candidate == "BUY" and trend_dir == "SELL") or \
+                     (candidate == "SELL" and trend_dir == "BUY")
+
+    # Detect regime early — needed to set the adaptive confirmation threshold.
+    # RANGE / ACCUMULATION / DISTRIBUTION / HIGH_VOLATILITY markets suppress
+    # PA and Wyckoff signals by design, so we lower the bar to 2 in those
+    # regimes. Trending regimes keep the stricter operator-configured value.
     regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
-    range_mode = RANGE_SCALP_MODE and regime.regime == "RANGE"
-    if (
-        trend_dir != candidate
-        and not ALLOW_COUNTER_TREND_TRADES
-        and not htf_continuation
-        and not range_mode
-    ):
-        trend_reason = (
-            f"Trend filter: {candidate} conflicts with EMA trend "
-            f"{trend.trend} — counter-trend entry blocked"
-        )
-        return _make_neutral(
-            smc, wyckoff, pa, trend, [trend_reason], [trend_reason]
-        )
 
-    # SMC is a hard directional veto. It remains optional when neutral, but a
-    # confirmed opposing structure or composite signal is never allowed to
-    # authorize a counter-trend entry.
-    if not ALLOW_COUNTER_TREND_TRADES and not range_mode:
-        _alignment_ok, _alignment_reason = validate_directional_alignment(
-            candidate,
-            local_trend=trend.trend,
-            smc_trend=smc.trend,
-            smc_signal=smc.smc_signal,
-            htf_direction=htf_direction,
-        )
-        if not _alignment_ok:
-            return _make_neutral(
-                smc, wyckoff, pa, trend,
-                [_alignment_reason], [_alignment_reason],
-            )
+    _RANGE_REGIMES = {"RANGE", "ACCUMULATION", "DISTRIBUTION", "HIGH_VOLATILITY"}
+    if _counter_trend:
+        # Counter-trend: one extra confirmation required — EMA opposes direction.
+        effective_min_confirmations = min(min_confirmations + 1, 4)
+    elif regime.regime in _RANGE_REGIMES:
+        # Range/volatile regimes: require one extra confirmation over the base
+        # minimum.  Structural signals alone (e.g. SMC + Wyckoff without EMA
+        # trend or PA) are insufficient in choppy/ranging markets — at least
+        # one momentum engine must also agree to avoid repeated SL hits.
+        effective_min_confirmations = min(min_confirmations + 1, 4)
+    else:
+        effective_min_confirmations = min_confirmations
 
-    # Detect regime for telemetry and downstream regime-specific rules. The
-    # configured minimum confirmation count is not increased for range or
-    # volatile markets: two confirmations remain sufficient.
-    if BLOCK_RANGE_ENTRIES and regime.regime == "RANGE" and not range_mode:
-        range_reason = "Regime filter: RANGE market — scalp entry blocked"
-        return _make_neutral(
-            smc, wyckoff, pa, trend, [range_reason], [range_reason],
-            dxy_signal=dxy_signal,
-        )
-
-    # DXY is an active hard directional veto for dollar-sensitive pairs. The
-    # feed fails open to NEUTRAL, so an outage never blocks trading; only a
-    # confirmed opposing dollar trend blocks the candidate direction.
-    if (
-        not AGGRESSIVE_ENTRY_MODE
-        and (
-            (candidate == "BUY" and dxy_signal == "BULLISH_DXY")
-            or (candidate == "SELL" and dxy_signal == "BEARISH_DXY")
-        )
-    ):
-        dxy_reason = (
-            f"DXY filter: {dxy_signal} opposes {symbol} {candidate} — entry blocked"
-        )
-        return _make_neutral(
-            smc, wyckoff, pa, trend, [dxy_reason], [dxy_reason],
-            dxy_signal=dxy_signal,
-        )
-
-    # Respect the configured confirmation policy in both modes. The default
-    # remains two confirmations, while a deliberate MIN_CONFIRMATIONS=1
-    # deployment can use one Price Action-confirmed engine without enabling
-    # aggressive entries or bypassing the independent safety vetoes.
-    effective_min_confirmations = (
-        RANGE_MIN_CONFIRMATIONS if range_mode
-        else max(1, min_confirmations)
-    )
-
-    # Entry filter — every aligned directional engine contributes one vote.
-    # The configured minimum is one for the explicit SMC-only deployment and
-    # remains two by default.
+    # Entry filter — minimum N-of-4 vote gate (SMC always required)
     ef = apply_entry_filter(
-        smc_signal      = smc.smc_signal,
+        smc_signal      = candidate,
         ema_trend       = trend.trend,
         pa_signal       = pa.pa_signal,
         wyckoff_signal  = wyckoff.wyckoff_signal,
         min_confirmations = effective_min_confirmations,
-        require_price_action = (
-            require_price_action
-            or (range_mode and RANGE_REQUIRE_PRICE_ACTION)
-        ),
-        require_smc_confirmation = require_smc_confirmation,
-        require_smc_or_pa_trigger = require_smc_or_pa_trigger,
+        require_price_action = require_price_action,
         require_smc_price_action_wyckoff = require_smc_price_action_wyckoff,
-        require_trend_alignment=(
-            not ALLOW_COUNTER_TREND_TRADES
-            and not htf_continuation
-            and not range_mode
-        ),
-        candidate_direction = candidate,
     )
     if not ef.allowed:
         votes = (f"SMC={'✓' if ef.smc else '✗'}  "
@@ -842,19 +154,12 @@ def run_decision_engine(
                  f"Wyckoff={'✓' if ef.wyckoff else '✗'}")
         if (
             require_smc_price_action_wyckoff
-            and not (ef.price_action and ef.wyckoff)
+            and not (ef.smc and ef.price_action and ef.wyckoff)
         ):
             reason = (
-                "Entry filter: strict mode requires Price Action + Wyckoff "
-                "(SMC is optional when neutral) — "
+                "Entry filter: Option 1 requires SMC + Price Action + Wyckoff — "
                 f"{votes}  [regime={regime.regime}]"
             )
-        elif require_smc_or_pa_trigger and not (ef.smc or ef.price_action):
-            reason = (f"Entry filter: SMC or Price Action trigger required — "
-                      f"{votes}  [regime={regime.regime}]")
-        elif require_smc_confirmation and not (ef.smc and ef.price_action):
-            reason = (f"Entry filter: Smart Money + Price Action confirmations required — "
-                      f"{votes}  [regime={regime.regime}]")
         elif require_price_action and not ef.price_action:
             reason = (f"Entry filter: Price Action confirmation required — "
                       f"{votes}  [regime={regime.regime}]")
@@ -863,81 +168,22 @@ def run_decision_engine(
                       f"confirmations — {votes}  [regime={regime.regime}]")
         return _make_neutral(smc, wyckoff, pa, trend, [reason], [reason])
 
-    # Exact entry trigger: a fresh setup must be confirmed by the latest
-    # closed candle. This prevents a stale BOS plus static confirmations from
-    # opening a market order many bars after the actual opportunity passed.
-    if STRICT_ENTRY_MODE and not _has_fresh_entry_trigger(
-        smc, pa.pa_signal, candidate, len(candles) - 1, ENTRY_TRIGGER_MAX_AGE_BARS
-    ):
-        reason = (
-            f"Entry trigger missing: no fresh {candidate} structure/sweep/price-action "
-            f"trigger within {ENTRY_TRIGGER_MAX_AGE_BARS} bars"
-        )
-        return _make_neutral(smc, wyckoff, pa, trend, [reason], [reason])
-
-    false_reversal_reason = _false_reversal_reason(candles, smc, candidate)
-    if false_reversal_reason and not AGGRESSIVE_ENTRY_MODE:
-        if not _bos_failure_allows_independent_setup(
-            false_reversal_reason,
-            candidate,
-            ef,
-            trend_dir,
-            htf_direction,
-            htf_strength,
-        ):
-            return _make_neutral(
-                smc, wyckoff, pa, trend,
-                [false_reversal_reason], [false_reversal_reason],
-            )
-
-    liquidity_sweep_reason = _liquidity_sweep_reason(candles, smc, candidate)
-    if liquidity_sweep_reason:
-        return _make_neutral(
-            smc, wyckoff, pa, trend,
-            [liquidity_sweep_reason], [liquidity_sweep_reason],
-        )
-
-    bos_follow_through_reason = _bos_follow_through_reason(
-        candles, smc, candidate
-    )
-    if bos_follow_through_reason and not AGGRESSIVE_ENTRY_MODE:
-        if not _bos_failure_allows_independent_setup(
-            bos_follow_through_reason,
-            candidate,
-            ef,
-            trend_dir,
-            htf_direction,
-            htf_strength,
-        ):
-            return _make_neutral(
-                smc, wyckoff, pa, trend,
-                [bos_follow_through_reason], [bos_follow_through_reason],
-            )
-
-    breakout_follow_through_reason = _breakout_follow_through_reason(
-        candles, pa, candidate
-    )
-    if breakout_follow_through_reason and not AGGRESSIVE_ENTRY_MODE:
-        return _make_neutral(
-            smc, wyckoff, pa, trend,
-            [breakout_follow_through_reason],
-            [breakout_follow_through_reason],
-        )
-
-    if candidate == "BUY" and not AGGRESSIVE_ENTRY_MODE and not regime.rules.allow_long:
+    if candidate == "BUY"  and not regime.rules.allow_long:
         return _make_neutral(smc, wyckoff, pa, trend,
                              [f'Regime "{regime.rules.label}" does not allow LONG'])
-    if candidate == "SELL" and not AGGRESSIVE_ENTRY_MODE and not regime.rules.allow_short:
+    if candidate == "SELL" and not regime.rules.allow_short:
         return _make_neutral(smc, wyckoff, pa, trend,
                              [f'Regime "{regime.rules.label}" does not allow SHORT'])
 
     last_candle  = candles[-1]
     session      = get_session_quality(last_candle.time)
     divergence   = analyze_divergence(candles)
+    # Option 3: DXY is retained as telemetry only and cannot affect entry
+    # confidence or the decision. The confidence engine explicitly ignores
+    # this legacy compatibility argument.
     conf_result  = calc_confidence(
         smc, wyckoff, pa, trend, regime, session, candidate,
         divergence_signal=divergence.signal,
-        dxy_signal=dxy_signal,
     )
 
     if conf_result.confidence < CONF_HARD_MIN:
@@ -953,7 +199,6 @@ def run_decision_engine(
             reasoning=conf_result.reasoning, trade_params=None,
             smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
             entry_filter=ef,
-            dxy_signal=dxy_signal,
         )
         return n
 
@@ -964,7 +209,7 @@ def run_decision_engine(
     # so both event types share the same freshness gate.
     quality  = apply_quality_filter(candles, candidate, conf_result.confidence,
                                     last_structure_bar, regime.adx, regime.atr_ratio)
-    if not quality.allowed and not AGGRESSIVE_ENTRY_MODE:
+    if not quality.allowed:
         return DecisionResult(
             allowed=False, direction=candidate,  # type: ignore
             confidence=conf_result.confidence, components=conf_result.components,
@@ -973,27 +218,6 @@ def run_decision_engine(
             blocked_reasons=quality.blocked_reasons, reasoning=conf_result.reasoning,
             trade_params=None, smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
             entry_filter=ef,
-        )
-
-    weak_volume_reason = _weak_volume_breakout_reason(
-        candles, smc, pa, candidate, quality.is_weak_volume
-    )
-    if weak_volume_reason and not AGGRESSIVE_ENTRY_MODE:
-        quality.allowed = False
-        quality.blocked_reasons.append(weak_volume_reason)
-        return DecisionResult(
-            allowed=False, direction=candidate,  # type: ignore
-            confidence=conf_result.confidence, components=conf_result.components,
-            grade=conf_result.grade, regime=regime.regime,
-            regime_label=regime.rules.label, regime_rules=regime.rules,
-            quality_filter=quality,
-            blocked_reasons=[weak_volume_reason],
-            reasoning=conf_result.reasoning + [weak_volume_reason],
-            trade_params=None,
-            smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
-            entry_filter=ef,
-            divergence=divergence,
-            dxy_signal=dxy_signal,
         )
 
     # Option 2 hard gate: a directional breakout that closes back inside its
@@ -1030,9 +254,7 @@ def run_decision_engine(
                    if ob.type == ("BULLISH" if candidate == "BUY" else "BEARISH")]
     latest_ob = aligned_obs[-1] if aligned_obs else None
 
-    entry = (float(entry_price_override)
-             if entry_price_override is not None else last_candle.close)
-    micro_high, micro_low = _recent_micro_levels(candles)
+    entry = last_candle.close
 
     # H-1 FIX: use most-recent directionally-valid BOS price as the SL anchor,
     # not the global max/min across all time.
@@ -1060,56 +282,11 @@ def run_decision_engine(
         swing_low=sell_bos_below[-1]  if sell_bos_below else None,
         support_level=eq_support,
         resistance_level=eq_resistance,
-        atr_mean=regime.atr_mean,
-        spread=spread,
-        micro_swing_high=micro_high,
-        micro_swing_low=micro_low,
-        symbol=symbol,
     )
     trade_params = calc_trade_parameters(cap_input)
 
-    # Non-negotiable operator rule: never send a trade below 1:2 R:R, even if
-    # a stale Render env or a future structural-target change allows a lower
-    # ratio inside the capital manager.
-    if trade_params.risk_reward_ratio < REQUIRED_ENTRY_RR:
-        rr_reason = (
-            f"R:R {trade_params.risk_reward_ratio:.2f} < required "
-            f"{REQUIRED_ENTRY_RR:.2f} — entry blocked"
-        )
-        return DecisionResult(
-            allowed=False, direction=candidate,  # type: ignore
-            confidence=conf_result.confidence, components=conf_result.components,
-            grade="REJECTED", regime=regime.regime,
-            regime_label=regime.rules.label, regime_rules=regime.rules,
-            quality_filter=quality, blocked_reasons=[rr_reason],
-            reasoning=conf_result.reasoning + [rr_reason],
-            trade_params=None, smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
-            entry_filter=ef, divergence=divergence, dxy_signal=dxy_signal,
-        )
-
-    # A broker minimum lot must never turn a 1% strategy into a 6%+ trade.
-    # The capital manager reports the realised stop exposure after lot
-    # normalisation; reject the setup when that exposure exceeds the budget.
-    _risk_ok, _risk_reason = validate_trade_risk(
-        trade_params, account_balance, risk_percent
-    )
-    if not _risk_ok:
-        return DecisionResult(
-            allowed=False, direction=candidate,  # type: ignore
-            confidence=conf_result.confidence, components=conf_result.components,
-            grade="RISK_BLOCKED", regime=regime.regime,
-            regime_label=regime.rules.label, regime_rules=regime.rules,
-            quality_filter=quality, blocked_reasons=[_risk_reason],
-            reasoning=conf_result.reasoning + [_risk_reason],
-            trade_params=None, smc=smc, wyckoff=wyckoff, pa=pa, trend=trend,
-            entry_filter=ef, divergence=divergence, dxy_signal=dxy_signal,
-        )
-
     # Marginal confidence check
-    min_conf = (
-        CONF_HARD_MIN if AGGRESSIVE_ENTRY_MODE
-        else regime.rules.min_confidence
-    )
+    min_conf = regime.rules.min_confidence
     if conf_result.confidence < min_conf:
         if trade_params.risk_reward_ratio < CONF_MARGINAL_RR:
             return DecisionResult(
@@ -1157,168 +334,41 @@ def run_decision_engine(
     )
 
 
-def describe_strategy(
-    decision: "DecisionResult",
-    *,
-    account_balance: Optional[float] = None,
-    symbol: str = "",
-    timeframe: str = "",
-    opened_at: Optional[str] = None,
-) -> dict:
-    """Build a complete, human-readable explanation for a just-opened trade.
+def describe_strategy(decision: "DecisionResult") -> dict:
+    """Build a human-readable summary of *why* this trade was taken.
 
-    This is a presentation-only projection of values already calculated by the
-    decision engine. It never adds a signal or changes the entry decision.
+    Purely derived from data the decision engine already computed — it adds
+    no new signal logic and cannot change whether a trade is taken. Intended
+    to travel alongside a just-opened trade (e.g. published to Redis by the
+    live loop) so the Telegram panel can explain the trade in its
+    "TRADE OPENED" notification instead of showing only price/volume/SL/TP.
     """
-    def _number(value, digits: int = 2):
-        try:
-            return round(float(value), digits)
-        except (TypeError, ValueError):
-            return None
-
     ef = decision.entry_filter
-    qf = decision.quality_filter
-    rules = decision.regime_rules
-    components = decision.components
-    trade = decision.trade_params
-    smc = decision.smc
-    pa = decision.pa
-    wyckoff = decision.wyckoff
-    trend = decision.trend
-
-    engine_names = {
-        "smc": "Smart Money Concepts",
-        "trend": "EMA Trend Alignment",
+    _ENGINE_NAMES = {
+        "smc":          "Smart Money Concepts (structure)",
+        "trend":        "Trend (EMA alignment)",
         "price_action": "Price Action",
-        "wyckoff": "Wyckoff",
+        "wyckoff":      "Wyckoff",
     }
-    confirmations = [
-        label for key, label in engine_names.items()
-        if ef is not None and bool(getattr(ef, key, False))
-    ]
-    confirmation_count = ef.confirmation_count if ef is not None else 0
-
-    def _event_summary(event):
-        if event is None:
-            return None
-        event_type = getattr(event, "type", "EVENT")
-        price = _number(getattr(event, "price", None), 2)
-        return {
-            "type": event_type,
-            "price": price,
-            "time": getattr(event, "time", None),
-        }
-
-    patterns = []
-    for attr, label in (
-        ("bullish_engulf", "Bullish engulfing"),
-        ("bearish_engulf", "Bearish engulfing"),
-        ("bullish_pin_bar", "Bullish pin bar"),
-        ("bearish_pin_bar", "Bearish pin bar"),
-        ("strong_bullish", "Strong bullish candle"),
-        ("strong_bearish", "Strong bearish candle"),
-        ("bullish_pullback", "Bullish pullback"),
-        ("bearish_pullback", "Bearish pullback"),
-        ("valid_bull_breakout", "Valid bullish breakout"),
-        ("valid_bear_breakout", "Valid bearish breakout"),
-        ("fake_bull_breakout", "Fake bullish breakout"),
-        ("fake_bear_breakout", "Fake bearish breakout"),
-    ):
-        if bool(getattr(pa, attr, False)):
-            patterns.append(label)
-
-    risk_amount = _number(getattr(trade, "risk_amount", None), 2) if trade else None
-    risk_percent = None
-    try:
-        if account_balance and risk_amount is not None and float(account_balance) > 0:
-            risk_percent = round(risk_amount / float(account_balance) * 100.0, 2)
-    except (TypeError, ValueError, ZeroDivisionError):
-        pass
-
-    score_breakdown = {
-        "smc": {"score": _number(components.smc_score, 1), "max": 35.0},
-        "trend": {"score": _number(components.trend_score, 1), "max": 20.0},
-        "price_action": {"score": _number(components.pa_score, 1), "max": 20.0},
-        "wyckoff": {"score": _number(components.wyckoff_score, 1), "max": 15.0},
-        "liquidity": {"score": _number(components.liquidity_score, 1), "max": 5.0},
-        "volatility": {"score": _number(components.volatility_score, 1), "max": 5.0},
-        "divergence": {"score": _number(getattr(components, "divergence_score", 0.0), 1), "max": 10.0},
-        "dxy": {"score": _number(getattr(components, "dxy_score", 0.0), 1), "max": 5.0},
-    }
+    if ef is not None:
+        confirmations = [
+            label for key, label in _ENGINE_NAMES.items() if getattr(ef, key)
+        ]
+        confirmation_count = ef.confirmation_count
+    else:
+        confirmations = []
+        confirmation_count = 0
 
     return {
-        "version": "GoldScalperPro Multi-Engine Confluence",
-        "symbol": symbol,
-        "timeframe": timeframe or getattr(smc, "timeframe", ""),
-        "opened_at": opened_at,
-        "direction": decision.direction,
-        "grade": decision.grade,
-        "confidence": _number(decision.confidence, 1),
-        "score_total": _number(components.total, 1),
-        "score_breakdown": score_breakdown,
-        "confirmations": confirmations,
-        "confirmation_count": confirmation_count,
-        "confirmation_total": 4,
-        "signals": list(decision.reasoning[:8]),
-        "market": {
-            "regime": decision.regime,
-            "regime_label": decision.regime_label,
-            "description": getattr(getattr(decision, "regime_rules", None), "label", ""),
-            "trend": getattr(trend, "trend", "NEUTRAL"),
-            "trend_strength": getattr(trend, "strength", "WEAK"),
-            "adx": _number(getattr(qf, "adx", None), 1),
-            "session": getattr(qf, "session_quality", "—"),
-            "dxy": getattr(decision, "dxy_signal", "NEUTRAL"),
-            "ema50": _number(getattr(trend, "ema50", None), 2),
-            "ema100": _number(getattr(trend, "ema100", None), 2),
-            "ema200": _number(getattr(trend, "ema200", None), 2),
-            "min_confidence": _number(getattr(rules, "min_confidence", None), 1),
-            "min_rr": _number(getattr(rules, "min_rr", None), 2),
-        },
-        "engines": {
-            "smc": {
-                "vote": getattr(smc, "smc_signal", "NEUTRAL"),
-                "score": _number(getattr(smc, "smc_score", None), 1),
-                "trend": getattr(smc, "trend", "NEUTRAL"),
-                "bos_count": len(getattr(smc, "bos_signals", []) or []),
-                "choch_count": len(getattr(smc, "choch_signals", []) or []),
-                "sweep_count": len(getattr(smc, "liquidity_sweeps", []) or []),
-                "order_block_count": len(getattr(smc, "order_blocks", []) or []),
-                "fvg_count": len(getattr(smc, "fair_value_gaps", []) or []),
-                "latest_bos": _event_summary((getattr(smc, "bos_signals", []) or [])[-1] if getattr(smc, "bos_signals", []) else None),
-                "latest_choch": _event_summary((getattr(smc, "choch_signals", []) or [])[-1] if getattr(smc, "choch_signals", []) else None),
-            },
-            "trend": {
-                "vote": getattr(trend, "trend", "NEUTRAL"),
-                "strength": getattr(trend, "strength", "WEAK"),
-            },
-            "price_action": {
-                "vote": getattr(pa, "pa_signal", "NEUTRAL"),
-                "score": _number(getattr(pa, "pa_score", None), 1),
-                "patterns": patterns,
-            },
-            "wyckoff": {
-                "phase": getattr(wyckoff, "phase", "NEUTRAL"),
-                "vote": getattr(wyckoff, "wyckoff_signal", "NEUTRAL"),
-                "score": _number(getattr(wyckoff, "wyckoff_score", None), 2),
-                "spring": bool(getattr(wyckoff, "spring", False)),
-                "upthrust": bool(getattr(wyckoff, "upthrust", False)),
-                "volume_confirmed": bool(getattr(wyckoff, "volume_confirmed", False)),
-            },
-        },
-        "risk": {
-            "account_balance": _number(account_balance, 2),
-            "risk_amount": risk_amount,
-            "risk_percent": risk_percent,
-            "entry": _number(getattr(trade, "entry_price", None), 5) if trade else None,
-            "stop_loss": _number(getattr(trade, "stop_loss", None), 5) if trade else None,
-            "take_profit": _number(getattr(trade, "take_profit", None), 5) if trade else None,
-            "lot_size": _number(getattr(trade, "lot_size", None), 2) if trade else None,
-            "rr": _number(getattr(trade, "risk_reward_ratio", None), 2) if trade else None,
-            "sl_distance": _number(getattr(trade, "sl_distance_usd", None), 2) if trade else None,
-            "sl_distance_pips": _number(getattr(trade, "sl_distance_pips", None), 1) if trade else None,
-            "break_even_at": _number(getattr(trade, "break_even_at", None), 5) if trade else None,
-            "trailing_stop_distance": _number(getattr(trade, "trailing_stop_distance", None), 2) if trade else None,
-        },
+        "direction":           decision.direction,
+        "grade":               decision.grade,
+        "confidence":          round(decision.confidence, 1),
+        "regime":              decision.regime,
+        "regime_label":        decision.regime_label,
+        "confirmations":       confirmations,
+        "confirmation_count":  confirmation_count,
+        "confirmation_total":  4,
+        # Top signal-level reasons behind the confidence score (e.g. "BOS
+        # confirmed", "Strong EMA alignment (50/100/200)", "Spring confirmed").
+        "signals":             list(decision.reasoning[:6]),
     }
-

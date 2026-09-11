@@ -3,7 +3,7 @@ Live Trading Loop — async M5 candle-close event handler via mt5rest bridge.
 
 Flow per tick:
   1. Wait for next M5 candle close
-  2. Fetch the configured closed-candle history via the mt5rest bridge
+  2. Fetch 300 closed candles via mt5rest bridge
   3. Run decision engine (all 7 signal engines)
   4. Gate: RiskGuardian circuit breakers (daily loss / drawdown)
   5. Gate: max open positions + trade allowed + Telegram not paused
@@ -29,56 +29,33 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from live_trading.config import (
-    SYMBOLS, TIMEFRAME, CANDLE_WINDOW, RISK_PERCENT,
+    SYMBOL, TIMEFRAME, CANDLE_WINDOW, RISK_PERCENT,
     MAX_OPEN_TRADES, COMMENT,
     BAR_CHECK_INTERVAL, RECONNECT_DELAY, SYNC_TIMEOUT,
-    MIN_CONFIRMATIONS, REQUIRE_PRICE_ACTION, REQUIRE_SMC_CONFIRMATION,
-    REQUIRE_SMC_OR_PA_TRIGGER, BLOCK_RANGE_ENTRIES, RANGE_SCALP_MODE,
+    MIN_CONFIRMATIONS, REQUIRE_PRICE_ACTION,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF, USE_ATR_HIGH_VOL_FILTER,
     DAILY_LOSS_LIMIT_PCT, MAX_DRAWDOWN_PCT, SLIPPAGE_POINTS,
     STATE_FILE, GUARDIAN_STATE_FILE,
     TRAIL_ENABLED, TRAIL_ACTIVATION_R, TRAIL_STEP_R,
-    TRAIL_LOCK_BUFFER_R, TRAIL_LOCK_SLOPE, TRAIL_MAX_LOCK_R,
-    TRAIL_ATR_GAP_MULT, TRAIL_SPREAD_GAP_MULT,
-    TRAIL_MAX_GAP_R, TRAIL_MIN_STEP_PRICE,
-    TRAIL_CHECK_INTERVAL,
-    MTF_ENABLED, MTF_REQUIRE_ALIGNMENT, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
+    TRAIL_LOCK_BUFFER_R, TRAIL_ATR_GAP_MULT, TRAIL_MIN_STEP_PRICE,
+    MTF_ENABLED, MTF_TIMEFRAME, MTF_CANDLE_WINDOW,
     TRADE_TIMEFRAMES,
-    MAX_ENTRY_DRIFT_ATR, MAX_SPREAD_ATR, STRICT_ENTRY_MODE,
-    MAX_TOTAL_RISK_PCT,
-    ALLOW_COUNTER_TREND_TRADES,
-    FAST_SCALP_MODE,
 )
 from live_trading.logger import get_logger
-from live_trading.signals.gold_engine import calc_atr
-from live_trading.trading.entry_guards import (
-    validate_directional_alignment, validate_entry_quote,
-    validate_protection_levels,
-)
 from live_trading.risk.guardian import RiskGuardian, GuardianStatus
-from live_trading.risk.capital_manager import (
-    REQUIRED_ENTRY_RR,
-    validate_trade_risk,
-    validate_total_open_risk,
-)
 from live_trading.risk.trailing_stop import (
     TrailingConfig, compute_staircase_sl, should_apply, r_multiple_of,
 )
 from live_trading.signals.decision_engine import run_decision_engine, DecisionResult, describe_strategy
-from live_trading.ai_shadow import score_decision
 from live_trading.signals.mtf_filter import compute_mtf_bias, mtf_allows_trade, MtfBias
-from live_trading.signals.news_filter import check_news_filter
-from live_trading.signals.dxy_filter import get_dxy_signal
-from live_trading.signals.wyckoff_engine import (
-    calibrate_wyckoff, set_calibrated_config,
-)
+from live_trading.signals.wyckoff_engine import calibrate_wyckoff, set_calibrated_config
 from live_trading.mt5.connector import (
     connect, disconnect, ensure_connected,
     connect_with_retry, keepalive_mtapi,
     start_connection_watchdog, start_mt5_session_keepalive,
     fetch_candles, get_account_balance, get_account_info,
     get_open_positions, get_last_completed_bar_time,
-    get_current_quote, mt5_pos_to_dict, resolve_symbol_name,
+    get_current_quote, mt5_pos_to_dict,
 )
 from live_trading.mt5.executor import (
     place_market_order, close_position, modify_position, TradeResult
@@ -87,7 +64,6 @@ from live_trading.utils.state_writer import (
     write_robot_state, write_mt5_snapshot,
     read_commands, clear_command, log_trade,
 )
-from live_trading.symbols import execution_step
 
 log = get_logger()
 
@@ -120,43 +96,22 @@ class GoldScalperLive:
         self.loop_count: int = 0
         # Multi-TF bar tracking: one last-seen bar-time per trade timeframe.
         # Initialised to None so the first bar on every TF is always processed.
-        self.symbols: list[str] = list(SYMBOLS)
-        self._active_symbol: str = self.symbols[0]
-        # One completed-bar cursor per symbol/timeframe. XAUUSD keeps the
-        # existing cursor semantics; EURUSD gets an independent cursor.
-        self._last_bar_times: dict[tuple[str, str], Optional[datetime]] = {
-            (symbol, tf): None
-            for symbol in self.symbols
-            for tf in TRADE_TIMEFRAMES
+        self._last_bar_times: dict[str, Optional[datetime]] = {
+            tf: None for tf in TRADE_TIMEFRAMES
         }
-        # Guard against opening multiple trades for the same symbol in one
-        # tick when several timeframes close simultaneously (e.g.
-        # M20+M10+M5 all fire at :20). This is intentionally per-symbol:
-        # XAUUSD and EURUSD may each open one entry on the same tick.
-        self._trade_opened_this_tick: set[str] = set()
+        # Guard against opening multiple trades in the same tick when several
+        # timeframes close simultaneously (e.g. M20+M10+M5 all fire at :20).
+        # Without this, _on_new_bar() is called N times in one iteration of
+        # _run_loop() and each call may see 0 open positions from mt5rest (the
+        # bridge has not yet registered the trade placed by the previous call),
+        # causing N trades to open instead of 1.
+        self._trade_opened_this_tick: bool = False
         # tracks the last successfully placed trade (direction + bar_time)
         # so the post-SL cooldown gate can detect same-direction re-entry.
-        # Cooldown is isolated per symbol so a gold entry never suppresses EUR.
-        self._last_entry_by_symbol: dict[str, dict] = {
-            symbol: {"bar_time": None, "direction": ""}
-            for symbol in self.symbols
-        }
-        self._wyckoff_configs: dict = {}
+        self._last_entry_bar_time: Optional[datetime] = None
+        self._last_entry_direction: str = ""
         self.trade_history: List[dict] = []
         self.last_decision: Optional[DecisionResult] = None
-        self._last_news_filter: Optional[dict] = None
-        self._last_dxy_filter: Optional[dict] = None
-        # Broker-sourced position cache used by every state write. Without
-        # this cache, between-bar WAITING writes can replace a truthful
-        # multi-position snapshot with open_position=None.
-        self._last_open_positions: list[dict] = []
-        self._last_scan_symbol: str = ""
-        self._last_scan_timeframe: str = ""
-        self._last_scan_candle_count: int = 0
-        self._bar_diagnostic_logged_at: dict[tuple[str, str, str], datetime] = {}
-        self._history_warmup: dict[str, dict] = {}
-        self._last_mtf_telemetry: dict = {}
-        self._last_ai_telemetry: dict = {}
 
         # Risk Guardian — initialized after mt5rest bridge connects
         self.guardian = RiskGuardian(
@@ -179,7 +134,6 @@ class GoldScalperLive:
 
         # Handle for the MTAPI keepalive background task (cancelled on stop)
         self._keepalive_task: Optional[asyncio.Task] = None
-        self._trailing_task: Optional[asyncio.Task] = None
 
         # ── Staircase Trailing Stop ──────────────────────────────────────────
         # Toggleable at runtime via the Telegram panel's "Auto Trail" switch
@@ -190,11 +144,7 @@ class GoldScalperLive:
             activation_r=TRAIL_ACTIVATION_R,
             step_r=TRAIL_STEP_R,
             lock_buffer_r=TRAIL_LOCK_BUFFER_R,
-            lock_slope=TRAIL_LOCK_SLOPE,
-            max_lock_r=TRAIL_MAX_LOCK_R,
             atr_gap_mult=TRAIL_ATR_GAP_MULT,
-            spread_gap_mult=TRAIL_SPREAD_GAP_MULT,
-            max_gap_r=TRAIL_MAX_GAP_R,
             min_step_price=TRAIL_MIN_STEP_PRICE,
         )
         # Baseline for EACH currently open position, keyed by str(ticket id):
@@ -209,19 +159,18 @@ class GoldScalperLive:
         # every other open position's SL sat frozen at its entry level
         # forever, no matter how far price ran in its favour. Keying by
         # ticket lets every open position get its own independent staircase.
-        self._trail_baselines: dict = {}  # {str(ticket): baseline + favorable_extreme}
+        self._trail_baselines: dict = {}  # {str(ticket): {"id", "direction", "entry", "risk_distance"}}
         self._last_trailing_statuses: dict = {}  # {str(ticket): status-dict}, for panel telemetry
         # Cached ATR (price units) from the last completed bar — reused by the
         # trailing engine between bars so it doesn't need its own candle fetch.
-        self._last_atr: float = 0.0  # legacy telemetry fallback
-        self._last_atr_by_symbol: dict[str, float] = {}
+        self._last_atr: float = 0.0
 
     # ── Entry point ───────────────────────────────────────────────────────────
 
     async def start(self) -> bool:
         log.info("=" * 60)
         log.info("  GoldScalperPro v4 — LIVE TRADING ENGINE (mt5rest)")
-        log.info(f"  Symbols: {chr(44).join(self.symbols)}  |  Trade TFs: {chr(44).join(TRADE_TIMEFRAMES)} (highest first)")
+        log.info(f"  Symbol: {SYMBOL}  |  Trade TFs: {chr(44).join(TRADE_TIMEFRAMES)} (highest first)")
         log.info(f"  Risk: {RISK_PERCENT}%  |  Max positions: {MAX_OPEN_TRADES}")
         log.info(f"  Min confirmations: {MIN_CONFIRMATIONS}")
         log.info(f"  Daily loss limit: {DAILY_LOSS_LIMIT_PCT}%  |  "
@@ -242,29 +191,6 @@ class GoldScalperLive:
                               extra={"error": "mt5rest connection failed after retries"})
             return False  # non-False return signals failure to main.py for sys.exit(1)
 
-        # Resolve broker-specific suffixes before creating cursors or sending
-        # history/order requests. Never substitute an unrelated symbol.
-        resolved_symbols = [
-            await resolve_symbol_name(configured_symbol)
-            for configured_symbol in self.symbols
-        ]
-        resolved_symbols = list(dict.fromkeys(resolved_symbols))
-        if resolved_symbols != self.symbols:
-            log.info(
-                f"Broker symbol resolution: {self.symbols} -> {resolved_symbols}"
-            )
-            self.symbols = resolved_symbols
-            self._active_symbol = self.symbols[0]
-            self._last_bar_times = {
-                (symbol, tf): None
-                for symbol in self.symbols
-                for tf in TRADE_TIMEFRAMES
-            }
-            self._last_entry_by_symbol = {
-                symbol: {"bar_time": None, "direction": ""}
-                for symbol in self.symbols
-            }
-
         # ── MTAPI keepalive task — prevents Render free-tier sleep ─────────────
         # Store the handle so we can cancel it when the engine stops; without
         # this, the task becomes orphaned on every supervisor-driven restart and
@@ -276,9 +202,9 @@ class GoldScalperLive:
         # reconnects before the trading loop hits a failure.  Faster than
         # waiting for a bar-tick request to fail (worst case: one full bar).
         self._watchdog_task = asyncio.create_task(
-            start_connection_watchdog(interval_seconds=15.0), name="mt5_watchdog"
+            start_connection_watchdog(interval_seconds=30.0), name="mt5_watchdog"
         )
-        # MT5 broker-session keepalive: pings /ConnectionStatus every 1 min
+        # MT5 broker-session keepalive: pings /ConnectionStatus every 3 min
         # so the broker socket stays open and conn_id never expires silently.
         self._mt5_keepalive_task = asyncio.create_task(
             start_mt5_session_keepalive(), name="mt5_session_keepalive"
@@ -405,45 +331,12 @@ class GoldScalperLive:
                             "Guardian will block trades until account data is available"
                         )
 
-            # Seed the position cache before the first RUNNING/WAITING state
-            # write so the panel cannot report zero positions during the
-            # history warm-up window after a restart.
-            try:
-                _raw_positions = await get_open_positions(
-                    "", self._known_open_tickets()
-                )
-                self._last_open_positions = [
-                    mt5_pos_to_dict(_raw) for _raw in _raw_positions
-                ]
-            except RuntimeError as _position_exc:
-                log.warning(
-                    f"Could not seed open-position cache at startup: "
-                    f"{_position_exc}"
-                )
-
-            # Fetch a full 300-closed-candle warm-up for every configured
-            # symbol/timeframe before the first trading loop.  This makes
-            # history availability explicit for EURUSD as well as XAUUSD,
-            # instead of waiting for each symbol's next bar boundary.
-            self._write_state(
-                "WARMING_UP",
-                self._last_acc_info,
-                extra={"history_warmup_status": "IN_PROGRESS"},
-            )
-            await self._warm_up_history()
-
             _checkpoint("before calibrate_wyckoff")
             await self._calibrate_wyckoff()
             _checkpoint("after calibrate_wyckoff")
             # Write RUNNING state immediately after connect with real account data
             # so the panel shows live balance before the first bar fires.
             self._write_state("RUNNING", self._last_acc_info)
-            # Price protection runs independently of signal/bar processing. This
-            # keeps the stop responsive and means a paused robot still protects
-            # positions already open at the broker.
-            self._trailing_task = asyncio.create_task(
-                self._trailing_loop(), name="adaptive_trailing_stop"
-            )
             await self._run_loop()
         finally:
             # Cancel the keepalive task if it is still running.  _run_loop()'s
@@ -458,125 +351,21 @@ class GoldScalperLive:
                 except asyncio.CancelledError:
                     pass
                 log.debug("MTAPI keepalive task cancelled in start() finally.")
-            if self._trailing_task and not self._trailing_task.done():
-                self._trailing_task.cancel()
-                try:
-                    await self._trailing_task
-                except asyncio.CancelledError:
-                    pass
-                log.debug("Adaptive trailing task cancelled in start() finally.")
 
     # ── Wyckoff calibration ───────────────────────────────────────────────────
 
-    async def _warm_up_history(self) -> None:
-        """Fetch the configured history for every live symbol and scan TF."""
-        timeframes = list(TRADE_TIMEFRAMES)
-        if MTF_ENABLED and MTF_TIMEFRAME not in timeframes:
-            timeframes.append(MTF_TIMEFRAME)
-
-        requests = [
-            (
-                symbol,
-                timeframe,
-                CANDLE_WINDOW if timeframe in TRADE_TIMEFRAMES
-                else MTF_CANDLE_WINDOW,
-            )
-            for symbol in self.symbols
-            for timeframe in timeframes
-        ]
-        results = await asyncio.gather(
-            *(
-                fetch_candles(symbol, timeframe, requested_candles)
-                for symbol, timeframe, requested_candles in requests
-            ),
-            return_exceptions=True,
-        )
-
-        now = datetime.now(timezone.utc)
-        for (symbol, timeframe, requested_candles), result in zip(requests, results):
-            candles = result if isinstance(result, list) else []
-            latest_time = candles[-1].time if candles else None
-            latest_age_seconds = None
-            if latest_time:
-                try:
-                    parsed = datetime.fromisoformat(
-                        str(latest_time).replace("Z", "+00:00")
-                    )
-                    if parsed.tzinfo is None:
-                        parsed = parsed.replace(tzinfo=timezone.utc)
-                    latest_age_seconds = max(
-                        0, int((now - parsed).total_seconds())
-                    )
-                except (TypeError, ValueError, OverflowError):
-                    pass
-
-            received = len(candles)
-            if received < requested_candles:
-                status = "INSUFFICIENT"
-            elif latest_age_seconds is not None and latest_age_seconds > 7200:
-                status = "COMPLETE_BUT_STALE"
-            else:
-                status = "READY"
-
-            key = f"{symbol}/{timeframe}"
-            self._history_warmup[key] = {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "requested_candles": requested_candles,
-                "received_candles": received,
-                "latest_candle": latest_time,
-                "latest_age_seconds": latest_age_seconds,
-                "status": status,
-            }
-            if isinstance(result, Exception):
-                log.warning(
-                    f"History warm-up failed [{symbol}/{timeframe}]: {result}"
-                )
-            else:
-                log.info(
-                    f"History warm-up [{symbol}/{timeframe}]: "
-                    f"{received}/{requested_candles} candles, status={status}"
-                )
-
-        complete = bool(self._history_warmup) and all(
-              item["status"] == "READY"
-              for item in self._history_warmup.values()
-          )
-        log.info(
-            f"History warm-up complete: "
-            f"{sum(item['received_candles'] >= item['requested_candles'] for item in self._history_warmup.values())}"
-            f"/{len(self._history_warmup)} datasets met their requested history"
-        )
-        self._write_state(
-            "WARMING_UP",
-            self._last_acc_info,
-            extra={
-                "history_warmup_status": "COMPLETE" if complete else "INCOMPLETE",
-            },
-        )
-
     async def _calibrate_wyckoff(self) -> None:
-        log.info("Calibrating Wyckoff config for each active symbol …")
-        for symbol in self.symbols:
-            candles = await fetch_candles(symbol, TIMEFRAME, CANDLE_WINDOW)
-            if candles:
-                cfg = calibrate_wyckoff(candles, symbol=symbol)
-                self._wyckoff_configs[symbol] = cfg
-                log.info(
-                    f"Wyckoff calibrated [{symbol}] — "
-                    f"maxRangePct={cfg.max_range_pct:.5f}  "
-                    f"springMargin={cfg.spring_margin:.5f}"
-                )
-            else:
-                # Do not let a missing EUR feed overwrite XAU's calibrated
-                # parameters; use the safe baseline only for that symbol.
-                self._wyckoff_configs[symbol] = calibrate_wyckoff(
-                    [], symbol=symbol
-                )
-                log.warning(
-                    f"Could not fetch candles for {symbol} Wyckoff calibration; "
-                    "using baseline defaults for that symbol"
-                )
+        log.info("Calibrating Wyckoff config from live data …")
+        candles = await fetch_candles(SYMBOL, TIMEFRAME, 500)
+        if candles:
+            cfg = calibrate_wyckoff(candles)
+            set_calibrated_config(cfg)
+            log.info(f"Wyckoff calibrated — "
+                     f"maxRangePct={cfg.max_range_pct:.5f}  "
+                     f"springMargin={cfg.spring_margin:.2f}")
+        else:
+            log.warning("Could not fetch candles for Wyckoff calibration; "
+                        "using defaults")
 
     # ── Main async loop ───────────────────────────────────────────────────────
 
@@ -589,30 +378,6 @@ class GoldScalperLive:
                 await keepalive_mtapi()
             except Exception:
                 pass
-
-    async def _trailing_loop(self) -> None:
-        """Continuously protect open positions independently of bar processing.
-
-        Entry signals intentionally remain on their existing schedule. Trailing
-        protection is a separate, low-latency loop so a price reversal between
-        candle checks cannot give back a large unrealised profit. It also keeps
-        running while the robot is paused because pause must not remove
-        protection from a position that is already open.
-        """
-        log.info(
-            f"Adaptive trailing protection active — polling every "
-            f"{TRAIL_CHECK_INTERVAL:.1f}s"
-        )
-        while self.running:
-            try:
-                await self._manage_trailing_stop()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                # A transient quote/bridge error must not kill the protection
-                # task permanently; the next cycle will retry.
-                log.warning(f"Adaptive trailing cycle failed: {exc}")
-            await asyncio.sleep(TRAIL_CHECK_INTERVAL)
 
     async def _run_loop(self) -> None:
         log.info(
@@ -661,22 +426,27 @@ class GoldScalperLive:
                     )
                     self._reconnect_attempts = 0
 
+                # Staircase trailing stop — checked every tick (not just on
+                # candle close) so it reacts within seconds of price crossing
+                # a step, not up to 5 minutes late.
+                await self._manage_trailing_stop()
+                _checkpoint(f"loop#{self.loop_count} trailing stop managed")
+
                 # Reset the within-tick trade guard before processing this
-                # tick's bars. All _on_new_bar() calls that share this tick
+                # tick's bars.  All _on_new_bar() calls that share this tick
                 # (e.g. M20+M10+M5 closing simultaneously) will see the same
-                # per-symbol set, so each symbol can open at most one entry
-                # while duplicate entries for that symbol remain blocked.
-                self._trade_opened_this_tick.clear()
+                # flag and only the first successful placement will go through.
+                self._trade_opened_this_tick = False
                 new_bars = await self._check_new_bars()
                 _checkpoint(f"loop#{self.loop_count} new_bars={len(new_bars)}")
                 if new_bars:
-                    for _symbol, _tf, _bar_time in new_bars:
+                    for _tf, _bar_time in new_bars:
                         self.loop_count += 1
                         log.info(
-                            f"─── Bar #{self.loop_count} [{_symbol}][{_tf}] "
+                            f"─── Bar #{self.loop_count} [{_tf}] "
                             f"at {_bar_time.isoformat()} ───"
                         )
-                        await self._on_new_bar(_bar_time, _tf, _symbol)
+                        await self._on_new_bar(_bar_time, _tf)
                 else:
                     # Refresh account info every _ACC_REFRESH_INTERVAL seconds
                     # so the panel shows current balance/equity between candles.
@@ -739,175 +509,86 @@ class GoldScalperLive:
 
     # ── Bar detection ─────────────────────────────────────────────────────────
 
-    def _bar_diagnostic(self, symbol: str, timeframe: str, kind: str, message: str) -> None:
-        """Rate-limit repetitive history diagnostics to one per minute."""
-        key = (symbol, timeframe, kind)
-        now = datetime.now(timezone.utc)
-        previous = self._bar_diagnostic_logged_at.get(key)
-        if previous is None or (now - previous).total_seconds() >= 60:
-            self._bar_diagnostic_logged_at[key] = now
-            log.warning(message)
-
-    async def _check_new_bars(self) -> list[tuple[str, str, datetime]]:
-        """Return new completed bars for every configured symbol/timeframe.
-
-        Each symbol has an independent cursor, so an unavailable EUR feed
-        cannot advance or suppress XAUUSD processing.
-        """
-        results: list[tuple[str, str, datetime]] = []
-        for symbol in self.symbols:
-            for tf in TRADE_TIMEFRAMES:
-                try:
-                    bt = await get_last_completed_bar_time(symbol, tf)
-                    if bt is None:
-                        self._bar_diagnostic(
-                            symbol, tf, "missing",
-                            f"No completed broker candle returned for "
-                            f"{symbol}/{tf}; waiting for history feed",
-                        )
-                        continue
-                    _bt_naive = bt.replace(tzinfo=None) if bt.tzinfo else bt
-                    _stale_cutoff = datetime.utcnow() - timedelta(hours=2)
-                    key = (symbol, tf)
-                    if _bt_naive < _stale_cutoff:
-                        self._last_bar_times[key] = _bt_naive
-                        log.debug(
-                            f"[{symbol}][{tf}] Bar {bt.isoformat()} is stale "
-                            "— waiting for MT5 historical data sync"
-                        )
-                        self._bar_diagnostic(
-                            symbol, tf, "stale",
-                            f"Stale broker candle for {symbol}/{tf}: "
-                            f"latest={bt.isoformat()} cutoff="
-                            f"{_stale_cutoff.isoformat()}",
-                        )
-                        continue
-                    prev = self._last_bar_times.get(key)
-                    if prev is None or _bt_naive > prev:
-                        self._last_bar_times[key] = _bt_naive
-                        results.append((symbol, tf, _bt_naive))
-                except Exception as _bar_err:
-                    log.warning(f"[{symbol}][{tf}] Bar time check failed: {_bar_err}")
-        # The panel exposes the most recently written scan.  Keep the primary
-        # configured market last so an auxiliary EURUSD bar cannot overwrite
-        # the Gold scan immediately after it was produced.
-        primary_symbol = self.symbols[0] if self.symbols else ""
-        results.sort(key=lambda item: item[0] == primary_symbol)
+    async def _check_new_bars(self) -> list[tuple[str, datetime]]:
+        """Poll every configured trade timeframe and return a list of
+        (timeframe, bar_time) pairs for every TF that has a new completed bar
+        since the last tick.  Results preserve TRADE_TIMEFRAMES order, which
+        is already sorted highest-first, so M20 signals are processed before
+        M15, then M10, then M5.  If M20 opens a position, the M15/M10/M5
+        handlers in the same tick will see it via get_open_positions() and
+        skip entry, preventing duplicate positions.
+        Never raises — individual TF errors are logged and skipped."""
+        results: list[tuple[str, datetime]] = []
+        for tf in TRADE_TIMEFRAMES:
+            try:
+                bt = await get_last_completed_bar_time(SYMBOL, tf)
+                if bt is None:
+                    continue
+                # ── Staleness guard ──────────────────────────────────────────
+                # Right after MT5 connects, PriceHistoryV2 returns cached
+                # historical data (sometimes years old) until the terminal
+                # finishes syncing from the broker.  Processing a 2022 bar in
+                # 2026 context would crash the signal pipeline or open a trade
+                # with completely wrong ATR/SL/TP values.  Skip any bar that is
+                # more than 2 hours old relative to UTC wall-clock time.
+                # Normalize to naive UTC immediately.  get_last_completed_bar_time()
+                # may return timezone-aware datetimes (when the mt5rest response
+                # includes a "Z" suffix) on some timeframes and naive on others.
+                # Storing a mix into _last_bar_times causes max() inside
+                # _write_state() to raise:
+                #   TypeError: can't compare offset-naive and offset-aware datetimes
+                # which silently crashes every _write_state() call (WAITING, ERROR,
+                # STOPPED) — leaving the state file permanently frozen at RUNNING.
+                _bt_naive = bt.replace(tzinfo=None) if bt.tzinfo else bt
+                _stale_cutoff = datetime.utcnow() - timedelta(hours=2)
+                if _bt_naive < _stale_cutoff:
+                    # Still update last_bar_times (as naive) so we don't re-log
+                    self._last_bar_times[tf] = _bt_naive
+                    log.debug(
+                        f"[{tf}] Bar {bt.isoformat()} is stale "
+                        f"(>{int((datetime.utcnow() - _bt_naive).total_seconds()/3600)}h old) "
+                        f"— waiting for MT5 historical data sync"
+                    )
+                    continue
+                prev = self._last_bar_times.get(tf)
+                if prev is None or _bt_naive > prev:
+                    self._last_bar_times[tf] = _bt_naive
+                    results.append((tf, _bt_naive))
+            except Exception as _bar_err:
+                log.warning(f"[{tf}] Bar time check failed: {_bar_err}")
         return results
 
     # ── Per-bar handler ───────────────────────────────────────────────────────
 
-    async def _on_new_bar(
-        self, bar_time: datetime, tf: str = TIMEFRAME, symbol: str = ""
-    ) -> None:
-        symbol = (symbol or self.symbols[0]).upper()
-        self._active_symbol = symbol
-        # Apply the calibrated parameters for this symbol immediately before
-        # analysis. The engines are synchronous, so EUR calibration cannot
-        # leak into the XAUUSD decision that follows it.
-        set_calibrated_config(
-            self._wyckoff_configs.get(
-                symbol, calibrate_wyckoff([], symbol=symbol)
-            ),
-            symbol=symbol,
-        )
+    async def _on_new_bar(self, bar_time: datetime, tf: str = TIMEFRAME) -> None:
         # 1. Fetch candles for this timeframe (M5 / M10 / M15 / M20)
-        candles = await fetch_candles(symbol, tf, CANDLE_WINDOW)
-        self._last_scan_symbol = symbol
-        self._last_scan_timeframe = tf
-        self._last_scan_candle_count = len(candles)
+        candles = await fetch_candles(SYMBOL, tf, CANDLE_WINDOW)
         if len(candles) < 50:
-            log.warning(
-                f"Insufficient history [{symbol}/{tf}]: received={len(candles)} "
-                f"required=50 — skipping bar"
-            )
-            self._write_state(
-                "WAITING",
-                self._last_acc_info,
-                extra={
-                    "scan_telemetry": {
-                        "status": "INSUFFICIENT_CANDLES",
-                        "symbol": symbol,
-                        "timeframe": tf,
-                        "candle_count": len(candles),
-                        "required_candles": 50,
-                    }
-                },
-            )
+            log.warning(f"Only {len(candles)} candles returned — skipping bar")
             return
 
-        # 1b. Fetch HTF candles for Multi-Timeframe filter. A complete but
-        # stale HTF window is not valid context: fail closed instead of silently
-        # trading against a frozen H1 bias.
+        # 1b. Fetch HTF candles for Multi-Timeframe filter (fail-safe: skipped on error)
+        # HTF bias is computed here — before account / guardian checks — so the
+        # fetch latency overlaps with the (slower) account info call that follows.
+        # compute_mtf_bias() never raises; a bad fetch simply yields htf_bias=None.
         htf_bias: Optional[MtfBias] = None
-        self._last_mtf_telemetry = {
-            "enabled": bool(MTF_ENABLED),
-            "symbol": symbol,
-            "timeframe": MTF_TIMEFRAME,
-            "status": "DISABLED" if not MTF_ENABLED else "PENDING",
-        }
         if MTF_ENABLED:
             try:
-                htf_candles = await fetch_candles(symbol, MTF_TIMEFRAME, MTF_CANDLE_WINDOW)
-                htf_age_seconds = None
-                if htf_candles:
-                    try:
-                        _htf_time = datetime.fromisoformat(
-                            str(htf_candles[-1].time).replace("Z", "+00:00")
-                        )
-                        if _htf_time.tzinfo is None:
-                            _htf_time = _htf_time.replace(tzinfo=timezone.utc)
-                        htf_age_seconds = max(
-                            0, int((datetime.now(timezone.utc) - _htf_time).total_seconds())
-                        )
-                    except (TypeError, ValueError, OverflowError):
-                        htf_age_seconds = None
-
-                _htf_label = MTF_TIMEFRAME.upper()
-                if _htf_label.startswith("M"):
-                    _htf_minutes = int(_htf_label[1:])
-                elif _htf_label.endswith("M"):
-                    _htf_minutes = int(_htf_label[:-1])
-                elif _htf_label.startswith("H"):
-                    _htf_minutes = int(_htf_label[1:]) * 60
-                elif _htf_label.startswith("D"):
-                    _htf_minutes = int(_htf_label[1:]) * 1440
-                else:
-                    _htf_minutes = 60
-                _htf_freshness_limit = max(7200, _htf_minutes * 180)
-
-                self._last_mtf_telemetry.update({
-                    "candle_count": len(htf_candles),
-                    "latest_candle": htf_candles[-1].time if htf_candles else None,
-                    "latest_age_seconds": htf_age_seconds,
-                    "freshness_limit_seconds": _htf_freshness_limit,
-                })
-                if len(htf_candles) < 50:
-                    self._last_mtf_telemetry["status"] = "INSUFFICIENT"
-                    log.warning(
-                        f"HTF candles insufficient ({len(htf_candles)}) — no trade"
-                    )
-                elif htf_age_seconds is None or htf_age_seconds > _htf_freshness_limit:
-                    self._last_mtf_telemetry["status"] = "STALE"
-                    log.warning(
-                        f"HTF candles stale [{symbol}/{MTF_TIMEFRAME}]: "
-                        f"age={htf_age_seconds}s limit={_htf_freshness_limit}s — no trade"
-                    )
-                else:
-                    htf_bias = compute_mtf_bias(htf_candles, symbol=symbol)
-                    self._last_mtf_telemetry["status"] = "READY"
-                    self._last_mtf_telemetry["bias"] = htf_bias.direction
+                htf_candles = await fetch_candles(SYMBOL, MTF_TIMEFRAME, MTF_CANDLE_WINDOW)
+                if len(htf_candles) >= 50:
+                    htf_bias = compute_mtf_bias(htf_candles)
                     log.info(
                         f"[{tf}] HTF ({MTF_TIMEFRAME}) bias: {htf_bias.direction}  "
                         f"trend={htf_bias.trend}  smc={htf_bias.smc_signal}  "
                         f"regime={htf_bias.regime}  strength={htf_bias.strength}"
                     )
+                else:
+                    log.warning(
+                        f"HTF candles insufficient ({len(htf_candles)}) "
+                        f"— MTF filter skipped this bar"
+                    )
             except Exception as _mtf_exc:
-                self._last_mtf_telemetry.update({
-                    "status": "ERROR",
-                    "error": str(_mtf_exc)[:300],
-                })
-                log.warning(f"MTF fetch/analysis error (fail-safe, no trade): {_mtf_exc}")
+                log.warning(f"MTF fetch/analysis error (fail-safe, skipping): {_mtf_exc}")
 
         # 2. Account info (live, required for Guardian)
         acc_info = await get_account_info()
@@ -989,43 +670,13 @@ class GoldScalperLive:
             )
             return
 
-        # External market filters. Both calls are cached by their modules:
-        # news refreshes hourly and DXY refreshes every five minutes.
-        # News is a hard blackout; DXY is passed into the decision engine for
-        # confidence telemetry and opposing-direction veto.
-        news_result, dxy_result = await asyncio.gather(
-            check_news_filter(),
-            get_dxy_signal(),
-        )
-        self._last_news_filter = {
-            "blocked": news_result.blocked,
-            "reason": news_result.reason,
-            "event_name": news_result.event_name,
-            "event_time_utc": news_result.event_time_utc,
-        }
-        self._last_dxy_filter = {
-            "signal": dxy_result.signal,
-            "dxy_close": dxy_result.dxy_close,
-            "ema20": dxy_result.ema20,
-            "ema50": dxy_result.ema50,
-        }
-
-        if news_result.blocked:
-            log.warning(f"📰 NEWS BLACKOUT — no trade this bar: {news_result.reason}")
-            self._write_state(
-                "WAITING",
-                acc_info,
-                extra={"external_filters": self._external_filter_extra()},
-            )
-            return
-
         # 4. Check open positions (live MT5 — prevents duplicate entry on restart)
         # get_open_positions() raises RuntimeError if mt5rest returns an error
         # response.  Treat that as a missing position check — skip trade entry
         # for this bar rather than risking duplicate-entry or crashing the loop.
         try:
             raw_positions, _dropped_unknown = await get_open_positions(
-                "", self._known_open_tickets(), return_diagnostics=True
+                SYMBOL, self._known_open_tickets(), return_diagnostics=True
             )
         except RuntimeError as _pos_err:
             log.error(
@@ -1033,16 +684,8 @@ class GoldScalperLive:
             )
             self._write_state("WAITING", acc_info)
             return
-        all_pos_dicts = [mt5_pos_to_dict(p) for p in raw_positions]
-        self._last_open_positions = all_pos_dicts
-        pos_dicts = [
-            p for p in all_pos_dicts
-            if str(p.get("symbol", "")).upper() == symbol.upper()
-        ]
-        # Keep the panel aware of an existing position from the other symbol
-        # while the current symbol is being scanned. This avoids a transient
-        # XAUUSD "flat" display during the EURUSD pass.
-        pos = pos_dicts[0] if pos_dicts else (all_pos_dicts[0] if all_pos_dicts else None)
+        pos_dicts = [mt5_pos_to_dict(p) for p in raw_positions]
+        pos       = pos_dicts[0] if pos_dicts else None
 
         # DEFENSE IN DEPTH: an unrecognised corrupted row was dropped this
         # poll. Most of the time that really is bridge garbage, but right
@@ -1053,7 +696,7 @@ class GoldScalperLive:
         # incident. Skip entry for this bar rather than risk stacking on top
         # of something we can't yet identify; positions we DO recognise are
         # unaffected and continue to be managed normally.
-        if _dropped_unknown:
+        if _dropped_unknown and pos is None:
             log.warning(
                 f"Skipping trade entry — mt5rest reported unidentified ticket(s) "
                 f"{_dropped_unknown} this poll that don't match any known "
@@ -1073,22 +716,10 @@ class GoldScalperLive:
             risk_percent=RISK_PERCENT,
             min_confirmations=MIN_CONFIRMATIONS,
             use_atr_high_vol=USE_ATR_HIGH_VOL_FILTER,
-            dxy_signal=dxy_result.signal,
             require_price_action=REQUIRE_PRICE_ACTION,
-            require_smc_confirmation=REQUIRE_SMC_CONFIRMATION,
-            require_smc_or_pa_trigger=REQUIRE_SMC_OR_PA_TRIGGER,
             require_smc_price_action_wyckoff=REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
-            symbol=symbol,
-            htf_direction=(
-                htf_bias.direction if htf_bias is not None else "NEUTRAL"
-            ),
-            htf_strength=(
-                htf_bias.strength if htf_bias is not None else "WEAK"
-            ),
         )
         self.last_decision = decision
-        # AI observes the decision in shadow mode; it never gates or places trades.
-        self._last_ai_telemetry = score_decision(decision)
 
         # 6. Write MT5 snapshot for Telegram panel
         last_c = candles[-1]
@@ -1108,7 +739,6 @@ class GoldScalperLive:
         # Cached for the staircase trailing engine, which runs between bars
         # (every BAR_CHECK_INTERVAL) and has no candle fetch of its own.
         self._last_atr = _snap_atr
-        self._last_atr_by_symbol[symbol] = _snap_atr
         # Build normalized account_info for the snapshot (snake_case keys to
         # match what telegram_panel's mt5_service expects).
         _snap_account_info = {
@@ -1144,12 +774,9 @@ class GoldScalperLive:
             atr=_snap_atr,
             smc_signal=decision.smc.smc_signal,
             trend=decision.trend.trend,
-            symbol=symbol,
-            timeframe=tf,
-            candle_count=len(candles),
             # FIX: Full account data so the panel shows real balance, not USD 0.00
             account_info=_snap_account_info,
-            open_positions=all_pos_dicts,
+            open_positions=pos_dicts,
             recent_trades=self.trade_history[-20:],
             today_profit=_snap_today_profit,
             floating_profit=_snap_account_info["floating_profit"],
@@ -1159,33 +786,29 @@ class GoldScalperLive:
             },
         )
 
-        # 7. Gate: max positions per symbol. Positions on other symbols do
-        # not consume this symbol's entry allowance.
-        if len(pos_dicts) >= MAX_OPEN_TRADES:
-            log.info(
-                f"[{symbol}] Max positions ({MAX_OPEN_TRADES}) open — "
-                "skipping entry"
-            )
+        # 7. Gate: max positions
+        if len(raw_positions) >= MAX_OPEN_TRADES:
+            log.info(f"Max positions ({MAX_OPEN_TRADES}) open — skipping entry")
             self._write_state(
                 "HOLDING", acc_info, decision, pos,
                 extra=self._guardian_extra(gs),
             )
             return
 
-        # 7b. Gate: within-tick duplicate-entry guard, isolated per symbol
+        # 7b. Gate: within-tick duplicate-entry guard
         # When TRADE_TIMEFRAMES has N entries and several TFs close at the
         # same bar boundary (e.g. M20+M15+M10+M5 all fire at minute :60),
         # _on_new_bar is called N times inside the same _run_loop iteration.
         # The mt5rest bridge may not yet reflect the position opened by the
         # first call when the second call runs its get_open_positions() check
         # above — so the max-positions gate can pass N times in a row and N
-        # trades get placed. This set is reset once per tick (before the
-        # for-loop in _run_loop) and records the symbol after a successful
-        # placement, blocking subsequent calls for that symbol only.
-        if symbol.upper() in self._trade_opened_this_tick:
+        # trades get placed.  This flag is reset once per tick (before the
+        # for-loop in _run_loop) and set to True by the first successful
+        # placement, blocking all subsequent calls in the same tick.
+        if self._trade_opened_this_tick:
             log.info(
-                f"[{tf}] Skipping {symbol} entry — a trade was already "
-                "opened earlier this tick (multi-TF boundary guard)"
+                f"[{tf}] Skipping entry — a trade was already opened "
+                f"earlier this tick (multi-TF boundary guard)"
             )
             self._write_state(
                 "HOLDING", acc_info, decision, pos,
@@ -1196,11 +819,7 @@ class GoldScalperLive:
         # 8. Gate: decision engine
         if not decision.allowed:
             reasons = " | ".join(decision.blocked_reasons or ["No signal"])
-            log.info(
-                f"No trade [{tf}] local_trend={decision.trend.trend} "
-                f"local_regime={decision.regime} "
-                f"htf={htf_bias.direction if htf_bias else 'NEUTRAL'} → {reasons}"
-            )
+            log.info(f"No trade → {reasons}")
             self._write_state(
                 "SCANNING", acc_info, decision, pos,
                 extra=self._guardian_extra(gs),
@@ -1208,40 +827,16 @@ class GoldScalperLive:
             return
 
         # 8b. Gate: Multi-Timeframe alignment
-        # A professional entry needs a usable, directional HTF context.
-        # Fetch/analysis failure, insufficient data, or a neutral HTF is a
-        # no-trade condition when MTF_REQUIRE_ALIGNMENT is enabled.
-        # Never allow a stale/failed HTF dataset to pass in flexible mode. The
-        # existing directional alignment check below still applies when HTF is
-        # fresh and MTF_REQUIRE_ALIGNMENT is enabled.
-        if MTF_ENABLED and self._last_mtf_telemetry.get("status") != "READY":
-            _mtf_status = self._last_mtf_telemetry.get("status", "UNAVAILABLE")
-            _mtf_reason = f"MTF {_mtf_status.lower()} — no trade"
-            log.info(f"⛔  {_mtf_reason}")
-            self._write_state(
-                "SCANNING", acc_info, decision, pos,
-                extra={
-                    **self._guardian_extra(gs),
-                    "mtf_telemetry": dict(self._last_mtf_telemetry),
-                    "mtf_blocked": _mtf_reason,
-                },
-            )
-            return
-
-        if MTF_ENABLED and MTF_REQUIRE_ALIGNMENT:
-            _mtf_ok = htf_bias is not None and htf_bias.direction != "NEUTRAL"
-            _mtf_reason = (
-                "MTF unavailable — no trade" if htf_bias is None else
-                "MTF neutral — no directional context, no trade"
-                if htf_bias.direction == "NEUTRAL" else ""
-            )
-            if _mtf_ok and not ALLOW_COUNTER_TREND_TRADES:
-                _mtf_ok, _mtf_reason = mtf_allows_trade(htf_bias, decision.direction)
+        # Only runs when decision.allowed=True (we never block an already-rejected
+        # trade with extra noise).  mtf_allows_trade() is a pure function that
+        # never raises and returns (True, "") when htf_bias is None or NEUTRAL.
+        if MTF_ENABLED and htf_bias is not None:
+            _mtf_ok, _mtf_reason = mtf_allows_trade(htf_bias, decision.direction)
             if not _mtf_ok:
                 log.info(f"⛔  {_mtf_reason}")
                 _mtf_extra = {
                     **self._guardian_extra(gs),
-                    "htf_bias": ({
+                    "htf_bias": {
                         "direction": htf_bias.direction,
                         "trend":     htf_bias.trend,
                         "smc":       htf_bias.smc_signal,
@@ -1249,34 +844,18 @@ class GoldScalperLive:
                         "strength":  htf_bias.strength,
                         "reasoning": htf_bias.reasoning,
                         "blocked":   _mtf_reason,
-                    } if htf_bias is not None else {
-                        "direction": "NEUTRAL",
-                        "reasoning": [_mtf_reason],
-                        "blocked": _mtf_reason,
-                    }),
+                    },
                 }
                 self._write_state("SCANNING", acc_info, decision, pos, extra=_mtf_extra)
                 return
-        elif (
-            MTF_ENABLED
-            and htf_bias is not None
-            and not ALLOW_COUNTER_TREND_TRADES
-        ):
-            _mtf_ok, _mtf_reason = mtf_allows_trade(htf_bias, decision.direction)
-            if not _mtf_ok:
-                log.info(f"⛔  {_mtf_reason}")
-                self._write_state("SCANNING", acc_info, decision, pos,
-                                  extra=self._guardian_extra(gs))
-                return
 
-        # 7c. Gate: post-SL cooldown in choppy/range regimes, isolated per symbol.
+        # 7c. Gate: post-SL cooldown in choppy/range regimes
+        # If the last trade was in the same direction and closed (or will close)
+        # within 2 bars, the market setup has NOT changed — skip re-entry.
+        # Uses only the existing _last_entry state; fails-open on any parse error.
         _RANGE_COOLDOWN_REGIMES = {"RANGE", "ACCUMULATION", "DISTRIBUTION", "HIGH_VOLATILITY"}
-        _last_entry = self._last_entry_by_symbol.setdefault(
-            symbol, {"bar_time": None, "direction": ""}
-        )
-        _last_entry_bar_time = _last_entry.get("bar_time")
-        if (_last_entry_bar_time is not None
-                and _last_entry.get("direction") == decision.direction
+        if (self._last_entry_bar_time is not None
+                and self._last_entry_direction == decision.direction
                 and decision.regime in _RANGE_COOLDOWN_REGIMES):
             _TF_MIN_MAP = {
                 "M1": 1, "1m": 1, "M5": 5, "5m": 5, "M10": 10, "10m": 10,
@@ -1284,7 +863,7 @@ class GoldScalperLive:
                 "H1": 60, "1h": 60, "H4": 240,
             }
             _tf_min = _TF_MIN_MAP.get(tf, 15)
-            _elapsed_min = (bar_time - _last_entry_bar_time).total_seconds() / 60.0
+            _elapsed_min = (bar_time - self._last_entry_bar_time).total_seconds() / 60.0
             if _elapsed_min < 2 * _tf_min:
                 log.info(
                     f"⏸ Post-SL cooldown [{tf}]: {decision.direction} last entered "
@@ -1293,143 +872,6 @@ class GoldScalperLive:
                 )
                 self._write_state("WAITING", acc_info, decision, pos,
                                   extra=self._guardian_extra(gs))
-                return
-
-        # 8c. Price-formation gate: the candle close is the signal reference,
-        # but the order will fill at the live ask/bid. Re-price SL/TP from that
-        # executable quote and reject fast moves or abnormal spreads.
-        try:
-            _quote = await get_current_quote(symbol)
-        except Exception as exc:
-            log.warning(f"[{tf}] Skipping entry — live quote unavailable: {exc}")
-            _quote = {}
-        try:
-            _bid = float(_quote.get("bid", 0.0))
-            _ask = float(_quote.get("ask", 0.0))
-            _signal_close = float(candles[-1].close)
-            _entry_atr = max(float(calc_atr(candles, 14)), 0.01)
-            _spread = _ask - _bid
-            _market_entry = _ask if decision.direction == "BUY" else _bid
-        except (AttributeError, TypeError, ValueError):
-            _bid = _ask = _spread = _market_entry = 0.0
-            _entry_atr = 0.0
-
-        _quote_ok, _quote_reason, _market_entry = validate_entry_quote(
-            decision.direction, _bid, _ask, _signal_close, _entry_atr,
-            MAX_SPREAD_ATR, MAX_ENTRY_DRIFT_ATR,
-            enforce_limits=STRICT_ENTRY_MODE,
-        )
-        if not _quote_ok:
-            log.info(f"[{tf}] Skipping entry — {_quote_reason}")
-            
-            self._write_state("WAITING", acc_info, decision, pos,
-                              extra=self._guardian_extra(gs))
-            return
-
-        if _quote_reason:
-            log.info(f"[{tf}] Flexible quote warning — {_quote_reason}")
-
-        _live_decision = run_decision_engine(
-            candles,
-            balance,
-            risk_percent=RISK_PERCENT,
-            min_confirmations=MIN_CONFIRMATIONS,
-            use_atr_high_vol=USE_ATR_HIGH_VOL_FILTER,
-            dxy_signal=dxy_result.signal,
-            require_price_action=REQUIRE_PRICE_ACTION,
-            require_smc_confirmation=REQUIRE_SMC_CONFIRMATION,
-            require_smc_or_pa_trigger=REQUIRE_SMC_OR_PA_TRIGGER,
-            require_smc_price_action_wyckoff=REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
-            entry_price_override=_market_entry,
-            spread=_spread,
-            symbol=symbol,
-            htf_direction=(
-                htf_bias.direction if htf_bias is not None else "NEUTRAL"
-            ),
-            htf_strength=(
-                htf_bias.strength if htf_bias is not None else "WEAK"
-            ),
-        )
-        if (not _live_decision.allowed
-                or _live_decision.direction != decision.direction):
-            log.info(
-                f"[{tf}] Skipping entry — live-quote recalculation invalidated "
-                f"the signal: {_live_decision.blocked_reasons or ['direction changed']}"
-            )
-            self._write_state("SCANNING", acc_info, _live_decision, pos,
-                              extra=self._guardian_extra(gs))
-            return
-        decision = _live_decision
-        self.last_decision = decision
-
-        # 8d. FINAL EXECUTION SAFETY: validate the exact levels that will be sent.
-        # Decision-engine checks are intentionally repeated here because this is
-        # the last fail-closed barrier before the broker API call.
-        tp_params = decision.trade_params
-        if tp_params is None:
-            log.error(f"[{tf}] Refusing entry — allowed decision has no trade parameters")
-            self._write_state("SCANNING", acc_info, decision, pos,
-                              extra=self._guardian_extra(gs))
-            return
-
-        _risk_ok, _risk_reason = validate_trade_risk(
-            tp_params, balance, RISK_PERCENT
-        )
-        if not _risk_ok:
-            log.warning(f"[{tf}] Refusing entry — {_risk_reason}")
-            self._write_state(
-                "SCANNING", acc_info, decision, pos,
-                extra={
-                    **self._guardian_extra(gs),
-                    "risk_block": _risk_reason,
-                },
-            )
-            return
-
-        _protection_ok, _protection_reason, _execution_rr = validate_protection_levels(
-            decision.direction,
-            tp_params.entry_price,
-            tp_params.stop_loss,
-            tp_params.take_profit,
-            required_rr=REQUIRED_ENTRY_RR,
-        )
-        if not _protection_ok:
-            log.error(
-                f"[{tf}] Refusing entry — invalid executable protection: "
-                f"{_protection_reason} (entry={tp_params.entry_price} "
-                f"SL={tp_params.stop_loss} TP={tp_params.take_profit})"
-            )
-            self._write_state("SCANNING", acc_info, decision, pos,
-                              extra=self._guardian_extra(gs))
-            return
-
-        # Optional directional veto: all quote, protection, risk, position,
-        # news, and guardian checks above remain active regardless of this flag.
-        if (
-            not ALLOW_COUNTER_TREND_TRADES
-            and not (RANGE_SCALP_MODE and decision.regime == "RANGE")
-        ):
-            _direction_ok, _direction_reason = validate_directional_alignment(
-                decision.direction,
-                local_trend=decision.trend.trend,
-                smc_trend=decision.smc.trend,
-                smc_signal=decision.smc.smc_signal,
-                htf_direction=(
-                    htf_bias.direction if htf_bias is not None else "NEUTRAL"
-                ),
-            )
-            if not _direction_ok:
-                log.warning(f"[{tf}] FINAL COUNTER-TREND BLOCK — {_direction_reason}")
-                self._write_state(
-                    "SCANNING",
-                    acc_info,
-                    decision,
-                    pos,
-                    extra={
-                        **self._guardian_extra(gs),
-                        "counter_trend_block": _direction_reason,
-                    },
-                )
                 return
 
         # 8c. Safety re-check: confirm we are still flat immediately before
@@ -1454,7 +896,7 @@ class GoldScalperLive:
         # is about to place an order; every other code path (trailing stop,
         # /close_all, panel snapshot) is untouched.
         try:
-            _confirm_positions = await get_open_positions("", self._known_open_tickets())
+            _confirm_positions = await get_open_positions(SYMBOL, self._known_open_tickets())
         except RuntimeError as _confirm_err:
             log.error(
                 f"Pre-order safety re-check could not verify positions — "
@@ -1463,59 +905,20 @@ class GoldScalperLive:
             self._write_state("WAITING", acc_info, decision, pos,
                                extra=self._guardian_extra(gs))
             return
-        # Re-check the per-symbol cap, but do not treat every existing
-        # position as a duplicate: up to MAX_OPEN_TRADES independent scalp
-        # positions are intentional for EACH symbol. Only a newly appeared
-        # position for the current symbol while the earlier scan was flat is
-        # treated as a bridge race and blocks this entry.
-        _confirmed_position_dicts = [
-            mt5_pos_to_dict(raw) for raw in _confirm_positions
-        ]
-        _confirmed_symbol_positions = [
-            p for p in _confirmed_position_dicts
-            if str(p.get("symbol", "")).upper() == symbol.upper()
-        ]
-        if len(_confirmed_symbol_positions) >= MAX_OPEN_TRADES:
-            log.info(
-                f"Pre-order safety re-check reached max positions for "
-                f"{symbol} ({MAX_OPEN_TRADES}) — aborting entry"
-            )
-            _confirm_pos = _confirmed_symbol_positions[0]
-            self._write_state("HOLDING", acc_info, decision, _confirm_pos,
-                               extra=self._guardian_extra(gs))
-            return
-        if not pos_dicts and _confirmed_symbol_positions:
-            _confirm_pos = _confirmed_symbol_positions[0]
+        if _confirm_positions:
+            _confirm_pos = mt5_pos_to_dict(_confirm_positions[0])
             log.warning(
-                f"Pre-order safety re-check found {symbol} position "
+                f"Pre-order safety re-check found position "
                 f"{_confirm_pos.get('id')} that was missing from the earlier "
-                f"flat scan — aborting entry to avoid a bridge-race duplicate."
+                f"scan this bar (likely a transient mt5rest reporting glitch) "
+                f"— aborting this entry to avoid stacking a duplicate position."
             )
             self._write_state("HOLDING", acc_info, decision, _confirm_pos,
                                extra=self._guardian_extra(gs))
-            return
-
-        _aggregate_risk_ok, _aggregate_risk_reason = validate_total_open_risk(
-            _confirmed_position_dicts,
-            tp_params.risk_amount,
-            balance,
-            MAX_TOTAL_RISK_PCT,
-        )
-        if not _aggregate_risk_ok:
-            log.warning(f"[{tf}] Refusing entry — {_aggregate_risk_reason}")
-            self._write_state(
-                "HOLDING" if _confirmed_position_dicts else "SCANNING",
-                acc_info,
-                decision,
-                (_confirmed_position_dicts[0] if _confirmed_position_dicts else pos),
-                extra={
-                    **self._guardian_extra(gs),
-                    "risk_block": _aggregate_risk_reason,
-                },
-            )
             return
 
         # 9. ── PLACE ORDER ────────────────────────────────────────────────────
+        tp_params = decision.trade_params
         log.info(
             f"🔔 SIGNAL [{tf}] {decision.direction}  "
             f"conf={decision.confidence:.1f}%  "
@@ -1526,7 +929,7 @@ class GoldScalperLive:
         )
 
         result: TradeResult = await place_market_order(
-            symbol    = symbol,
+            symbol    = SYMBOL,
             direction = decision.direction,
             lot_size  = tp_params.lot_size,
             sl        = tp_params.stop_loss,
@@ -1536,24 +939,14 @@ class GoldScalperLive:
         )
 
         if result.success:
-            # Block further _on_new_bar calls for this symbol in this tick
-            # (covers the multi-TF same-bar-boundary race). Other symbols
-            # remain eligible independently.
-            self._trade_opened_this_tick.add(symbol.upper())
-            self._last_entry_by_symbol[symbol] = {
-                "bar_time": bar_time,
-                "direction": decision.direction,
-            }
-            strategy = describe_strategy(
-                decision,
-                account_balance=balance,
-                symbol=symbol,
-                timeframe=tf,
-                opened_at=bar_time.isoformat(),
-            )
+            # Block all further _on_new_bar calls in this tick from opening
+            # another position (covers the multi-TF same-bar-boundary race).
+            self._trade_opened_this_tick = True
+            self._last_entry_bar_time   = bar_time
+            self._last_entry_direction  = decision.direction
+            strategy = describe_strategy(decision)
             entry_log = {
                 "position_id": result.position_id,
-                "symbol":       symbol,
                 "direction":   decision.direction,
                 "entry":       tp_params.entry_price,
                 "sl":          tp_params.stop_loss,
@@ -1582,11 +975,10 @@ class GoldScalperLive:
             # always measures its R-multiples from here, never from wherever
             # the stop has since been trailed to.
             self._trail_baselines[str(result.position_id)] = {
-                "id":                result.position_id,
-                "direction":         decision.direction,
-                "entry":             tp_params.entry_price,
-                "risk_distance":     abs(tp_params.entry_price - tp_params.stop_loss),
-                "favorable_extreme": tp_params.entry_price,
+                "id":            result.position_id,
+                "direction":     decision.direction,
+                "entry":         tp_params.entry_price,
+                "risk_distance": abs(tp_params.entry_price - tp_params.stop_loss),
             }
             # Build a synthetic position so the Telegram panel reflects the
             # newly opened trade immediately rather than waiting up to 5 min
@@ -1594,7 +986,7 @@ class GoldScalperLive:
             pos = {
                 "id":         result.position_id,
                 "ticket":     result.position_id,
-                "symbol":     symbol,
+                "symbol":     SYMBOL,
                 "type":       decision.direction,
                 "volume":     tp_params.lot_size,
                 "open_price": tp_params.entry_price,
@@ -1602,10 +994,6 @@ class GoldScalperLive:
                 "tp":         tp_params.take_profit,
                 "profit":     0.0,
                 "comment":    COMMENT,
-                # Keep the explanation in the immediate snapshot too; this
-                # makes file-based/local panel deployments reliable even when
-                # the Redis strategy key is temporarily unavailable.
-                "strategy":   strategy,
             }
             # ROOT-CAUSE FIX: push the newly opened position into the live
             # Redis snapshot immediately. write_mt5_snapshot() above (step 6)
@@ -1615,7 +1003,7 @@ class GoldScalperLive:
             # M5 bar — up to 5 minutes later.
             try:
                 from live_trading.redis_ipc import redis_update_snapshot_positions
-                redis_update_snapshot_positions(all_pos_dicts + [pos])
+                redis_update_snapshot_positions(pos_dicts + [pos])
             except Exception as _sync_exc:
                 log.debug(f"Snapshot position sync skipped: {_sync_exc}")
         else:
@@ -1646,43 +1034,19 @@ class GoldScalperLive:
         safe, just slightly more conservative.
         """
         pos_id = pos.get("id")
-        original_entry: Optional[float] = None
-        original_risk: Optional[float] = None
-        original_direction = pos.get("type", "BUY")
-        favorable_extreme: Optional[float] = None
-
-        # The first open-trade record contains the immutable entry/initial SL.
-        # A later TRAIL_SL record can additionally restore the last known
-        # high-water/low-water mark after a Render restart.
         for entry in reversed(self.trade_history):
             if not isinstance(entry, dict):
                 continue
             if str(entry.get("position_id")) == str(pos_id) and "sl" in entry and "entry" in entry:
-                original_entry = float(entry["entry"])
-                original_risk = abs(original_entry - float(entry["sl"]))
-                original_direction = entry.get("direction", original_direction)
+                risk = abs(float(entry["entry"]) - float(entry["sl"]))
+                if risk > 0:
+                    return {
+                        "id":            pos_id,
+                        "direction":     entry.get("direction", pos.get("type", "BUY")),
+                        "entry":         float(entry["entry"]),
+                        "risk_distance": risk,
+                    }
                 break
-
-        if original_entry is not None and original_risk and original_risk > 0:
-            for event in self.trade_history:
-                if (
-                    isinstance(event, dict)
-                    and str(event.get("position_id")) == str(pos_id)
-                    and event.get("action") == "TRAIL_SL"
-                    and event.get("favorable_extreme") is not None
-                ):
-                    try:
-                        favorable_extreme = float(event["favorable_extreme"])
-                    except (TypeError, ValueError):
-                        continue
-            return {
-                "id":                 pos_id,
-                "direction":          original_direction,
-                "entry":              original_entry,
-                "risk_distance":      original_risk,
-                "favorable_extreme":  favorable_extreme or original_entry,
-            }
-
         # Fallback: derive from the position's live snapshot.
         risk = abs(float(pos.get("open_price", 0.0)) - float(pos.get("sl", 0.0)))
         if risk > 0:
@@ -1695,7 +1059,6 @@ class GoldScalperLive:
                 "direction":     pos.get("type", "BUY"),
                 "entry":         float(pos.get("open_price", 0.0)),
                 "risk_distance": risk,
-                "favorable_extreme": float(pos.get("open_price", 0.0)),
             }
         return None
 
@@ -1719,7 +1082,7 @@ class GoldScalperLive:
             return
 
         try:
-            raw_positions = await get_open_positions("", self._known_open_tickets())
+            raw_positions = await get_open_positions(SYMBOL, self._known_open_tickets())
         except RuntimeError as exc:
             log.debug(f"Trailing check skipped — could not fetch positions: {exc}")
             return
@@ -1739,12 +1102,12 @@ class GoldScalperLive:
             pid: s for pid, s in self._last_trailing_statuses.items() if pid in live_ids
         }
 
+        quote = await get_current_quote(SYMBOL)
+        if not quote:
+            return  # no live price this tick — try again next tick
+
         for raw in raw_positions:
             pos = mt5_pos_to_dict(raw)
-            symbol = str(pos.get("symbol") or self.symbols[0]).upper()
-            quote = await get_current_quote(symbol)
-            if not quote:
-                continue  # no live price for this symbol — retry next tick
             pos_id = str(pos["id"])
 
             baseline = self._trail_baselines.get(pos_id)
@@ -1760,31 +1123,14 @@ class GoldScalperLive:
             # a SELL exits at the ask — trailing off the wrong side would
             # trail too aggressively by the full spread.
             current_price = quote["bid"] if direction.upper() == "BUY" else quote["ask"]
-            entry_price = float(baseline["entry"])
-            previous_extreme = float(
-                baseline.get("favorable_extreme", entry_price)
-            )
-            if direction.upper() == "BUY":
-                baseline["favorable_extreme"] = max(
-                    entry_price, previous_extreme, current_price
-                )
-            else:
-                baseline["favorable_extreme"] = min(
-                    entry_price, previous_extreme, current_price
-                )
 
             candidate_sl = compute_staircase_sl(
                 direction=direction,
                 entry=baseline["entry"],
                 risk_distance=baseline["risk_distance"],
                 current_price=current_price,
-                atr=self._last_atr_by_symbol.get(symbol, self._last_atr),
+                atr=self._last_atr,
                 cfg=self._trailing_cfg,
-                favorable_extreme=baseline["favorable_extreme"],
-                spread=max(0.0, float(quote.get("ask", 0.0)) -
-                          float(quote.get("bid", 0.0))),
-                symbol=symbol,
-                current_sl=float(pos.get("sl", 0.0)),
             )
 
             r_now = r_multiple_of(
@@ -1795,20 +1141,12 @@ class GoldScalperLive:
                 "r_multiple":   r_now,
                 "current_sl":   pos["sl"],
                 "candidate_sl": candidate_sl,
-                "favorable_extreme": baseline["favorable_extreme"],
             }
 
-            _trail_step = (
-                max(execution_step(symbol), self._trailing_cfg.min_step_price / 1000.0)
-                if symbol.startswith("EURUSD")
-                else self._trailing_cfg.min_step_price
-            )
-            if not should_apply(direction, pos["sl"], candidate_sl, _trail_step):
+            if not should_apply(direction, pos["sl"], candidate_sl, self._trailing_cfg.min_step_price):
                 continue
 
-            result = await modify_position(
-                pos["id"], candidate_sl, pos["tp"], symbol=symbol
-            )
+            result = await modify_position(pos["id"], candidate_sl, pos["tp"])
             if result.success:
                 log.info(
                     f"📐 Trailing stop advanced — position {pos['id']}  "
@@ -1821,7 +1159,6 @@ class GoldScalperLive:
                     "r_multiple":  r_now,
                     "old_sl":      pos["sl"],
                     "new_sl":      candidate_sl,
-                    "favorable_extreme": baseline["favorable_extreme"],
                 })
             else:
                 log.warning(
@@ -1975,10 +1312,7 @@ class GoldScalperLive:
                 _g = globals()
                 try:
                     if "min_confirmations" in payload:
-                        v = max(
-                            1,
-                            int(float(payload["min_confirmations"])),
-                        )
+                        v = int(float(payload["min_confirmations"]))
                         _live_cfg.MIN_CONFIRMATIONS = v; _g["MIN_CONFIRMATIONS"] = v
                     log.info(f"🔧 Strategy config updated via Telegram: {payload}")
                 except Exception as _upd_err:
@@ -2031,7 +1365,7 @@ class GoldScalperLive:
 
     async def _close_all_positions(self) -> None:
         try:
-            positions = await get_open_positions("", self._known_open_tickets())
+            positions = await get_open_positions(SYMBOL, self._known_open_tickets())
         except RuntimeError as exc:
             log.error(f"CLOSE_ALL: could not fetch positions from mt5rest: {exc}")
             return
@@ -2141,15 +1475,6 @@ class GoldScalperLive:
 
     # ── State writer ──────────────────────────────────────────────────────────
 
-    def _external_filter_extra(self) -> dict:
-        """Return the latest News/DXY results for panel and state telemetry."""
-        extra = {}
-        if self._last_news_filter is not None:
-            extra["news_filter"] = dict(self._last_news_filter)
-        if self._last_dxy_filter is not None:
-            extra["dxy_filter"] = dict(self._last_dxy_filter)
-        return extra
-
     def _write_state(
         self,
         status: str,
@@ -2164,10 +1489,6 @@ class GoldScalperLive:
             merged_extra.update(
                 self._guardian_extra(self._last_guardian_status)
             )
-        if self._last_mtf_telemetry:
-            merged_extra["mtf_telemetry"] = dict(self._last_mtf_telemetry)
-        if self._last_ai_telemetry:
-            merged_extra["ai_shadow"] = dict(self._last_ai_telemetry)
         if self._last_trailing_statuses:
             merged_extra["trailing_stop"] = {
                 "enabled": self.trailing_enabled,
@@ -2175,20 +1496,6 @@ class GoldScalperLive:
                 # open position's own staircase progress, not just one.
                 "positions": dict(self._last_trailing_statuses),
             }
-        merged_extra.update(self._external_filter_extra())
-        merged_extra["symbols"] = list(self.symbols)
-        merged_extra["active_symbol"] = self._active_symbol
-        merged_extra["history_warmup"] = self._history_warmup
-        merged_extra["scan_telemetry"] = {
-            "symbol": self._last_scan_symbol,
-            "timeframe": self._last_scan_timeframe,
-            "candle_count": self._last_scan_candle_count,
-            "status": (
-                "READY"
-                if self._last_scan_candle_count >= 50
-                else "WARMING_UP"
-            ),
-        }
         if extra:
             merged_extra.update(extra)
 
@@ -2199,7 +1506,6 @@ class GoldScalperLive:
             account_info     = acc_info or {},
             trade_history    = self.trade_history,
             loop_count       = self.loop_count,
-            open_positions   = self._last_open_positions,
             last_signal_time = (
                 max(
                     (bt for bt in self._last_bar_times.values() if bt is not None),

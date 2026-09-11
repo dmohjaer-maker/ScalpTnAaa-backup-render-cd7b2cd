@@ -17,7 +17,6 @@ import os
 import json
 import asyncio
 import logging
-import math
 from datetime import datetime, timezone
 from typing import Optional, Any
 from ..config.constants import ConnectionStatus, TradeDirection, TradeStatus
@@ -68,51 +67,32 @@ class MT5Service:
     # artifact — no retail gold account can hold this many lots.
     _MAX_SANE_VOLUME_LOTS: float = 100.0
 
-    @classmethod
-    def _sane_snapshot_volume(cls, raw: dict) -> tuple[float, str] | None:
-        """Read a trustworthy lot value without inventing a fallback.
-
-        The robot normally publishes a canonical ``volume``.  ``lots`` and
-        ``closeLots`` remain supported for snapshots written by older builds
-        or for a bridge response whose primary volume was corrupted.
-        """
-        for key in ("volume", "lots", "closeLots"):
-            try:
-                value = float(raw.get(key))
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(value) and 0.0 < value <= cls._MAX_SANE_VOLUME_LOTS:
-                return value, key
-        return None
-
     async def get_open_positions(self) -> list[Position]:
         snapshot = await self._read_snapshot()
         positions_raw = snapshot.get("open_positions", [])
         positions = []
         for raw in positions_raw:
             try:
-                volume_result = self._sane_snapshot_volume(raw)
-                if volume_result is None:
+                # Safety net: drop phantom rows with insane volume even if they
+                # somehow reached the snapshot (e.g. before the robot's
+                # _dedupe_positions fix filtered them).  Without this check a
+                # 1 000 000-lot BUY phantom row would appear as a brand-new
+                # open position in the heartbeat monitor and trigger a spurious
+                # "TRADE OPENED" Telegram notification with fabricated details.
+                vol = float(raw.get("volume", 0.0) or 0.0)
+                if vol > self._MAX_SANE_VOLUME_LOTS:
                     logger.warning(
-                        "Skipping snapshot position without a trustworthy "
-                        "finite lot value — likely corrupted mt5rest data "
-                        f"(ticket={raw.get('ticket')}, volume={raw.get('volume')!r}, "
-                        f"lots={raw.get('lots')!r})"
+                        f"Skipping snapshot position with insane volume "
+                        f"({vol:.0f}L) — likely phantom row from mt5rest bridge "
+                        f"(ticket={raw.get('ticket')}, type={raw.get('type')})"
                     )
                     continue
-                vol, volume_source = volume_result
-                if volume_source != "volume":
-                    logger.warning(
-                        f"Using {volume_source}={vol:g} for snapshot ticket "
-                        f"{raw.get('ticket')} because volume={raw.get('volume')!r} "
-                        "is not trustworthy"
-                    )
 
                 pos = Position(
                     ticket=raw.get("ticket", 0),
                     symbol=raw.get("symbol", "XAUUSD"),
                     direction=TradeDirection(raw.get("type", "BUY")),
-                    volume=vol,
+                    volume=vol if vol > 0 else 0.01,
                     open_price=raw.get("open_price", 0.0),
                     current_price=raw.get("current_price", 0.0),
                     stop_loss=raw.get("sl"),
@@ -129,7 +109,7 @@ class MT5Service:
                     breakeven_activated=raw.get("be_done", False),
                     trailing_stop_active=raw.get("trail_active", False),
                 )
-                pos.strategy = raw.get("strategy") or self._get_trade_strategy(pos.ticket)
+                pos.strategy = self._get_trade_strategy(pos.ticket)
                 positions.append(pos)
             except Exception as e:
                 logger.warning(f"Failed to parse position: {e}")
@@ -176,87 +156,25 @@ class MT5Service:
                 logger.warning(f"Failed to parse pending order: {e}")
         return orders
 
-    async def get_recent_trades(
-        self, limit: int = 20, *, fresh: bool = False
-    ) -> list[Trade]:
-        """Return the most recent trade records from the robot snapshot.
-
-        ``fresh=True`` is used by the Telegram Live report button.  It
-        invalidates the panel's short-lived cache first so a click always
-        reads the latest Redis/HTTP snapshot rather than a previous dashboard
-        request.
-        """
-        safe_limit = max(1, min(int(limit), 50))
-        snapshot = await self.get_fresh_snapshot() if fresh else await self._read_snapshot()
+    async def get_recent_trades(self, limit: int = 20) -> list[Trade]:
+        snapshot = await self._read_snapshot()
         trades_raw = snapshot.get("recent_trades", [])
-        if not isinstance(trades_raw, list):
-            return []
-
-        # The live engine stores an event log in recent_trades: an opening
-        # event, zero or more trailing-stop events, and a closing event can
-        # all belong to one ticket.  Build one completed record per ticket so
-        # the Telegram report does not count internal events as trades.
-        opening_by_ticket: dict[str, dict[str, Any]] = {}
-        closed_by_ticket: dict[str, dict[str, Any]] = {}
-        closed_order: list[str] = []
-        for raw in trades_raw:
-            if not isinstance(raw, dict):
-                continue
-            ticket = raw.get("ticket") or raw.get("position_id")
-            if ticket is None:
-                continue
-            ticket_key = str(ticket)
-            if "profit" not in raw:
-                opening_by_ticket[ticket_key] = {
-                    **opening_by_ticket.get(ticket_key, {}),
-                    **raw,
-                }
-                continue
-
-            merged = {
-                **opening_by_ticket.get(ticket_key, {}),
-                **raw,
-            }
-            if ticket_key not in closed_by_ticket:
-                closed_order.append(ticket_key)
-            closed_by_ticket[ticket_key] = merged
-
-        # Direct MT5 snapshots may already contain one complete record per
-        # trade and may not use position_id.  They are covered by the same
-        # profit-key check above.
-        completed_raw = [
-            closed_by_ticket[key]
-            for key in closed_order[-safe_limit:]
-        ]
         trades = []
-        for raw in completed_raw:
+        for raw in trades_raw[-limit:]:
             try:
-                if not isinstance(raw, dict):
-                    continue
-                # Robot history uses entry/lot/direction/open-time names,
-                # while MT5 snapshots may use the more explicit aliases.
-                direction = str(raw.get("direction") or raw.get("type") or "BUY").upper()
-                if direction not in ("BUY", "SELL"):
-                    direction = "BUY"
                 trade = Trade(
                     ticket=raw.get("ticket", 0),
-                    # The live robot records its position id as the ticket.
-                    # Keep both snapshot formats readable.
-                    account_id=raw.get("account_id"),
                     symbol=raw.get("symbol", "XAUUSD"),
-                    direction=TradeDirection(direction),
-                    volume=raw.get("volume", raw.get("lot", 0.01)),
-                    open_price=raw.get("open_price", raw.get("entry", 0.0)),
-                    current_price=raw.get("current_price", raw.get("close_price", 0.0)),
-                    close_price=raw.get("close_price", raw.get("exit", 0.0)),
+                    direction=TradeDirection(raw.get("type", "BUY")),
+                    volume=raw.get("volume", 0.01),
+                    open_price=raw.get("open_price", 0.0),
+                    close_price=raw.get("close_price", 0.0),
                     stop_loss=raw.get("sl"),
                     take_profit=raw.get("tp"),
-                    open_time=datetime.fromisoformat(
-                        str(raw.get("open_time") or raw.get("bar_time"))
-                    ) if raw.get("open_time") or raw.get("bar_time") else datetime.now(timezone.utc),
-                    close_time=datetime.fromisoformat(
-                        str(raw["close_time"])
-                    ) if raw.get("close_time") else None,
+                    open_time=datetime.fromisoformat(raw["open_time"])
+                        if raw.get("open_time") else datetime.now(timezone.utc),
+                    close_time=datetime.fromisoformat(raw["close_time"])
+                        if raw.get("close_time") else None,
                     profit=raw.get("profit", 0.0),
                     commission=raw.get("commission", 0.0),
                     swap=raw.get("swap", 0.0),
@@ -264,8 +182,6 @@ class MT5Service:
                     comment=raw.get("comment"),
                     magic=raw.get("magic", 0),
                 )
-                if not trade.ticket:
-                    trade.ticket = raw.get("position_id", 0)
                 trades.append(trade)
             except Exception as e:
                 logger.warning(f"Failed to parse trade: {e}")
@@ -333,10 +249,6 @@ class MT5Service:
         """Force a fresh read bypassing cache. Used for live connection testing."""
         self._cache_ts = None
         return await self._read_snapshot()
-
-    async def get_latest_scan(self) -> dict[str, Any]:
-        """Return the robot's latest market-scan snapshot without cache."""
-        return await self.get_fresh_snapshot()
 
     async def _read_snapshot(self) -> dict[str, Any]:
         now = asyncio.get_running_loop().time()

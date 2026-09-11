@@ -98,7 +98,7 @@ Full reference with descriptions: [`live_trading/.env.example`](live_trading/.en
 
 | Variable | Required | Current production value | Description |
 |----------|----------|---------|-------------|
-| `MTAPI_URL` | **YES** | `https://mt5.mtapi.io` | Official hosted MTAPI endpoint |
+| `MTAPI_URL` | **YES** | `https://goldscalper-mtapi.onrender.com` | URL of the `mtapi-bridge` Docker service |
 | `MT5_HOST` | **YES** | `AMarkets-Demo` | Broker server name |
 | `MT5_PORT` | **YES** | `443` | Broker TCP port |
 | `MT5_USER` | **YES (secret)** | — | MT5 account login number |
@@ -110,17 +110,12 @@ Full reference with descriptions: [`live_trading/.env.example`](live_trading/.en
 | `TRADE_TIMEFRAMES` | No | `M20,M15,M10,5m` | Multi-timeframe scan order, highest first |
 | `CANDLE_WINDOW` | No | `300` | Bars fetched per candle request |
 | `RISK_PERCENT` | No | `1.0` | Risk per trade (% of balance) |
-| `MIN_CONFIRMATIONS` | No | `2` | Min signal confirmations; neutral SMC is optional, but opposing SMC is a hard veto |
+| `MIN_CONFIRMATIONS` | No | `2` | Min signal confirmations (SMC always required + N of Trend/PA/Wyckoff) |
 | `CONF_HARD_MIN` | No | `32` | Confidence-engine hard floor |
 | `QUALITY_ADX_MIN` | No | `12` | Quality filter ADX floor |
 | `DAILY_LOSS_LIMIT_PCT` | No | `4.0` | Guardian: daily loss halt threshold |
 | `MAX_DRAWDOWN_PCT` | No | `12.0` | Guardian: drawdown halt threshold |
 | `SLIPPAGE_POINTS` | No | `30` | Max fill slippage in broker points |
-| `SL_ATR_BUFFER_MULT` | No | `0.15` | Volatility-aware structure buffer added beyond the selected swing/order-block level |
-| `SL_MIN_ATR_MULT` / `SL_MAX_ATR_MULT` | No | `1.80` / `3.50` | Initial-SL envelope for XAUUSD M5; the effective minimum is hard-clamped at 1.80 ATR |
-| `TRAIL_ACTIVATION_R` | No | `0.90` | Profit in R required before trailing protection starts |
-| `TRAIL_ATR_GAP_MULT` / `TRAIL_SPREAD_GAP_MULT` | No | `1.10` / `2.50` | Volatility and execution-side room behind the favorable extreme |
-| `TRAIL_MAX_GAP_R` | No | `0.90` | Caps trailing distance so high ATR cannot make protection inactive |
 | `STATE_FILE` / `MT5_SNAPSHOT` / `COMMANDS_FILE` / `GUARDIAN_STATE_FILE` / `LOG_FILE` | No | `/tmp/...` | Local file paths — ephemeral, real cross-restart durability comes from Redis (see Architecture above) |
 
 ### Telegram Panel (`goldscalper-v4-panel`)

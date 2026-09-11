@@ -6,7 +6,7 @@ Runs fully self-hosted on Render.
 
 Required env vars:
     MTAPI_URL     – URL of the mt5rest Docker service
-                    e.g. https://mt5.mtapi.io
+                    e.g. https://goldscalper-mtapi.onrender.com
     MT5_HOST      – broker server name  (e.g. AMarkets-Demo)
     MT5_USER      – MT5 account login number
     MT5_PASSWORD  – MT5 account password
@@ -23,7 +23,6 @@ mt5rest endpoints used:
 """
 
 import asyncio
-import math
 import time as _time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -33,7 +32,7 @@ import aiohttp
 from live_trading.config import (
     MTAPI_URL, MT5_HOST, MT5_PORT,
     MT5_USER, MT5_PASSWORD,
-    RECONNECT_DELAY, SYNC_TIMEOUT,
+    SYNC_TIMEOUT,
 )
 from live_trading.signals.gold_engine import OHLCV
 from live_trading.logger import get_logger
@@ -73,15 +72,8 @@ _watchdog_task: asyncio.Task | None = None
 # every _MT5_KEEPALIVE_INTERVAL_S seconds so the broker socket stays open.
 # Completely separate from the HTTP-bridge /Ping in server.py.
 _MT5_KEEPALIVE_TASK: asyncio.Task | None = None
-_MT5_KEEPALIVE_INTERVAL_S:    float = 60.0     # 1 min — keep broker session alive
+_MT5_KEEPALIVE_INTERVAL_S:    float = 180.0    # 3 min  — keep broker session alive
 _MT5_SESSION_REFRESH_AGE_S:   float = 14400.0  # 4 hours — proactively refresh conn_id
-
-# Broker symbol metadata changes far less often than prices.  Cache it for a
-# short period so a restart can resolve broker suffixes (for example
-# XAUUSD.r/XAUUSDm) without making a symbol-list request on every bar.
-_SYMBOL_CACHE: list[str] = []
-_SYMBOL_CACHE_AT: float = 0.0
-_SYMBOL_CACHE_TTL_S: float = 900.0
 
 
 def _get_reconnect_lock() -> asyncio.Lock:
@@ -146,12 +138,6 @@ async def connect(*args, **kwargs) -> bool:
                 "password": password,
                 "server":   host,
                 "connectTimeoutSeconds": 60,
-                # MTAPI's cluster selection is random by default. During a
-                # broker-side cluster incident that can repeatedly land on
-                # a reset/timed-out member. This robot uses one account, so
-                # let MTAPI probe the cluster and choose the nearest healthy
-                # member for the login attempt.
-                "connectToNearestByPing": "true",
             },
             timeout=aiohttp.ClientTimeout(total=SYNC_TIMEOUT),
         ) as resp:
@@ -322,12 +308,10 @@ async def ensure_connected(*args, **kwargs) -> bool:
         # Re-check inside the lock: another waiter may have already reconnected
         if _connected and _time.monotonic() - _last_connect_time < _CONNECT_GRACE_PERIOD:
             return True
-        return await connect_with_retry(
-            max_attempts=3, retry_delay=RECONNECT_DELAY
-        )
+        return await connect_with_retry(max_attempts=3, retry_delay=30.0)
 
 
-async def start_connection_watchdog(interval_seconds: float = 15.0) -> None:
+async def start_connection_watchdog(interval_seconds: float = 30.0) -> None:
     """Proactive background task: checks MT5 connection health every *interval_seconds*
     and reconnects before the trading loop hits a failure.
 
@@ -337,9 +321,8 @@ async def start_connection_watchdog(interval_seconds: float = 15.0) -> None:
     Why this matters:
       Without a proactive watchdog the connector only reconnects *after* a
       trading-loop request fails — by which time the bar has already started
-      and the opportunity may be lost.  Checking every 15 s and requiring two
-      consecutive failures means reconnect detection takes at most ~30 s,
-      not one full 5-minute bar.
+      and the opportunity may be lost.  Checking every 60 s means the worst-case
+      reconnect latency is ~60 s, not one full 5-minute bar.
     """
     global _watchdog_task
     log.info(f"[watchdog] MT5 connection watchdog started (interval={interval_seconds}s) — reconnect within {interval_seconds*2}s of any sustained drop")
@@ -499,268 +482,100 @@ async def start_mt5_session_keepalive(
 # ── Market data ───────────────────────────────────────────────────────────────
 
 async def fetch_candles(
-      symbol: str, timeframe: str, count: int = 300
-    ) -> List[OHLCV]:
-      """Fetch completed OHLCV candles and prefer the freshest bridge response.
+    symbol: str, timeframe: str, count: int = 300
+) -> List[OHLCV]:
+    """Fetch OHLCV candles via GET /PriceHistoryV2 (ISO datetime range).
 
-      PriceHistoryEx is the preferred exact-count endpoint, but some mt5rest
-      sessions return a complete *stale* window after a broker reconnect. In
-      that case PriceHistoryV2 is queried with a wider lookback and merged so a
-      stale cache cannot silently become the active HTF input.
-      """
-      for attempt in range(2):
-          if not _conn_id:
-              if not await ensure_connected():
-                  return []
-
-          tf_min = _TF_MAP.get(timeframe, 5)
-          request_count = max(count + 5, 55)
-          now = datetime.now(timezone.utc)
-          freshness_limit = max(7200, tf_min * 60 * 3)
-
-          def _raw_epoch(row: dict) -> float | None:
-              raw_time = next(
-                  (
-                      row.get(key)
-                      for key in ("time", "timestamp", "timeStamp", "date")
-                      if row.get(key) is not None
-                  ),
-                  None,
-              )
-              if isinstance(raw_time, (int, float)):
-                  return float(raw_time)
-              if raw_time is None:
-                  return None
-              try:
-                  parsed = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
-                  if parsed.tzinfo is None:
-                      parsed = parsed.replace(tzinfo=timezone.utc)
-                  return parsed.timestamp()
-              except (TypeError, ValueError, OverflowError):
-                  return None
-
-          def _latest_epoch(rows) -> float | None:
-              if not isinstance(rows, list):
-                  return None
-              values = [_raw_epoch(row) for row in rows if isinstance(row, dict)]
-              values = [value for value in values if value is not None]
-              return max(values) if values else None
-
-          try:
-              sess = _get_session()
-
-              async def _get_rows(endpoint: str, params: dict, timeout_seconds: int = 75):
-                  try:
-                      async with sess.get(
-                          f"{_base_url}/{endpoint}",
-                          params=params,
-                          timeout=aiohttp.ClientTimeout(total=timeout_seconds),
-                      ) as resp:
-                          payload = await resp.json(content_type=None)
-                          return payload if isinstance(payload, list) else []
-                  except Exception as exc:
-                      log.warning(f"{endpoint} candle request failed for {symbol}/{timeframe}: {exc}")
-                      return []
-
-              ex_data = await _get_rows(
-                  "PriceHistoryEx",
-                  {
-                      "id": _conn_id,
-                      "symbol": symbol,
-                      "from": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                      "numBars": request_count,
-                      "timeFrame": tf_min,
-                      "timeoutSeconds": 60,
-                  },
-              )
-              candidates: list[tuple[str, list]] = []
-              if ex_data:
-                  candidates.append(("PriceHistoryEx", ex_data))
-
-              ex_latest = _latest_epoch(ex_data)
-              ex_age = (now.timestamp() - ex_latest) if ex_latest is not None else None
-              need_range_probe = len(ex_data) < 2 or ex_latest is None or ex_age > freshness_limit
-              if need_range_probe:
-                  # A wider range survives weekends/market gaps and still gives
-                  # the bridge enough room to return count completed bars.
-                  lookback_minutes = max(tf_min * request_count * 3, 14 * 24 * 60)
-                  from_dt = now - timedelta(minutes=lookback_minutes)
-                  v2_data = await _get_rows(
-                      "PriceHistoryV2",
-                      {
-                          "id": _conn_id,
-                          "symbol": symbol,
-                          "from": from_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                          "to": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                          "timeFrame": tf_min,
-                          "timeoutSeconds": 60,
-                      },
-                  )
-                  if v2_data:
-                      candidates.append(("PriceHistoryV2", v2_data))
-                      v2_latest = _latest_epoch(v2_data)
-                      if ex_age is not None and v2_latest is not None and v2_latest > ex_latest:
-                          log.warning(
-                              f"Freshness repair [{symbol}/{timeframe}]: "
-                              f"PriceHistoryEx latest={datetime.fromtimestamp(ex_latest, timezone.utc).isoformat()} "
-                              f"vs PriceHistoryV2 latest={datetime.fromtimestamp(v2_latest, timezone.utc).isoformat()}"
-                          )
-
-              if not candidates:
-                  raise RuntimeError("PriceHistoryEx and PriceHistoryV2 returned no candle rows")
-
-              # Merge by timestamp so a fresh V2 tail can repair an older Ex
-              # window without throwing away older bars needed for EMA-200.
-              merged: dict[float | str, dict] = {}
-              for source, rows in candidates:
-                  for row in rows:
-                      if not isinstance(row, dict):
-                          continue
-                      epoch = _raw_epoch(row)
-                      key = epoch if epoch is not None else f"{source}:{len(merged)}"
-                      merged[key] = row
-              data = list(merged.values())
-
-              candles: List[OHLCV] = []
-              for bar in data:
-                  raw_time = next(
-                      (
-                          bar.get(key)
-                          for key in ("time", "timestamp", "timeStamp", "date")
-                          if bar.get(key) is not None
-                      ),
-                      "",
-                  )
-                  if isinstance(raw_time, (int, float)):
-                      t = datetime.fromtimestamp(raw_time, tz=timezone.utc).isoformat()
-                  else:
-                      t = str(raw_time)
-                  candles.append(OHLCV(
-                      time=t,
-                      open=float(bar.get("openPrice", bar.get("open", 0.0))),
-                      high=float(bar.get("highPrice", bar.get("high", 0.0))),
-                      low=float(bar.get("lowPrice", bar.get("low", 0.0))),
-                      close=float(bar.get("closePrice", bar.get("close", 0.0))),
-                      volume=float(bar.get("tickVolume", bar.get("volume", 0))),
-                  ))
-
-              candles.sort(key=lambda candle: candle.time)
-              deduplicated: List[OHLCV] = []
-              seen_times: set[str] = set()
-              for candle in candles:
-                  if candle.time in seen_times:
-                      continue
-                  seen_times.add(candle.time)
-                  deduplicated.append(candle)
-
-              current_epoch = int(now.timestamp())
-              boundary_epoch = current_epoch - (current_epoch % (tf_min * 60))
-              completed: List[OHLCV] = []
-              for candle in deduplicated:
-                  try:
-                      parsed = datetime.fromisoformat(candle.time.replace("Z", "+00:00"))
-                      if parsed.tzinfo is None:
-                          parsed = parsed.replace(tzinfo=timezone.utc)
-                      if int(parsed.timestamp()) < boundary_epoch:
-                          completed.append(candle)
-                  except (TypeError, ValueError, OverflowError):
-                      completed.append(candle)
-
-              completed.sort(key=lambda candle: candle.time)
-              result = completed[-count:] if len(completed) > count else completed
-              if len(result) < min(count, 50):
-                  log.warning(
-                      f"Historical candles insufficient for {symbol}/{timeframe}: "
-                      f"received={len(result)} requested={count} (PriceHistoryEx/V2)"
-                  )
-              return result
-
-          except Exception as exc:
-              if attempt == 0:
-                  log.warning(f"fetch_candles error (attempt 1) — reconnecting: {exc}")
-                  _invalidate_connection()
-                  continue
-              log.error(f"fetch_candles error after reconnect: {exc}")
-              return []
-      return []
-
-
-async def get_symbol_list() -> List[str]:
-    """Return the broker's exact symbol names for suffix-aware resolution."""
-    global _SYMBOL_CACHE, _SYMBOL_CACHE_AT
-    now = _time.monotonic()
-    if _SYMBOL_CACHE and now - _SYMBOL_CACHE_AT < _SYMBOL_CACHE_TTL_S:
-        return list(_SYMBOL_CACHE)
-    if not _conn_id:
-        if not await ensure_connected():
-            return []
-    try:
-        sess = _get_session()
-        async with sess.get(
-            f"{_base_url}/SymbolList",
-            params={"id": _conn_id},
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            data = await resp.json(content_type=None)
-        if isinstance(data, list):
-            _SYMBOL_CACHE = [
-                str(item).strip() for item in data
-                if str(item).strip()
-            ]
-            _SYMBOL_CACHE_AT = now
-            log.info(
-                f"Broker symbol catalog loaded: {len(_SYMBOL_CACHE)} symbols"
-            )
-            return list(_SYMBOL_CACHE)
-        log.warning(f"SymbolList returned unexpected response: {str(data)[:200]}")
-    except Exception as exc:
-        log.warning(f"SymbolList request failed: {exc}")
-    return []
-
-
-async def resolve_symbol_name(configured: str) -> str:
-    """Resolve a configured symbol to the broker's exact spelling.
-
-    Exact case-insensitive matches win.  For common FX/metals symbols, a
-    suffix/prefix variant is accepted only when its base matches exactly;
-    unrelated symbols are never substituted silently.
+    FIX: retries once with a fresh ConnectEx on stale-conn_id errors.
     """
-    requested = str(configured or "").strip().upper()
-    if not requested:
-        return requested
-    symbols = await get_symbol_list()
-    if not symbols:
-        return requested
-    by_upper = {item.upper(): item for item in symbols}
-    if requested in by_upper:
-        return by_upper[requested]
+    for attempt in range(2):
+        if not _conn_id:
+            if not await ensure_connected():
+                return []
 
-    base = requested.replace(".", "").replace("-", "").replace("_", "")
-    candidates = []
-    for item in symbols:
-        normalized = item.upper().replace(".", "").replace("-", "").replace("_", "")
-        if normalized.startswith(base) or base.startswith(normalized):
-            candidates.append(item)
-    if len(candidates) == 1:
-        log.warning(
-            f"Resolved configured symbol {requested} to broker symbol "
-            f"{candidates[0]}"
-        )
-        return candidates[0]
-    if candidates:
-        # Prefer the shortest exact-base suffix variant, which is the least
-        # surprising broker naming convention.
-        chosen = sorted(candidates, key=lambda value: (len(value), value))[0]
-        log.warning(
-            f"Resolved configured symbol {requested} to broker symbol "
-            f"{chosen} from candidates={candidates[:8]}"
-        )
-        return chosen
-    log.error(
-        f"Configured symbol {requested} was not found in broker SymbolList; "
-        "historical scan will remain unavailable until the symbol is corrected."
-    )
-    return requested
+        tf_min = _TF_MAP.get(timeframe, 5)
+
+        # Request slightly more bars than needed to account for the current open bar
+        request_count = count + 5
+        now      = datetime.now(timezone.utc)
+        from_dt  = now - timedelta(minutes=tf_min * request_count)
+
+        from_str = from_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        to_str   = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        try:
+            sess = _get_session()
+            async with sess.get(
+                f"{_base_url}/PriceHistoryV2",
+                params={
+                    "id":        _conn_id,
+                    "symbol":    symbol,
+                    "from":      from_str,
+                    "to":        to_str,
+                    "timeFrame": tf_min,
+                },
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                data = await resp.json(content_type=None)
+
+                if not isinstance(data, list):
+                    # Error-shaped response — likely stale conn_id.
+                    if attempt == 0:
+                        log.warning(
+                            f"fetch_candles unexpected response (stale conn_id?) "
+                            f"— reconnecting and retrying. Response: {str(data)[:200]}"
+                        )
+                        _invalidate_connection()
+                        continue
+                    log.error(f"fetch_candles unexpected response after reconnect: {str(data)[:300]}")
+                    return []
+
+                candles: List[OHLCV] = []
+                for bar in data:
+                    # Normalise time to a plain string regardless of what
+                    # mt5rest serialises it as (ISO string, integer timestamp,
+                    # or datetime).  OHLCV.time is typed str; a non-string here
+                    # would crash candle.time.replace() in
+                    # get_last_completed_bar_time() and also break the sort
+                    # key when types are mixed across bars.
+                    t = str(bar.get("time", ""))
+                    candles.append(OHLCV(
+                        time=t,
+                        open=float(bar.get("openPrice",  0.0)),
+                        high=float(bar.get("highPrice",  0.0)),
+                        low=float(bar.get("lowPrice",    0.0)),
+                        close=float(bar.get("closePrice", 0.0)),
+                        volume=float(bar.get("tickVolume", bar.get("volume", 0))),
+                    ))
+
+                # Sort and deduplicate by timestamp before removing the open bar.
+                # The bridge can return overlapping pages with duplicate candles;
+                # feeding those into indicators shifts the entire signal window.
+                candles.sort(key=lambda candle: candle.time)
+                deduplicated: List[OHLCV] = []
+                seen_times: set[str] = set()
+                for candle in candles:
+                    if candle.time in seen_times:
+                        continue
+                    seen_times.add(candle.time)
+                    deduplicated.append(candle)
+                candles = deduplicated
+
+                # Drop the last bar (may be the still-open current bar)
+                if candles:
+                    candles = candles[:-1]
+
+                # Return only the last `count` completed bars
+                return candles[-count:] if len(candles) > count else candles
+
+        except Exception as exc:
+            if attempt == 0:
+                log.warning(f"fetch_candles error (attempt 1) — reconnecting: {exc}")
+                _invalidate_connection()
+                continue
+            log.error(f"fetch_candles error after reconnect: {exc}")
+            return []
+    return []
 
 
 async def get_account_info() -> dict:
@@ -931,96 +746,9 @@ def _parse_open_positions_response(
 # (which iterates every row matching a newly-seen ticket) fires a second
 # "TRADE OPENED" notification for the same trade with fabricated size/price.
 # A retail gold position this bot ever opens is a few lots at most, so
-# anything above this cap is unambiguously corrupted bridge output unless
-# another independent lot field in the same row is sane.
+# anything above this cap is unambiguously corrupted bridge output, not a
+# real fill — it is dropped rather than guessed at.
 _MAX_SANE_VOLUME_LOTS = 100.0
-_VOLUME_WARNING_INTERVAL_SECONDS = 300.0
-_volume_warning_last_emitted: dict[str, float] = {}
-
-
-def _volume_warning_due(
-    key: str,
-    now: Optional[float] = None,
-    cache: Optional[dict[str, float]] = None,
-) -> bool:
-    """Rate-limit repeated bridge anomaly warnings without hiding repairs."""
-    warning_cache = _volume_warning_last_emitted if cache is None else cache
-    current = _time.monotonic() if now is None else now
-    previous = warning_cache.get(key)
-    if previous is not None and current - previous < _VOLUME_WARNING_INTERVAL_SECONDS:
-        return False
-    warning_cache[key] = current
-    return True
-
-
-def _log_volume_warning(key: str, message: str) -> None:
-    """Emit one warning per anomaly/ticket every five minutes.
-
-    The bridge anomaly is still repaired on every poll; only the identical
-    warning is suppressed so Render logs remain usable and alerting is not
-    flooded while a position stays open.
-    """
-    if _volume_warning_due(key):
-        log.warning(message)
-    else:
-        log.debug(message)
-
-
-def _volume_from_row(row: dict) -> Tuple[str, float]:
-    """Return the first plausible lot field and its source name.
-
-    mt5rest has returned a corrupted primary ``volume`` while a parallel
-    ``lots`` field still contained the broker's real position size.  Keeping
-    the source alongside the value lets the caller canonicalise the whole row
-    instead of merely using the safe value at one downstream call site.
-    """
-    for key in ("lots", "volume", "closeLots"):
-        raw = row.get(key)
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(value):
-            continue
-        if 0.0 < value <= _MAX_SANE_VOLUME_LOTS:
-            return key, value
-    return "", 0.0
-
-
-def _sane_volume_from_row(row: dict) -> float:
-    """Return a plausible lot value from an mt5rest position row."""
-    return _volume_from_row(row)[1]
-
-
-def _canonical_position_row(row: dict) -> dict:
-    """Make the safe volume authoritative for every downstream consumer.
-
-    Returning the original bridge row after merely *calculating* a safe
-    volume was not sufficient: max-position checks, snapshots, logging and
-    future callers could still read ``volume=1000000`` directly.  This
-    creates a copy with a finite, bounded numeric ``volume`` and mirrors it
-    to ``lots`` when an independent bridge field rescued the value.
-    """
-    source, volume = _volume_from_row(row)
-    if not source:
-        return dict(row)
-
-    normalized = dict(row)
-    normalized["volume"] = volume
-    if source != "volume":
-        normalized["lots"] = volume
-        normalized["volume_source"] = source
-    return normalized
-
-
-def _primary_volume_is_sane(row: dict) -> bool:
-    """Whether the bridge's primary ``volume`` field is usable."""
-    raw = row.get("volume")
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return False
-    return math.isfinite(value) and 0.0 < value <= _MAX_SANE_VOLUME_LOTS
 
 
 def _dedupe_positions(
@@ -1055,10 +783,8 @@ def _dedupe_positions(
     built from this robot's own trade log) and the corrupted ticket is a
     known one, repair only the volume/type fields from our own record instead
     of dropping the row — the ticket/openPrice from mt5rest are kept as-is.
-    An unknown ticket with no independent sane lot field is still dropped
-    exactly as before. A sane ``lots``/``closeLots`` field is independent
-    evidence that the row is a real open position, so it is preserved even
-    when the primary ``volume`` field is corrupted.
+    An unknown ticket (never opened by this robot) is still dropped exactly
+    as before; this only rescues positions we can independently verify.
     """
     known_positions = known_positions or {}
     by_ticket: "dict[object, List[dict]]" = {}
@@ -1078,9 +804,8 @@ def _dedupe_positions(
         group = by_ticket[ticket]
         if len(group) == 1:
             row = group[0]
-            vol = _sane_volume_from_row(row)
-            raw_volume = row.get("volume")
-            if vol <= 0:
+            vol = float(row.get("volume", row.get("lots", 0.0)) or 0.0)
+            if vol > _MAX_SANE_VOLUME_LOTS:
                 known = known_positions.get(str(ticket))
                 if known is not None:
                     # Ticket is one we opened ourselves and mt5rest still
@@ -1091,14 +816,12 @@ def _dedupe_positions(
                     repaired["volume"] = known["volume"]
                     repaired["lots"] = known["volume"]
                     repaired["type"] = known["direction"]
-                    _log_volume_warning(
-                        f"repair:{ticket}:{raw_volume!r}:{known['volume']}:"
-                        f"{known['direction']}",
+                    log.warning(
                         f"mt5rest returned ticket {ticket!r} with a corrupted "
-                        f"volume ({raw_volume!r}) and type={row.get('type')} — "
+                        f"volume ({vol:.0f}L) and type={row.get('type')} — "
                         f"repaired from this robot's own trade log "
                         f"(volume={known['volume']}, direction={known['direction']}) "
-                        f"instead of dropping a position known to be open.",
+                        f"instead of dropping a position known to be open."
                     )
                     result.append(repaired)
                 else:
@@ -1109,62 +832,35 @@ def _dedupe_positions(
                     # of the time this really is bridge garbage, but right
                     # after a restart (known_positions not yet repopulated)
                     # it could be a real ticket we just don't recognise yet.
-                    _log_volume_warning(
-                        f"drop:{ticket}:{raw_volume!r}:{row.get('lots')!r}",
+                    log.warning(
                         f"mt5rest returned a lone row for ticket {ticket!r} "
-                        f"without a sane lot value (volume={raw_volume!r}, "
-                        f"lots={row.get('lots')!r}) "
+                        f"with an insane volume ({vol:.0f}L > {_MAX_SANE_VOLUME_LOTS}L limit) "
                         f"— dropping phantom row (direction={row.get('type')}, "
-                        f"openPrice={row.get('openPrice', row.get('price_open'))})",
+                        f"openPrice={row.get('openPrice', row.get('price_open'))})"
                     )
                     dropped_unknown.append(str(ticket))
             else:
-                # Keep the full row so direction/price/SL/TP remain
-                # available, but make the safe volume authoritative before
-                # any caller can inspect the raw bridge payload.
-                try:
-                    if not _primary_volume_is_sane(row):
-                        _log_volume_warning(
-                            f"fallback:{ticket}:{raw_volume!r}:{vol:g}",
-                            f"mt5rest returned ticket {ticket!r} with a corrupted "
-                            f"volume ({raw_volume!r}); using independent "
-                            f"lots={vol:g} instead.",
-                        )
-                except (TypeError, ValueError):
-                    pass
-                result.append(_canonical_position_row(row))
+                result.append(row)
             continue
 
         sane = [
             row for row in group
-            if _sane_volume_from_row(row) > 0
+            if 0 < float(row.get("volume", row.get("lots", 0.0)) or 0.0) <= _MAX_SANE_VOLUME_LOTS
         ]
         if len(sane) == 1:
-            selected = _canonical_position_row(sane[0])
-            _log_volume_warning(
-                f"duplicate:{ticket}:{len(group)}:"
-                f"{[row.get('volume', row.get('lots')) for row in group]}",
+            log.warning(
                 f"mt5rest returned {len(group)} duplicate rows for ticket {ticket} "
                 f"— keeping the one with a plausible volume, dropping the rest "
-                f"(volumes seen: {[row.get('volume', row.get('lots')) for row in group]})",
+                f"(volumes seen: {[row.get('volume', row.get('lots')) for row in group]})"
             )
-            result.append(selected)
+            result.append(sane[0])
         else:
-            # If both rows have a plausible fallback, prefer the one whose
-            # primary volume is already sane; otherwise canonicalise the first
-            # row and keep its broker-independent lot evidence.
-            selected = next(
-                (row for row in sane if _primary_volume_is_sane(row)),
-                sane[0] if sane else group[0],
-            )
-            _log_volume_warning(
-                f"duplicate-ambiguous:{ticket}:{len(group)}:"
-                f"{[row.get('volume', row.get('lots')) for row in group]}",
+            log.warning(
                 f"mt5rest returned {len(group)} duplicate rows for ticket {ticket} "
                 f"with no single plausible volume — keeping the first row only "
-                f"(volumes seen: {[row.get('volume', row.get('lots')) for row in group]})",
+                f"(volumes seen: {[row.get('volume', row.get('lots')) for row in group]})"
             )
-            result.append(_canonical_position_row(selected))
+            result.append(group[0])
     return result, dropped_unknown
 
 
@@ -1186,46 +882,18 @@ async def get_last_completed_bar_time(
 def mt5_pos_to_dict(pos: dict) -> dict:
     """Normalise a raw mt5rest OpenedOrder dict into the standard internal format."""
     type_map = {0: "BUY", 1: "SELL"}
-
-    def _normalise_direction(value: object) -> Optional[str]:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            token = value.strip().upper()
-            if token in {"BUY", "SELL"}:
-                return token
-            # mt5rest commonly returns values such as "DealSell" and
-            # "OrderBuy" in the parallel direction fields.
-            if "SELL" in token:
-                return "SELL"
-            if "BUY" in token:
-                return "BUY"
-            try:
-                return type_map.get(int(token))
-            except (TypeError, ValueError):
-                return None
-        try:
-            return type_map.get(int(value))
-        except (TypeError, ValueError):
-            return None
-
-    # An explicitly present null ``type`` must not hide a valid ``orderType``
-    # or ``dealType`` field from the same bridge response.
-    normalized_type = next(
-        (
-            direction
-            for key in ("type", "orderType", "dealType", "direction")
-            if (direction := _normalise_direction(pos.get(key))) is not None
-        ),
-        "BUY",
-    )
+    raw_type = pos.get("type", pos.get("orderType", 0))
+    try:
+        raw_type = int(raw_type)
+    except (TypeError, ValueError):
+        raw_type = 0
 
     return {
         "id":         str(pos.get("ticket", pos.get("identifier", ""))),
         "ticket":     pos.get("ticket", pos.get("identifier", 0)),
         "symbol":     pos.get("symbol", ""),
-        "type":       normalized_type,
-        "volume":     _sane_volume_from_row(pos),
+        "type":       type_map.get(raw_type, "BUY"),
+        "volume":     float(pos.get("volume", pos.get("lots", 0.0))),
         "open_price": float(pos.get("openPrice", pos.get("price_open", 0.0))),
         "sl":         float(pos.get("stopLoss",  pos.get("sl", 0.0))),
         "tp":         float(pos.get("takeProfit", pos.get("tp", 0.0))),

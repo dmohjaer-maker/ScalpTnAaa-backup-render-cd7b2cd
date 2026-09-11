@@ -96,14 +96,14 @@ def _trade_timeframes(name: str, default: str) -> list[str]:
     """Parse a comma-separated list of timeframe labels, validate each entry
     against _VALID_TIMEFRAMES, and return them sorted highest-first.
 
-    Example:  TRADE_TIMEFRAMES=5m  →  ["5m"]
+    Example:  TRADE_TIMEFRAMES=M20,M15,M10,5m  →  ["M20","M15","M10","5m"]
     """
     raw = os.getenv(name, default)
     tfs = [tf.strip() for tf in raw.split(",") if tf.strip()]
     if not tfs:
         print(
             f"ERROR: {name} is empty. Provide a comma-separated list "
-            f"of timeframes, e.g. 5m",
+            f"of timeframes, e.g. M20,M15,M10,5m",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -133,12 +133,6 @@ def _timeframe(name: str, default: str) -> str:
     return val
 
 
-def _bool_env(name: str, default: str) -> bool:
-    return os.getenv(name, default).strip().lower() in {
-        "1", "true", "yes", "on",
-    }
-
-
 # ── MT5 bridge URL ────────────────────────────────────────────────────────────
 MTAPI_URL     = os.getenv("MTAPI_URL",     "")
 
@@ -149,67 +143,27 @@ MT5_USER      = os.getenv("MT5_USER",     "")
 MT5_PASSWORD  = os.getenv("MT5_PASSWORD", "")
 
 # ── Symbol & Timeframe ───────────────────────────────────────────────────────
-def _symbols() -> list[str]:
-    """Return de-duplicated broker symbols while preserving XAU compatibility.
-
-    SYMBOL remains the legacy single-symbol knob.  SYMBOLS is the new
-    multi-symbol setting; when omitted, the live robot behaves exactly as
-    before and trades only SYMBOL.
-    """
-    raw = os.getenv("SYMBOLS", "").strip() or os.getenv("SYMBOL", "XAUUSD")
-    symbols = list(dict.fromkeys(
-        item.strip().upper() for item in raw.split(",") if item.strip()
-    ))
-    if not symbols:
-        print(
-            "ERROR: SYMBOLS is empty. Provide comma-separated broker symbols, "
-            "for example XAUUSD,EURUSD.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return symbols
-
-
-SYMBOL        = os.getenv("SYMBOL", "XAUUSD").strip().upper() or "XAUUSD"
-SYMBOLS       = _symbols()
+SYMBOL        = os.getenv("SYMBOL", "XAUUSD")
 TIMEFRAME     = _timeframe("TIMEFRAME", "5m")
 CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 
 # ── Risk & Trade Rules ───────────────────────────────────────────────────────
-# Fast-scalp production profile. The active entry cadence is selected by
-# TRADE_TIMEFRAMES so the deployment can combine responsive M1 scans with the
-# more stable M5 setup path that historically produced the working signals.
-# MIN_CONFIRMATIONS is bounded at one so a single-engine profile can be
-# configured without weakening the default two-confirmation profile.
+# Production defaults — override via Render env vars if needed.
+# MIN_CONFIRMATIONS: minimum engines that must agree (out of 4: SMC, Trend, PA, Wyckoff).
 # CONF_HARD_MIN: trades below this confidence % are always rejected.
 RISK_PERCENT      = _float("RISK_PERCENT",      1.0,  lo=0.01, hi=10.0)
-# Account-level stop exposure cap. This includes already-open positions and
-# prevents three broker-minimum lots from quietly stacking excessive risk.
-MAX_TOTAL_RISK_PCT = _float("MAX_TOTAL_RISK_PCT", 3.0, lo=0.1, hi=50.0)
-# FAST_SCALP_MODE is an explicit compatibility mode for the former rapid
-# XAUUSD scalp profile. It may lower the confirmation floor to one aligned
-# engine, but it never bypasses quote, protection, risk, position, or guardian
-# checks.
-FAST_SCALP_MODE = os.getenv("FAST_SCALP_MODE", "false").strip().lower() in {
+# MIN_CONFIRMATIONS=2: SMC (always) + any 1 of (Trend / PA / Wyckoff).
+# Wyckoff fires rarely on 5m; PA patterns don't appear every candle.
+# Requiring 3 caused multi-day silences. 2 keeps quality while allowing flow.
+MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS",   2,    lo=1,    hi=10)
+# When enabled, every new trade must also have a same-direction Price Action signal.
+# Default false preserves existing behavior until explicitly enabled on Render.
+REQUIRE_PRICE_ACTION = os.getenv("REQUIRE_PRICE_ACTION", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
-# Normal mode requires two aligned confirmations. Fast single-engine mode is
-# opt-in through the Render environment and may use one SMC confirmation.
-MIN_CONFIRMATIONS = _int("MIN_CONFIRMATIONS", 2, lo=1, hi=10)
-# Price Action is optional; the SMC-only deployment disables it as an entry
-# requirement while preserving the closed-candle trigger and risk gates.
-REQUIRE_PRICE_ACTION = _bool_env("REQUIRE_PRICE_ACTION", "false")
-# Smart Money (SMC) is the primary engine when this is enabled.
-REQUIRE_SMC_CONFIRMATION = _bool_env("REQUIRE_SMC_CONFIRMATION", "false")
-REQUIRE_SMC_OR_PA_TRIGGER = _bool_env("REQUIRE_SMC_OR_PA_TRIGGER", "true")
-BLOCK_RANGE_ENTRIES = _bool_env("BLOCK_RANGE_ENTRIES", "true")
-RANGE_SCALP_MODE = _bool_env("RANGE_SCALP_MODE", "true")
-RANGE_MIN_CONFIRMATIONS = _int("RANGE_MIN_CONFIRMATIONS", 1, lo=1, hi=4)
-RANGE_REQUIRE_PRICE_ACTION = _bool_env("RANGE_REQUIRE_PRICE_ACTION", "true")
-# Deprecated compatibility flag. SMC is not required to be directional, but
-# an opposing SMC context is always rejected by the global trend guard. The
-# decision engine keeps this flag for callers that still provide the old
-# environment variable.
+# Exact option 1 gate: SMC, Price Action, and Wyckoff must all agree with the
+# candidate direction. EMA remains informational/confirmatory and is not
+# required for entry.
 REQUIRE_SMC_PRICE_ACTION_WYCKOFF = os.getenv(
     "REQUIRE_SMC_PRICE_ACTION_WYCKOFF", "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -226,33 +180,7 @@ QUALITY_ADX_MIN   = _float("QUALITY_ADX_MIN",    15.0, lo=5.0,  hi=40.0)
 # 300 bars on M5 is roughly 25 hours and is too permissive for scalping;
 # the default 24 closed bars keeps BOS/CHoCH actionable for about two hours.
 STRUCTURE_MAX_AGE_BARS = _int("STRUCTURE_MAX_AGE_BARS", 24, lo=3, hi=100)
-# Strict mode keeps the newest precision gates available without forcing them
-# on the flexible fast-scalp deployment. Flexible mode still requires a valid
-# live quote and preserves all risk, position-limit, and execution protections.
-STRICT_ENTRY_MODE = _bool_env("STRICT_ENTRY_MODE", "false")
-# Aggressive mode relaxes signal-quality vetoes while preserving all monetary
-# protections: risk sizing, stop loss, position limits, spread/slippage checks,
-# and the Risk Guardian remain mandatory.
-AGGRESSIVE_ENTRY_MODE = os.getenv("AGGRESSIVE_ENTRY_MODE", "false").strip().lower() in {
-    "1", "true", "yes", "on",
-}
-# When enabled, directional alignment gates may not reject a trade solely
-# because its proposed direction opposes a confirmed local/SMC/HTF direction.
-# Neutral trend, quote, confirmation, risk, protection, and guardian gates stay
-# active.
-ALLOW_COUNTER_TREND_TRADES = os.getenv(
-    "ALLOW_COUNTER_TREND_TRADES", "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-# A strict setup trigger is intentionally configurable for fast scalp markets.
-ENTRY_TRIGGER_MAX_AGE_BARS = _int("ENTRY_TRIGGER_MAX_AGE_BARS", 2, lo=0, hi=10)
-# Market orders are priced from the live bid/ask. In flexible mode these are
-# soft diagnostic thresholds; strict mode enforces them as hard vetoes.
-MAX_ENTRY_DRIFT_ATR = _float("MAX_ENTRY_DRIFT_ATR", 0.20, lo=0.0, hi=2.0)
-MAX_SPREAD_ATR = _float("MAX_SPREAD_ATR", 0.20, lo=0.0, hi=2.0)
-# Hard ceiling is five simultaneous positions per symbol; Render may lower it
-# but not raise it beyond the requested scalp limit. Positions on different
-# symbols have independent allowances, subject to the account-level risk cap.
-MAX_OPEN_TRADES   = _int("MAX_OPEN_TRADES", 5, lo=1, hi=5)
+MAX_OPEN_TRADES   = 1
 
 USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() == "true"
 # ── Multi-Timeframe (HTF) Filter ─────────────────────────────────────────────
@@ -263,11 +191,8 @@ USE_ATR_HIGH_VOL_FILTER = os.getenv("USE_ATR_HIGH_VOL_FILTER", "false").lower() 
 #                     Supported: M1 M5 M15 M30 H1 H4 D1 (same set as TIMEFRAME).
 # MTF_CANDLE_WINDOW : number of HTF bars to fetch (needs ≥ 210 for EMA-200).
 #                     300 gives a comfortable margin without excessive latency.
-MTF_ENABLED       = _bool_env("MTF_ENABLED", "true")
-# Strict mode can require a directional higher-timeframe bias. Even in
-# flexible mode, a known opposing HTF bias is always blocked.
-MTF_REQUIRE_ALIGNMENT = _bool_env("MTF_REQUIRE_ALIGNMENT", "false")
-MTF_TIMEFRAME     = _timeframe("MTF_TIMEFRAME", "5m")
+MTF_ENABLED       = os.getenv("MTF_ENABLED",   "true").lower() == "true"
+MTF_TIMEFRAME     = _timeframe("MTF_TIMEFRAME",  "H1")
 MTF_CANDLE_WINDOW = _int("MTF_CANDLE_WINDOW",    300, lo=50, hi=1000)
 
 # ── Trade Timeframes (Multi-Timeframe entry) ─────────────────────────────────
@@ -276,12 +201,14 @@ MTF_CANDLE_WINDOW = _int("MTF_CANDLE_WINDOW",    300, lo=50, hi=1000)
 # so M20 and M15 signals take priority over M10 and M5 when bars close
 # simultaneously (e.g. at minute :20 all four TFs close at once).
 #
-# The HTF bias filter (MTF_TIMEFRAME above) is separate from the entry
-# timeframes. It is only fetched when MTF_ENABLED is true.
+# The H1 HTF bias filter (MTF_TIMEFRAME above) is separate — it is always
+# computed on H1 regardless of which trade TFs are active, because H1
+# represents the directional context for the whole session.
 #
-# Fast profile default: evaluate M5 before M1 when both boundaries close.
-# Higher-timeframe context remains separate under MTF_TIMEFRAME.
-TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M1,M5")
+# Recommended:  "M20,M15,M10,5m"  (4 TFs = ~2-4 entries/day per TF)
+# Conservative: "M15,5m"           (2 TFs = cleaner, fewer signals)
+# Aggressive:   "M20,M15,M10,5m"   (same as recommended)
+TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M20,M15,M10,5m")
 
 
 
@@ -289,11 +216,8 @@ TRADE_TIMEFRAMES  = _trade_timeframes("TRADE_TIMEFRAMES", "M1,M5")
 COMMENT = "GSPv4"
 
 # ── Loop Timing ──────────────────────────────────────────────────────────────
-# These controls affect transport responsiveness only. Signal decisions still
-# run once per completed candle, so polling more often cannot create duplicate
-# entries or change the strategy's candle semantics.
-BAR_CHECK_INTERVAL = _int("BAR_CHECK_INTERVAL", 5, lo=2, hi=60)
-RECONNECT_DELAY    = _int("RECONNECT_DELAY", 15, lo=5, hi=300)
+BAR_CHECK_INTERVAL = 15       # seconds between candle-close checks
+RECONNECT_DELAY    = 30       # seconds before reconnect attempt
 SYNC_TIMEOUT       = 120      # seconds to wait for initial connect
 
 # ── File Paths (for Telegram panel) ─────────────────────────────────────────
@@ -309,33 +233,29 @@ DAILY_LOSS_LIMIT_PCT = _float("DAILY_LOSS_LIMIT_PCT", 3.0,  lo=0.1, hi=50.0)
 MAX_DRAWDOWN_PCT     = _float("MAX_DRAWDOWN_PCT",      8.0,  lo=0.1, hi=50.0)
 SLIPPAGE_POINTS      = _int("SLIPPAGE_POINTS",         30,   lo=1,   hi=500)
 
-# ── Adaptive Trailing Stop ────────────────────────────────────────────────────
-# The trailing engine uses the trade's original risk (R), a persisted
-# high-water/low-water mark, and live ATR to ratchet the broker-side stop only
-# in the profitable direction. All values are env-configurable for safe tuning
-# on Render without changing strategy or entry logic.
+# ── Staircase Trailing Stop ───────────────────────────────────────────────────
+# The stop loss placed at trade entry never moved automatically before — a
+# trade could run deep into profit and still be stopped out at its original,
+# now far-too-generous level if price reversed. The staircase trailing engine
+# (live_trading/risk/trailing_stop.py) now ratchets the stop forward in
+# discrete steps, measured in multiples of the trade's own original risk (R),
+# as the trade advances — never backwards. All of it is env-configurable so
+# it can be tuned on Render without a code change.
 TRAIL_ENABLED        = os.getenv("TRAIL_ENABLED", "true").lower() == "true"
 # R-multiple of profit required before the stop first moves off its entry level.
-TRAIL_ACTIVATION_R   = _float("TRAIL_ACTIVATION_R",   0.65, lo=0.1, hi=10.0)
-# Kept for compatibility with the panel/configuration. The adaptive engine
-# follows each new favorable extreme instead of waiting for a coarse step.
+TRAIL_ACTIVATION_R   = _float("TRAIL_ACTIVATION_R",   1.0,  lo=0.1, hi=10.0)
+# Size, in R-multiples, of each staircase step beyond activation.
 TRAIL_STEP_R         = _float("TRAIL_STEP_R",         0.5,  lo=0.05, hi=5.0)
-# Minimum R-profit kept beyond entry after activation.
-TRAIL_LOCK_BUFFER_R  = _float("TRAIL_LOCK_BUFFER_R",  0.15, lo=0.0, hi=2.0)
-TRAIL_LOCK_SLOPE     = _float("TRAIL_LOCK_SLOPE",     0.75, lo=0.0, hi=5.0)
-TRAIL_MAX_LOCK_R     = _float("TRAIL_MAX_LOCK_R",     2.00, lo=0.1, hi=5.0)
-# Adaptive safety gap behind the favorable high/low.  The gap is also bounded
-# by the original risk so high-volatility ATR spikes cannot make trailing
-# effectively inactive.
-TRAIL_ATR_GAP_MULT   = _float("TRAIL_ATR_GAP_MULT",   1.00, lo=0.0, hi=5.0)
-TRAIL_SPREAD_GAP_MULT = _float("TRAIL_SPREAD_GAP_MULT", 2.50, lo=0.0, hi=10.0)
-TRAIL_MAX_GAP_R      = _float("TRAIL_MAX_GAP_R",      0.75, lo=0.1, hi=5.0)
+# Extra R-multiple locked in at every step so the stop locks real profit
+# (covers spread/slippage) instead of landing on exact break-even.
+TRAIL_LOCK_BUFFER_R  = _float("TRAIL_LOCK_BUFFER_R",  0.1,  lo=0.0, hi=2.0)
+# Safety floor: the stop is never placed closer to the live price than this
+# multiple of the current ATR, so a fast move can't ratchet the stop into
+# the middle of normal M5 noise.
+TRAIL_ATR_GAP_MULT   = _float("TRAIL_ATR_GAP_MULT",   0.5,  lo=0.0, hi=5.0)
 # Minimum price-unit improvement required before sending a modify request —
 # avoids spamming OrderModifySafe with no-op / sub-cent adjustments.
 TRAIL_MIN_STEP_PRICE = _float("TRAIL_MIN_STEP_PRICE", 0.05, lo=0.0, hi=100.0)
-# Independent quote/position polling interval. It is intentionally separate
-# from BAR_CHECK_INTERVAL so faster protection cannot alter signal timing.
-TRAIL_CHECK_INTERVAL = _float("TRAIL_CHECK_INTERVAL", 3.0, lo=1.0, hi=60.0)
 
 # ── Wyckoff Calibration ──────────────────────────────────────────────────────
 WYCKOFF_MAX_RANGE_PCT = 0.01163

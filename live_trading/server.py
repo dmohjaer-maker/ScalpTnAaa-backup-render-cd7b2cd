@@ -71,33 +71,14 @@ def _parse_heartbeat(value: object) -> datetime | None:
 
 
 def _health_response(status: str) -> web.Response:
-    """Return a liveness response for the Render process health check.
-
-    Render calls /health to decide whether to restart the web service. A
-    temporary broker/bridge outage is recoverable by the in-process supervisor
-    and must not cause Render to kill the process mid-reconnect. Keep this
-    endpoint liveness-only; the degraded marker remains visible to operators,
-    while /status exposes the detailed connection state.
-    """
     normalized = status.upper()
-    degraded = normalized in _UNHEALTHY_STATUSES
-    suffix = " degraded=true" if degraded else ""
+    # RETRY_IN_* removed from unhealthy check: process is alive and retrying.
+    unhealthy = normalized in _UNHEALTHY_STATUSES
     return web.Response(
-        status=200,
-        text=f"OK status={status}{suffix}",
+        status=503 if unhealthy else 200,
+        text=f"OK status={status}",
         content_type="text/plain",
     )
-
-
-def _annotate_status_scan_telemetry(state: dict) -> dict:
-    """Distinguish a live heartbeat from a completed market scan."""
-    has_decision = bool(state.get("last_decision"))
-    has_signal_time = bool(state.get("last_signal_time"))
-    state["scan_status"] = "READY" if has_decision and has_signal_time else "NO_FRESH_SCAN"
-    state["signal_confirmation_available"] = bool(
-        has_decision and has_signal_time
-    )
-    return state
 
 
 def _heartbeat_is_fresh(value: object, now: datetime | None = None) -> bool:
@@ -226,10 +207,7 @@ async def _status(req: web.Request):
                         # Fresh Redis data — return immediately
                         return web.Response(
                             status=200,
-                            text=json.dumps(
-                                _annotate_status_scan_telemetry(state),
-                                default=str,
-                            ),
+                            text=json.dumps(state, default=str),
                             content_type="application/json",
                         )
                 else:
@@ -256,10 +234,7 @@ async def _status(req: web.Request):
             local_state["_data_age_seconds"] = -1
         return web.Response(
             status=200,
-            text=json.dumps(
-                _annotate_status_scan_telemetry(local_state),
-                default=str,
-            ),
+            text=json.dumps(local_state, default=str),
             content_type="application/json",
         )
 
@@ -267,24 +242,21 @@ async def _status(req: web.Request):
     if _redis_stale_fallback is not None:
         return web.Response(
             status=200,
-            text=json.dumps(
-                _annotate_status_scan_telemetry(_redis_stale_fallback),
-                default=str,
-            ),
+            text=json.dumps(_redis_stale_fallback, default=str),
             content_type="application/json",
         )
 
     # 4. Last resort: return in-memory supervisor status (no data = truly unknown)
     return web.Response(
         status=200,
-        text=json.dumps(_annotate_status_scan_telemetry({
+        text=json.dumps({
             "status": _robot_status.lower(),
             "connection_status": "disconnected",
             "mt5_status": "disconnected",
             "last_heartbeat": None,
             "_data_fresh": False,
             "_data_age_seconds": -1,
-        })),
+        }),
         content_type="application/json",
     )
 
@@ -300,27 +272,14 @@ def _build_snapshot_from_state(state: dict, signal_snap: dict | None = None) -> 
     account_info = state.get("account_info", {})
     guardian = state.get("guardian", {})
     pos = state.get("open_position")
-    positions = state.get("open_positions")
-    if positions is None:
-        positions = [pos] if pos else []
     result: dict = {
         "account_info":     account_info,
         "connection_status": state.get("connection_status", "disconnected"),
         "today_profit":     float(state.get("today_profit", 0.0)),
         "floating_profit":  float(account_info.get("floating_profit", 0.0)),
-        "open_positions":   positions,
+        "open_positions":   [pos] if pos else [],
         "pending_orders":   [],
         "recent_trades":    state.get("recent_trades", []),
-        # Keep the complete latest decision available to the Telegram panel.
-        # It contains the authoritative blocked_reasons/reasoning explaining
-        # why a scan did not produce an entry.
-        "last_decision":    state.get("last_decision"),
-        "last_signal_time": state.get("last_signal_time"),
-        "symbols":          state.get("symbols", []),
-        "active_symbol":    state.get("active_symbol"),
-        "scan_telemetry":   state.get("scan_telemetry", {}),
-        "history_warmup":   state.get("history_warmup", {}),
-        "history_warmup_status": state.get("history_warmup_status"),
         "drawdown": {
             "current_percent": float(guardian.get("drawdown_pct", 0.0)),
             "max_percent":     float(
@@ -329,41 +288,12 @@ def _build_snapshot_from_state(state: dict, signal_snap: dict | None = None) -> 
             ),
         },
     }
-    # Surface the latest external market-filter results written by the live
-    # loop so operators can verify News/DXY are active from /snapshot and
-    # /status instead of relying only on process logs.
-    for filter_name in ("news_filter", "dxy_filter"):
-        if filter_name in state:
-            result[filter_name] = state[filter_name]
     # Merge per-bar signal fields from the snapshot key when available
     if signal_snap:
         for k in ("price", "regime", "adx", "atr", "smc_signal", "trend",
-                  "candle_time", "timestamp", "symbol", "timeframe",
-                  "candle_count"):
+                  "candle_time", "timestamp"):
             if k in signal_snap:
                 result[k] = signal_snap[k]
-
-    required_scan_fields = (
-        "candle_time",
-        "timestamp",
-        "price",
-        "regime",
-        "adx",
-        "atr",
-        "smc_signal",
-        "trend",
-    )
-    missing_scan_fields = [
-        field for field in required_scan_fields
-        if result.get(field) is None or result.get(field) == ""
-    ]
-    result["scan_missing_fields"] = missing_scan_fields
-    result["scan_status"] = (
-        "READY" if not missing_scan_fields else "NO_FRESH_SCAN"
-    )
-    result["signal_confirmation_available"] = bool(
-        not missing_scan_fields and result.get("last_decision")
-    )
     return result
 
 

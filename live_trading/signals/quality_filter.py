@@ -35,8 +35,8 @@ class QualityFilterResult:
     is_fake_breakout: bool
     is_weak_volume: bool
     is_low_momentum: bool
-    # News blackout status is exposed to the panel and enforced when callers
-    # provide a NewsFilterResult.
+    # Retained for state/panel compatibility. News is intentionally inactive
+    # on the live entry path.
     is_news_blocked: bool = False
 
 
@@ -99,18 +99,9 @@ def _is_late_entry(candles: List[OHLCV], last_bos_bar: Optional[int]) -> bool:
     price  = closes[-1]
     curr   = candles[-1]
     prev   = candles[-2]
-    # Use a short ATR average instead of the current candle's range.  A single
-    # quiet candle made the old extension test hypersensitive and labelled a
-    # normal continuation as "late".
-    trs = [
-        max(c.high - c.low,
-            abs(c.high - candles[i - 1].close),
-            abs(c.low  - candles[i - 1].close))
-        for i, c in enumerate(candles[1:], start=1)
-    ]
-    atr_window = trs[-14:] if trs else []
-    atr = sum(atr_window) / len(atr_window) if atr_window else 0.0
-    atr = max(atr, 1e-9)
+    atr = max(curr.high - curr.low,
+              abs(curr.high - prev.close),
+              abs(curr.low  - prev.close))
     if abs(price - _calc_ema50(closes)) > LATE_EXTENSION_MULT * atr:
         return True
     if n >= MOMENTUM_BARS + 1:
@@ -120,13 +111,7 @@ def _is_late_entry(candles: List[OHLCV], last_bos_bar: Optional[int]) -> bool:
         if all_bull or all_bear:
             bodies    = [abs(c.close - c.open) for c in recent]
             shrinking = all(bodies[i] <= bodies[i - 1] for i in range(1, len(bodies)))
-            # A decaying streak is only late when it has already travelled a
-            # meaningful distance and is visibly stretched from EMA50.  Small
-            # orderly candles inside the trend are continuation/pullback
-            # conditions, not a reason to discard the whole setup.
-            streak_move = abs(price - recent[0].open)
-            ema_extension = abs(price - _calc_ema50(closes))
-            if shrinking and streak_move >= 1.5 * atr and ema_extension >= 1.0 * atr:
+            if shrinking:
                 return True
     if last_bos_bar is not None and (n - 1) - last_bos_bar > STRUCTURE_MAX_AGE_BARS:
         return True
@@ -169,10 +154,10 @@ def apply_quality_filter(
     reasons = []
     last_candle = candles[-1]
 
-    if news_blocked:
-        reasons.append(
-            news_reason or "High-impact USD news blackout is active"
-        )
+    # Option 3: News Filter is intentionally not evaluated on the entry path.
+    # Keep these legacy parameters so older callers remain source-compatible;
+    # the values are deliberately ignored. The news module remains available
+    # for non-entry telemetry/UI use.
 
     # C-2 FIX: respect BLOCKED sessions — do not override to MODERATE.
     # BLOCKED hours represent illiquid periods where slippage and false
@@ -200,9 +185,8 @@ def apply_quality_filter(
         )
 
     weak_vol = _is_weak_volume(candles)
-    # The decision engine uses this flag as a hard veto for breakouts only.
-    # For non-breakout setups it remains telemetry because MT5 tick volume is
-    # a proxy, not real market depth.
+    # Note: volume filter is informational only — MT5 tick volume is a proxy,
+    # not real market depth, so we log the flag but do not block on it.
 
     low_prob = confidence < CONF_HARD_MIN
     if low_prob:
@@ -219,5 +203,4 @@ def apply_quality_filter(
         is_fake_breakout=False,
         is_weak_volume=weak_vol,
         is_low_momentum=low_mom,
-        is_news_blocked=news_blocked,
     )
