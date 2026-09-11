@@ -23,6 +23,7 @@ from live_trading.risk.capital_manager import CapitalInput, CapitalOutput, calc_
 from live_trading.config import (
     CONF_HARD_MIN,
     REQUIRE_SMC_PRICE_ACTION_WYCKOFF,
+    FAST_SCALP_MODE,
 )
 
 # Marginal confidence R:R floor: trades with confidence between CONF_HARD_MIN
@@ -125,17 +126,19 @@ def run_decision_engine(
     regime = detect_market_regime(candles, trend, wyckoff, use_atr_high_vol)
 
     _RANGE_REGIMES = {"RANGE", "ACCUMULATION", "DISTRIBUTION", "HIGH_VOLATILITY"}
+    # Fast Scalp lowers the baseline floor only in directional markets.
+    # Counter-trend and range paths retain an extra confirmation so the mode
+    # increases responsiveness without bypassing the anti-chop safeguards.
+    confirmation_floor = 1 if FAST_SCALP_MODE else 2
     if _counter_trend:
         # Counter-trend: one extra confirmation required — EMA opposes direction.
         effective_min_confirmations = min(min_confirmations + 1, 4)
     elif regime.regime in _RANGE_REGIMES:
         # Range/volatile regimes: require one extra confirmation over the base
-        # minimum.  Structural signals alone (e.g. SMC + Wyckoff without EMA
-        # trend or PA) are insufficient in choppy/ranging markets — at least
-        # one momentum engine must also agree to avoid repeated SL hits.
+        # minimum. Structural signals alone remain insufficient in choppy markets.
         effective_min_confirmations = min(min_confirmations + 1, 4)
     else:
-        effective_min_confirmations = min_confirmations
+        effective_min_confirmations = max(confirmation_floor, min_confirmations)
 
     # Entry filter — minimum N-of-4 vote gate (SMC always required)
     ef = apply_entry_filter(

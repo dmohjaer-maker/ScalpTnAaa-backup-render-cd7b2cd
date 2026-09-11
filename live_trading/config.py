@@ -175,6 +175,12 @@ CANDLE_WINDOW = _int("CANDLE_WINDOW", 300, lo=50, hi=5000)
 # MIN_CONFIRMATIONS: minimum engines that must agree (out of 4: SMC, Trend, PA, Wyckoff).
 # CONF_HARD_MIN: trades below this confidence % are always rejected.
 RISK_PERCENT      = _float("RISK_PERCENT",      1.0,  lo=0.01, hi=10.0)
+# Fast Scalp is an explicit compatibility mode. It may lower the baseline
+# confirmation floor in directional markets, but never bypasses risk, quote,
+# protection, Guardian, or range/counter-trend safeguards.
+FAST_SCALP_MODE = os.getenv("FAST_SCALP_MODE", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 # MIN_CONFIRMATIONS=2: SMC (always) + any 1 of (Trend / PA / Wyckoff).
 # Wyckoff fires rarely on 5m; PA patterns don't appear every candle.
 # Requiring 3 caused multi-day silences. 2 keeps quality while allowing flow.

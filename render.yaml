@@ -90,7 +90,7 @@ services:
       # matched the dashboard-configured production values below -- a fresh
       # deploy from the old file would NOT have reproduced current behavior.
       - key: MIN_CONFIRMATIONS
-        value: "2"
+        value: "1"
       - key: REQUIRE_PRICE_ACTION
         value: "true"
       - key: REQUIRE_SMC_PRICE_ACTION_WYCKOFF
@@ -144,7 +144,7 @@ services:
       - key: ENTRY_TRIGGER_MAX_AGE_BARS
         value: "2"
       - key: FAST_SCALP_MODE
-        value: "false"
+        value: "true"
       - key: FIXED_LOT_SIZE
         value: "0.01"
       - key: MAX_ENTRY_DRIFT_ATR
